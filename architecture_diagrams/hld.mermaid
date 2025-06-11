@@ -1,0 +1,51 @@
+graph TB
+    subgraph "Client Layer"
+        Browser[Web Browser]
+        UI[Kotlin Compose UI]
+    end
+    
+    subgraph "Application Layer"
+        WebServer[Ktor Web Server]
+        API[REST API]
+        WS[WebSocket Handler]
+        Auth[Authentication Service]
+    end
+    
+    subgraph "Business Logic Layer"
+        ContainerMgr[Container Manager]
+        ProxyMgr[Proxy Manager]
+        ConfigMgr[Configuration Manager]
+        MonitorSvc[Monitoring Service]
+    end
+    
+    subgraph "Integration Layer"
+        DockerAPI[Docker API Client]
+        ProxyEngine[Nginx/Traefik Engine]
+        FileSystem[File System]
+    end
+    
+    subgraph "Infrastructure Layer"
+        Docker[Docker Engine]
+        Network[Container Networks]
+        Storage[Volume Storage]
+    end
+    
+    Browser --> UI
+    UI --> WebServer
+    WebServer --> API
+    WebServer --> WS
+    WebServer --> Auth
+    
+    API --> ContainerMgr
+    API --> ProxyMgr
+    API --> ConfigMgr
+    WS --> MonitorSvc
+    
+    ContainerMgr --> DockerAPI
+    ProxyMgr --> ProxyEngine
+    ConfigMgr --> FileSystem
+    MonitorSvc --> DockerAPI
+    
+    DockerAPI --> Docker
+    ProxyEngine --> Network
+    FileSystem --> Storage
