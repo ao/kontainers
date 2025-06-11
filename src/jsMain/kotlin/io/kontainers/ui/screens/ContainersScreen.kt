@@ -9,6 +9,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import io.kontainers.api.KontainersApiClient
 import io.kontainers.model.Container
+import io.kontainers.model.ContainerState
 import io.kontainers.state.AppStateManager
 import io.kontainers.ui.components.ContainerDetail
 import io.kontainers.ui.components.ContainerList

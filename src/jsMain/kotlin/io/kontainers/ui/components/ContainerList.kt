@@ -1,9 +1,14 @@
 package io.kontainers.ui.components
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import io.kontainers.model.Container
 import io.kontainers.model.ContainerState
 import io.kontainers.ui.util.*
+import org.jetbrains.compose.web.attributes.InputType
 import org.jetbrains.compose.web.css.*
 import org.jetbrains.compose.web.dom.*
 
@@ -18,9 +23,101 @@ fun ContainerList(
     onStopClick: (Container) -> Unit,
     onRestartClick: (Container) -> Unit
 ) {
+    var searchQuery by remember { mutableStateOf("") }
+    var selectedState by remember { mutableStateOf<ContainerState?>(null) }
+    
+    // Filter containers based on search query and selected state
+    val filteredContainers = containers.filter { container ->
+        val matchesSearch = searchQuery.isEmpty() ||
+            container.name.contains(searchQuery, ignoreCase = true) ||
+            container.image.contains(searchQuery, ignoreCase = true)
+        val matchesState = selectedState == null || container.state == selectedState
+        matchesSearch && matchesState
+    }
+    
     if (containers.isEmpty()) {
-        EmptyState("No containers found", "Connect to Docker to see your containers")
+        EmptyStateContainer("No containers found", "Connect to Docker to see your containers")
     } else {
+        // Search and filter controls
+        Div({
+            style {
+                display(DisplayStyle.Flex)
+                flexDirection(FlexDirection.Column)
+                gap(16.px)
+                marginBottom(16.px)
+            }
+        }) {
+            // Search input
+            Div({
+                style {
+                    display(DisplayStyle.Flex)
+                    gap(8.px)
+                    alignItems(AlignItems.Center)
+                }
+            }) {
+                Input(InputType.Text) {
+                    style {
+                        padding(8.px, 12.px)
+                        borderRadius(4.px)
+                        border(1.px, LineStyle.Solid, Color("#e0e0e0"))
+                        fontSize(14.px)
+                        width(300.px)
+                    }
+                    attr("placeholder", "Search containers...")
+                    value(searchQuery)
+                    onInput { event -> searchQuery = event.value }
+                }
+                
+                Button({
+                    style {
+                        padding(8.px, 16.px)
+                        borderRadius(4.px)
+                        border("0", "none", "transparent")
+                        backgroundColor(Color("#f5f5f5"))
+                        color(Color("#424242"))
+                        cursor("pointer")
+                        fontSize(14.px)
+                    }
+                    onClick { searchQuery = "" }
+                }) {
+                    Text("Clear")
+                }
+            }
+            
+            // Filter buttons
+            Div({
+                style {
+                    display(DisplayStyle.Flex)
+                    gap(8.px)
+                    alignItems(AlignItems.Center)
+                }
+            }) {
+                Text("Filter by state: ")
+                
+                FilterButton("All", null, selectedState == null) {
+                    selectedState = null
+                }
+                FilterButton("Running", ContainerState.RUNNING, selectedState == ContainerState.RUNNING) {
+                    selectedState = ContainerState.RUNNING
+                }
+                FilterButton("Stopped", ContainerState.STOPPED, selectedState == ContainerState.STOPPED) {
+                    selectedState = ContainerState.STOPPED
+                }
+                FilterButton("Other", ContainerState.CREATED, selectedState == ContainerState.CREATED) {
+                    selectedState = ContainerState.CREATED
+                }
+            }
+            
+            // Results count
+            Div({
+                style {
+                    fontSize(14.px)
+                    color(Color("#757575"))
+                }
+            }) {
+                Text("Showing ${filteredContainers.size} of ${containers.size} containers")
+            }
+        }
         Div({
             style {
                 display(DisplayStyle.Flex)
@@ -48,7 +145,19 @@ fun ContainerList(
             }
             
             // Container rows
-            containers.forEach { container ->
+            if (filteredContainers.isEmpty()) {
+                Div({
+                    style {
+                        padding(24.px)
+                        textAlign("center")
+                        color(Color("#757575"))
+                        gridColumn("1 / span 6")
+                    }
+                }) {
+                    Text("No containers match your search criteria")
+                }
+            } else {
+                filteredContainers.forEach { container ->
                 ContainerRow(
                     container = container,
                     onClick = { onContainerClick(container) },
@@ -56,8 +165,35 @@ fun ContainerList(
                     onStopClick = { onStopClick(container) },
                     onRestartClick = { onRestartClick(container) }
                 )
+                }
             }
         }
+    }
+}
+
+/**
+ * Filter button component.
+ */
+@Composable
+fun FilterButton(
+    label: String,
+    state: ContainerState?,
+    isSelected: Boolean,
+    onClick: () -> Unit
+) {
+    Button({
+        style {
+            padding(6.px, 12.px)
+            borderRadius(4.px)
+            border("1px", "solid", if (isSelected) "#1976d2" else "#e0e0e0")
+            backgroundColor(if (isSelected) Color("#e3f2fd") else Color.white)
+            color(if (isSelected) Color("#1976d2") else Color("#424242"))
+            cursor("pointer")
+            fontSize(14.px)
+        }
+        onClick { onClick() }
+    }) {
+        Text(label)
     }
 }
 
@@ -212,7 +348,7 @@ fun ActionButton(
  * Empty state component.
  */
 @Composable
-fun EmptyState(title: String, message: String) {
+fun EmptyStateContainer(title: String, message: String) {
     Div({
         style {
             display(DisplayStyle.Flex)

@@ -1,8 +1,10 @@
 package io.kontainers
 
 import io.kontainers.api.containerRoutes
+import io.kontainers.api.proxyRoutes
 import io.kontainers.docker.ContainerService
 import io.kontainers.docker.DockerClientConfig
+import io.kontainers.proxy.ProxyService
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
@@ -37,6 +39,7 @@ fun Application.module() {
     // Create Docker client and services
     val dockerClient = DockerClientConfig.create()
     val containerService = ContainerService(dockerClient)
+    val proxyService = ProxyService("nginx.conf", "conf.d")
     
     // Install plugins
     install(ContentNegotiation) {
@@ -64,15 +67,16 @@ fun Application.module() {
     }
     
     // Configure routing
-    configureRouting(containerService)
+    configureRouting(containerService, proxyService)
 }
 
 /**
  * Configure application routing.
  */
-fun Application.configureRouting(containerService: ContainerService) {
+fun Application.configureRouting(containerService: ContainerService, proxyService: ProxyService) {
     routing {
         containerRoutes(containerService)
+        proxyRoutes(proxyService)
         
         // Serve files from the root resources directory (for kontainers.js)
         staticResources("/", "")

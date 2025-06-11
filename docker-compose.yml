@@ -2,14 +2,32 @@ version: '3.8'
 
 services:
   kontainers:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
     container_name: kontainers
     ports:
-      - "8080:8080"
+      - "9090:9090"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./data:/app/data
+      - ./ssl:/app/ssl:ro
+      - ./config:/app/config
+    environment:
+      - PORT=9090
+    restart: unless-stopped
+    networks:
+      - kontainers-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: kontainers-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./ssl:/etc/ssl/certs:ro
+    depends_on:
+      - kontainers
     restart: unless-stopped
     networks:
       - kontainers-network

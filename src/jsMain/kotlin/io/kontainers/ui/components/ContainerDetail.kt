@@ -6,6 +6,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import io.kontainers.api.KontainersApiClient
 import io.kontainers.model.Container
 import io.kontainers.ui.util.*
 import org.jetbrains.compose.web.css.*
@@ -23,6 +24,7 @@ fun ContainerDetail(
     onStopClick: () -> Unit,
     onRestartClick: () -> Unit
 ) {
+    val apiClient = remember { KontainersApiClient() }
     var activeTab by remember { mutableStateOf("info") }
     
     Div({
@@ -99,7 +101,7 @@ fun ContainerDetail(
         // Tab content
         when (activeTab) {
             "info" -> ContainerInfo(container)
-            "logs" -> ContainerLogs(logs)
+            "logs" -> LogStreamViewer(container.id, apiClient ?: KontainersApiClient())
             "env" -> ContainerEnvironment(container.env)
             "networks" -> ContainerNetworks(container.networks)
             "volumes" -> ContainerVolumes(container.volumes)

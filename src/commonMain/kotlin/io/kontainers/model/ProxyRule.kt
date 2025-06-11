@@ -3,7 +3,7 @@ package io.kontainers.model
 import kotlinx.serialization.Serializable
 
 /**
- * Represents a reverse proxy rule that maps external requests to container services.
+ * Represents a proxy rule for routing traffic to a container.
  */
 @Serializable
 data class ProxyRule(
@@ -23,7 +23,7 @@ data class ProxyRule(
 )
 
 /**
- * Enum representing supported proxy protocols.
+ * Represents the protocol for a proxy rule.
  */
 @Serializable
 enum class ProxyProtocol {
@@ -31,7 +31,7 @@ enum class ProxyProtocol {
 }
 
 /**
- * Represents health check configuration for a proxy rule.
+ * Represents a health check configuration for a proxy rule.
  */
 @Serializable
 data class HealthCheck(

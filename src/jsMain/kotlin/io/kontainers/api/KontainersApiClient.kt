@@ -1,6 +1,7 @@
 package io.kontainers.api
 
 import io.kontainers.model.Container
+import io.kontainers.model.ProxyRule
 import kotlinx.browser.window
 import io.ktor.client.*
 import io.ktor.client.call.*
@@ -132,5 +133,89 @@ class KontainersApiClient {
                 }
             }
         }
+    }
+    
+    /**
+     * Gets all proxy rules.
+     *
+     * @return List of proxy rules
+     */
+    suspend fun getProxyRules(): List<ProxyRule> {
+        return client.get("$baseUrl/proxy/rules").body()
+    }
+    
+    /**
+     * Gets a proxy rule by ID.
+     *
+     * @param id Proxy rule ID
+     * @return Proxy rule details
+     */
+    suspend fun getProxyRule(id: String): ProxyRule {
+        return client.get("$baseUrl/proxy/rules/$id").body()
+    }
+    
+    /**
+     * Creates a new proxy rule.
+     *
+     * @param rule Proxy rule to create
+     * @return Created proxy rule
+     */
+    suspend fun createProxyRule(rule: ProxyRule): ProxyRule {
+        return client.post("$baseUrl/proxy/rules") {
+            contentType(ContentType.Application.Json)
+            setBody(rule)
+        }.body()
+    }
+    
+    /**
+     * Updates a proxy rule.
+     *
+     * @param id Proxy rule ID
+     * @param rule Updated proxy rule
+     * @return Updated proxy rule
+     */
+    suspend fun updateProxyRule(id: String, rule: ProxyRule): ProxyRule {
+        return client.put("$baseUrl/proxy/rules/$id") {
+            contentType(ContentType.Application.Json)
+            setBody(rule)
+        }.body()
+    }
+    
+    /**
+     * Deletes a proxy rule.
+     *
+     * @param id Proxy rule ID
+     * @return true if successful
+     */
+    suspend fun deleteProxyRule(id: String): Boolean {
+        val response = client.delete("$baseUrl/proxy/rules/$id")
+        return response.status.isSuccess()
+    }
+    
+    /**
+     * Enables or disables a proxy rule.
+     *
+     * @param id Proxy rule ID
+     * @param enabled Whether the rule should be enabled
+     * @return Updated proxy rule
+     */
+    suspend fun toggleProxyRule(id: String, enabled: Boolean): ProxyRule {
+        return client.post("$baseUrl/proxy/rules/$id/toggle") {
+            parameter("enabled", enabled)
+        }.body()
+    }
+    
+    /**
+     * Tests a proxy rule.
+     *
+     * @param rule Proxy rule to test
+     * @return true if successful
+     */
+    suspend fun testProxyRule(rule: ProxyRule): Boolean {
+        val response: Map<String, Any> = client.post("$baseUrl/proxy/rules/test") {
+            contentType(ContentType.Application.Json)
+            setBody(rule)
+        }.body()
+        return response["success"] as Boolean
     }
 }

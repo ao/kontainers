@@ -8,6 +8,7 @@ import io.kontainers.state.Screen
 import io.kontainers.ui.components.AppLayout
 import io.kontainers.ui.screens.ContainersScreen
 import io.kontainers.ui.screens.DashboardScreen
+import io.kontainers.ui.screens.ProxyScreen
 import kotlinx.browser.document
 import org.jetbrains.compose.web.renderComposable
 import org.jetbrains.compose.web.dom.Div
@@ -36,7 +37,7 @@ fun App() {
         when (appState.currentScreen) {
             Screen.DASHBOARD -> DashboardScreen()
             Screen.CONTAINERS -> ContainersScreen()
-            Screen.PROXY -> ComingSoonScreen("Proxy Management")
+            Screen.PROXY -> ProxyScreen()
             Screen.SETTINGS -> ComingSoonScreen("Settings")
         }
     }
