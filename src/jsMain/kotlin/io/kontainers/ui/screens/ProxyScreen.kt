@@ -9,6 +9,8 @@ import io.kontainers.state.AppStateManager
 import io.kontainers.ui.components.ProxyRuleForm
 import io.kontainers.ui.components.ProxyRuleList
 import io.kontainers.ui.util.*
+import io.kontainers.ui.util.ErrorMessage
+import io.kontainers.ui.util.InfoMessage
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.web.css.*
 import org.jetbrains.compose.web.dom.*
@@ -37,10 +39,17 @@ fun ProxyScreen() {
         }
     }) {
         if (error != null) {
-            ErrorMessage(error!!) {
-                error = null
-                kotlinx.coroutines.MainScope().launch {
-                    loadProxyRules(apiClient)
+            // Special handling for backend not available error
+            if (error!!.contains("Backend server not available")) {
+                InfoMessage(error!!, "This is normal in development mode") {
+                    error = null
+                }
+            } else {
+                ErrorMessage(error!!) {
+                    error = null
+                    kotlinx.coroutines.MainScope().launch {
+                        loadProxyRules(apiClient)
+                    }
                 }
             }
         }
@@ -117,7 +126,12 @@ private suspend fun loadProxyRules(apiClient: KontainersApiClient) {
         
         AppStateManager.setLoading(false)
     } catch (e: Exception) {
-        AppStateManager.setError("Failed to load proxy rules: ${e.message}")
+        // Check if the error is related to the backend server not being available
+        if (e.message?.contains("404") == true || e.message?.contains("Failed to fetch") == true) {
+            AppStateManager.setError("Backend server not available. This is expected when running only the frontend in development mode.")
+        } else {
+            AppStateManager.setError("Failed to load proxy rules: ${e.message}")
+        }
         AppStateManager.setLoading(false)
     }
 }

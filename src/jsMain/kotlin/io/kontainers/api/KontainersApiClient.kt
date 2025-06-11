@@ -15,6 +15,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.json.Json
 
+// External declaration for JavaScript console
+external val console: dynamic
+
 /**
  * API client for communicating with the Kontainers backend.
  */
@@ -37,14 +40,20 @@ class KontainersApiClient {
     
     /**
      * Gets all containers.
-     * 
+     *
      * @param all If true, includes stopped containers
      * @return List of containers
      */
     suspend fun getContainers(all: Boolean = true): List<Container> {
-        return client.get("$baseUrl/containers") {
-            parameter("all", all)
-        }.body()
+        return try {
+            client.get("$baseUrl/containers") {
+                parameter("all", all)
+            }.body()
+        } catch (e: Exception) {
+            console.warn("Failed to fetch containers from API: ${e.message}. Using mock data.")
+            // Return empty list when API is not available
+            emptyList()
+        }
     }
     
     /**
@@ -141,7 +150,13 @@ class KontainersApiClient {
      * @return List of proxy rules
      */
     suspend fun getProxyRules(): List<ProxyRule> {
-        return client.get("$baseUrl/proxy/rules").body()
+        return try {
+            client.get("$baseUrl/proxy/rules").body()
+        } catch (e: Exception) {
+            console.warn("Failed to fetch proxy rules from API: ${e.message}. Using mock data.")
+            // Return empty list when API is not available
+            emptyList()
+        }
     }
     
     /**

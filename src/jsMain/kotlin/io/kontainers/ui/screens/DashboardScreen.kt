@@ -12,6 +12,8 @@ import io.kontainers.model.ContainerState
 import io.kontainers.state.AppStateManager
 import io.kontainers.state.Screen
 import io.kontainers.ui.util.*
+import io.kontainers.ui.util.ErrorMessage
+import io.kontainers.ui.util.InfoMessage
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.web.css.*
 import org.jetbrains.compose.web.dom.*
@@ -38,7 +40,12 @@ fun DashboardScreen() {
             
             isLoading = false
         } catch (e: Exception) {
-            error = "Failed to load containers: ${e.message}"
+            // Check if the error is related to the backend server not being available
+            if (e.message?.contains("404") == true || e.message?.contains("Failed to fetch") == true) {
+                error = "Backend server not available. This is expected when running only the frontend in development mode."
+            } else {
+                error = "Failed to load containers: ${e.message}"
+            }
             isLoading = false
         }
     }
@@ -49,18 +56,29 @@ fun DashboardScreen() {
         }
     }) {
         if (error != null) {
-            ErrorMessage(error!!) {
-                error = null
-                // Retry loading
-                kotlinx.coroutines.MainScope().launch {
-                    try {
-                        isLoading = true
-                        val containers = apiClient.getContainers(true)
-                        AppStateManager.updateContainers(containers)
-                        isLoading = false
-                    } catch (e: Exception) {
-                        error = "Failed to load containers: ${e.message}"
-                        isLoading = false
+            // Special handling for backend not available error
+            if (error!!.contains("Backend server not available")) {
+                InfoMessage(error!!, "This is normal in development mode") {
+                    error = null
+                }
+            } else {
+                ErrorMessage(error!!) {
+                    error = null
+                    // Retry loading
+                    kotlinx.coroutines.MainScope().launch {
+                        try {
+                            isLoading = true
+                            val containers = apiClient.getContainers(true)
+                            AppStateManager.updateContainers(containers)
+                            isLoading = false
+                        } catch (e: Exception) {
+                            if (e.message?.contains("404") == true || e.message?.contains("Failed to fetch") == true) {
+                                error = "Backend server not available. This is expected when running only the frontend in development mode."
+                            } else {
+                                error = "Failed to load containers: ${e.message}"
+                            }
+                            isLoading = false
+                        }
                     }
                 }
             }

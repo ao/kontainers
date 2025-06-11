@@ -14,6 +14,8 @@ import io.kontainers.state.AppStateManager
 import io.kontainers.ui.components.ContainerDetail
 import io.kontainers.ui.components.ContainerList
 import io.kontainers.ui.util.*
+import io.kontainers.ui.util.ErrorMessage
+import io.kontainers.ui.util.InfoMessage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.web.css.*
@@ -63,10 +65,17 @@ fun ContainersScreen() {
         }
     }) {
         if (error != null) {
-            ErrorMessage(error!!) {
-                error = null
-                kotlinx.coroutines.MainScope().launch {
-                    loadContainers(apiClient)
+            // Special handling for backend not available error
+            if (error!!.contains("Backend server not available")) {
+                InfoMessage(error!!, "This is normal in development mode") {
+                    error = null
+                }
+            } else {
+                ErrorMessage(error!!) {
+                    error = null
+                    kotlinx.coroutines.MainScope().launch {
+                        loadContainers(apiClient)
+                    }
                 }
             }
         }
@@ -124,7 +133,12 @@ private suspend fun loadContainers(apiClient: KontainersApiClient) {
         
         AppStateManager.setLoading(false)
     } catch (e: Exception) {
-        AppStateManager.setError("Failed to load containers: ${e.message}")
+        // Check if the error is related to the backend server not being available
+        if (e.message?.contains("404") == true || e.message?.contains("Failed to fetch") == true) {
+            AppStateManager.setError("Backend server not available. This is expected when running only the frontend in development mode.")
+        } else {
+            AppStateManager.setError("Failed to load containers: ${e.message}")
+        }
         AppStateManager.setLoading(false)
     }
 }
@@ -215,36 +229,4 @@ fun LoadingIndicator() {
 /**
  * Error message component.
  */
-@Composable
-fun ErrorMessage(message: String, onRetry: () -> Unit) {
-    Div({
-        style {
-            backgroundColor(Color("#ffebee"))
-            color(Color("#c62828"))
-            padding(16.px)
-            borderRadius(4.px)
-            marginBottom(16.px)
-            display(DisplayStyle.Flex)
-            flexDirection(FlexDirection.Column)
-            gap(8.px)
-        }
-    }) {
-        Div {
-            Text(message)
-        }
-        Button({
-            style {
-                padding(8.px, 16.px)
-                backgroundColor(Color("#c62828"))
-                color(Color.white)
-                border("0", "none", "transparent")
-                borderRadius(4.px)
-                cursor("pointer")
-                alignSelf(AlignSelf.FlexStart)
-            }
-            onClick { onRetry() }
-        }) {
-            Text("Retry")
-        }
-    }
-}
+// ErrorMessage component moved to UIComponents.kt
