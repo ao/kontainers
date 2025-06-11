@@ -67,7 +67,7 @@ cd kontainers
 docker-compose up -d
 
 # Access the web interface
-open http://localhost:8080
+open http://localhost:9090
 ```
 
 #### Option 2: Docker Run
@@ -75,12 +75,12 @@ open http://localhost:8080
 # Run Kontainers container
 docker run -d \
   --name kontainers \
-  -p 8080:8080 \
+  -p 9090:9090 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   kontainers/kontainers:latest
 
 # Access the web interface
-open http://localhost:8080
+open http://localhost:9090
 ```
 
 #### Option 3: Development Setup
@@ -93,7 +93,7 @@ cd kontainers
 ./gradlew run
 
 # Access development server
-open http://localhost:3000
+open http://localhost:9090
 ```
 
 ### First Steps
@@ -185,6 +185,41 @@ kontainers/
 3. **Full Stack**: Use `./gradlew run` for complete application
 4. **Testing**: Use `./gradlew test` for all tests
 5. **Docker Build**: Use `./gradlew dockerBuild` for container image
+
+### Configuration
+
+#### Port Configuration
+By default, Kontainers runs on port 9090. You can customize this in several ways:
+
+1. **Environment Variable**:
+   ```bash
+   # Set custom port before running
+   export PORT=8090
+   ./gradlew run
+   ```
+
+2. **Docker Run**:
+   ```bash
+   docker run -d \
+     --name kontainers \
+     -p 8090:9090 \
+     -e PORT=9090 \
+     -v /var/run/docker.sock:/var/run/docker.sock \
+     kontainers/kontainers:latest
+   ```
+
+3. **Docker Compose**:
+   ```yaml
+   services:
+     kontainers:
+       image: kontainers/kontainers:latest
+       ports:
+         - "8090:9090"
+       environment:
+         - PORT=9090
+       volumes:
+         - /var/run/docker.sock:/var/run/docker.sock
+   ```
 
 ## 📚 Usage Guide
 

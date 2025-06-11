@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  kontainers:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kontainers
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+    networks:
+      - kontainers-network
+
+networks:
+  kontainers-network:
+    driver: bridge
