@@ -1,6 +1,10 @@
 package io.kontainers.ui.components
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import io.kontainers.router.HashRouter
+import io.kontainers.state.Screen
 import io.kontainers.ui.util.*
 import org.jetbrains.compose.web.css.*
 import org.jetbrains.compose.web.dom.*
@@ -62,6 +66,9 @@ fun AppHeader() {
  */
 @Composable
 fun Sidebar() {
+    val appState by io.kontainers.state.AppStateManager.state.collectAsState()
+    val currentScreen = appState.currentScreen
+    
     Nav({
         style {
             width(250.px)
@@ -77,10 +84,10 @@ fun Sidebar() {
                 margin(0.px)
             }
         }) {
-            NavItem("Dashboard", "dashboard", true)
-            NavItem("Containers", "containers")
-            NavItem("Proxy Rules", "proxy")
-            NavItem("Settings", "settings")
+            NavItem("Dashboard", "dashboard", currentScreen == Screen.DASHBOARD)
+            NavItem("Containers", "containers", currentScreen == Screen.CONTAINERS)
+            NavItem("Proxy Rules", "proxy", currentScreen == Screen.PROXY)
+            NavItem("Settings", "settings", currentScreen == Screen.SETTINGS)
         }
     }
 }
@@ -95,25 +102,34 @@ fun NavItem(label: String, route: String, active: Boolean = false) {
             marginBottom(8.px)
         }
     }) {
-        A(href = "#/$route") {
-            Div({
-                style {
-                    padding(12.px)
-                    borderRadius(4.px)
-                    if (active) {
-                        backgroundColor(Color("#e3f2fd"))
-                        color(Color("#1976d2"))
-                    } else {
-                        color(Color("#424242"))
-                    }
-                    property("transition", "background-color 0.2s")
-                    hover {
-                        backgroundColor(Color("#e3f2fd"))
-                    }
+        Div({
+            style {
+                padding(12.px)
+                borderRadius(4.px)
+                if (active) {
+                    backgroundColor(Color("#e3f2fd"))
+                    color(Color("#1976d2"))
+                } else {
+                    color(Color("#424242"))
                 }
-            }) {
-                Text(label)
+                property("transition", "background-color 0.2s")
+                hover {
+                    backgroundColor(Color("#e3f2fd"))
+                    cursor("pointer")
+                }
             }
+            onClick {
+                val screen = when (route) {
+                    "dashboard" -> Screen.DASHBOARD
+                    "containers" -> Screen.CONTAINERS
+                    "proxy" -> Screen.PROXY
+                    "settings" -> Screen.SETTINGS
+                    else -> Screen.DASHBOARD
+                }
+                HashRouter.navigateTo(screen)
+            }
+        }) {
+            Text(label)
         }
     }
 }

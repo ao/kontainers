@@ -3,6 +3,7 @@ package io.kontainers
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import io.kontainers.router.HashRouter
 import io.kontainers.state.AppStateManager
 import io.kontainers.state.Screen
 import io.kontainers.ui.components.AppLayout
@@ -21,6 +22,9 @@ import org.jetbrains.compose.web.css.*
  * Main entry point for the frontend application.
  */
 fun main() {
+    // Initialize the hash router
+    HashRouter.init()
+    
     renderComposable(rootElementId = "root") {
         App()
     }
