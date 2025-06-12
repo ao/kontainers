@@ -25,6 +25,9 @@ fun ContainerList(
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var selectedState by remember { mutableStateOf<ContainerState?>(null) }
+    var selectedContainers by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showBulkActionConfirmation by remember { mutableStateOf(false) }
+    var bulkAction by remember { mutableStateOf<BulkAction?>(null) }
     
     // Filter containers based on search query and selected state
     val filteredContainers = containers.filter { container ->
@@ -33,6 +36,43 @@ fun ContainerList(
             container.image.contains(searchQuery, ignoreCase = true)
         val matchesState = selectedState == null || container.state == selectedState
         matchesSearch && matchesState
+    }
+    
+    // Toggle container selection
+    fun toggleContainerSelection(containerId: String) {
+        selectedContainers = if (selectedContainers.contains(containerId)) {
+            selectedContainers - containerId
+        } else {
+            selectedContainers + containerId
+        }
+    }
+    
+    // Toggle all containers selection
+    fun toggleAllContainers() {
+        selectedContainers = if (selectedContainers.size == filteredContainers.size) {
+            emptySet()
+        } else {
+            filteredContainers.map { it.id }.toSet()
+        }
+    }
+    
+    // Execute bulk action
+    fun executeBulkAction() {
+        val selectedContainersList = filteredContainers.filter { selectedContainers.contains(it.id) }
+        when (bulkAction) {
+            BulkAction.START -> selectedContainersList.forEach { onStartClick(it) }
+            BulkAction.STOP -> selectedContainersList.forEach { onStopClick(it) }
+            BulkAction.RESTART -> selectedContainersList.forEach { onRestartClick(it) }
+            null -> {}
+        }
+        showBulkActionConfirmation = false
+        bulkAction = null
+    }
+    
+    // Show confirmation dialog for bulk action
+    fun confirmBulkAction(action: BulkAction) {
+        bulkAction = action
+        showBulkActionConfirmation = true
     }
     
     if (containers.isEmpty()) {
@@ -108,11 +148,92 @@ fun ContainerList(
                 }
             }
             
+            // Bulk action buttons (only visible when containers are selected)
+            if (selectedContainers.isNotEmpty()) {
+                Div({
+                    style {
+                        display(DisplayStyle.Flex)
+                        gap(8.px)
+                        alignItems(AlignItems.Center)
+                        marginTop(16.px)
+                        padding(8.px)
+                        backgroundColor(Color("#e3f2fd"))
+                        borderRadius(4.px)
+                    }
+                }) {
+                    Text("${selectedContainers.size} containers selected: ")
+                    
+                    // Bulk action buttons
+                    Button({
+                        style {
+                            padding(6.px, 12.px)
+                            borderRadius(4.px)
+                            border("0", "none", "transparent")
+                            backgroundColor(Color("#4caf50"))
+                            color(Color.white)
+                            cursor("pointer")
+                            fontSize(14.px)
+                        }
+                        onClick { confirmBulkAction(BulkAction.START) }
+                    }) {
+                        Text("Start All")
+                    }
+                    
+                    Button({
+                        style {
+                            padding(6.px, 12.px)
+                            borderRadius(4.px)
+                            border("0", "none", "transparent")
+                            backgroundColor(Color("#f44336"))
+                            color(Color.white)
+                            cursor("pointer")
+                            fontSize(14.px)
+                        }
+                        onClick { confirmBulkAction(BulkAction.STOP) }
+                    }) {
+                        Text("Stop All")
+                    }
+                    
+                    Button({
+                        style {
+                            padding(6.px, 12.px)
+                            borderRadius(4.px)
+                            border("0", "none", "transparent")
+                            backgroundColor(Color("#2196f3"))
+                            color(Color.white)
+                            cursor("pointer")
+                            fontSize(14.px)
+                        }
+                        onClick { confirmBulkAction(BulkAction.RESTART) }
+                    }) {
+                        Text("Restart All")
+                    }
+                    
+                    // Clear selection button
+                    Button({
+                        style {
+                            padding(6.px, 12.px)
+                            borderRadius(4.px)
+                            border("0", "none", "transparent")
+                            backgroundColor(Color("#9e9e9e"))
+                            color(Color.white)
+                            cursor("pointer")
+                            fontSize(14.px)
+                            marginLeft(8.px)
+                        }
+                        onClick { selectedContainers = emptySet() }
+                    }) {
+                        Text("Clear Selection")
+                    }
+                }
+            }
+            
             // Results count
             Div({
                 style {
                     fontSize(14.px)
                     color(Color("#757575"))
+                    marginTop(8.px)
                 }
             }) {
                 Text("Showing ${filteredContainers.size} of ${containers.size} containers")
@@ -129,13 +250,33 @@ fun ContainerList(
             Div({
                 style {
                     display(DisplayStyle.Grid)
-                    gridTemplateColumns("2fr 1fr 1fr 1fr 1fr 1fr")
+                    gridTemplateColumns("auto 2fr 1fr 1fr 1fr 1fr 1fr")
                     padding(12.px)
                     backgroundColor(Color("#f5f5f5"))
                     borderRadius(4.px)
                     fontWeight("bold")
+                    alignItems(AlignItems.Center)
                 }
             }) {
+                // Checkbox for selecting all containers
+                Div({
+                    style {
+                        display(DisplayStyle.Flex)
+                        alignItems(AlignItems.Center)
+                        justifyContent(JustifyContent.Center)
+                    }
+                }) {
+                    Input(InputType.Checkbox) {
+                        style {
+                            cursor("pointer")
+                            width(18.px)
+                            height(18.px)
+                        }
+                        checked(selectedContainers.size == filteredContainers.size && filteredContainers.isNotEmpty())
+                        onChange { toggleAllContainers() }
+                    }
+                }
+                
                 Div { Text("Name") }
                 Div { Text("Image") }
                 Div { Text("Status") }
@@ -151,20 +292,148 @@ fun ContainerList(
                         padding(24.px)
                         textAlign("center")
                         color(Color("#757575"))
-                        gridColumn("1 / span 6")
+                        gridColumn("1 / span 7")
                     }
                 }) {
                     Text("No containers match your search criteria")
                 }
             } else {
                 filteredContainers.forEach { container ->
-                ContainerRow(
-                    container = container,
-                    onClick = { onContainerClick(container) },
-                    onStartClick = { onStartClick(container) },
-                    onStopClick = { onStopClick(container) },
-                    onRestartClick = { onRestartClick(container) }
-                )
+                    ContainerRow(
+                        container = container,
+                        isSelected = selectedContainers.contains(container.id),
+                        onToggleSelect = { toggleContainerSelection(container.id) },
+                        onClick = { onContainerClick(container) },
+                        onStartClick = { onStartClick(container) },
+                        onStopClick = { onStopClick(container) },
+                        onRestartClick = { onRestartClick(container) }
+                    )
+                }
+            }
+        }
+        
+        // Confirmation dialog for bulk actions
+        if (showBulkActionConfirmation && bulkAction != null) {
+            BulkActionConfirmationDialog(
+                action = bulkAction!!,
+                containerCount = selectedContainers.size,
+                onConfirm = { executeBulkAction() },
+                onCancel = {
+                    showBulkActionConfirmation = false
+                    bulkAction = null
+                }
+            )
+        }
+    }
+}
+
+/**
+ * Enum representing bulk actions.
+ */
+enum class BulkAction {
+    START,
+    STOP,
+    RESTART
+}
+
+/**
+ * Bulk action confirmation dialog component.
+ */
+@Composable
+fun BulkActionConfirmationDialog(
+    action: BulkAction,
+    containerCount: Int,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit
+) {
+    // Modal overlay
+    Div({
+        style {
+            position(Position.Fixed)
+            top(0.px)
+            left(0.px)
+            right(0.px)
+            bottom(0.px)
+            backgroundColor(Color("rgba(0, 0, 0, 0.5)"))
+            display(DisplayStyle.Flex)
+            justifyContent(JustifyContent.Center)
+            alignItems(AlignItems.Center)
+            zIndex(1000)
+        }
+    }) {
+        // Modal dialog
+        Div({
+            style {
+                backgroundColor(Color.white)
+                borderRadius(8.px)
+                padding(24.px)
+                width(400.px)
+                maxWidth(90.percent)
+            }
+            onClick { it.stopPropagation() }
+        }) {
+            H3({
+                style {
+                    margin(0.px)
+                    marginBottom(16.px)
+                }
+            }) {
+                Text("Confirm Bulk Action")
+            }
+            
+            P({
+                style {
+                    marginBottom(24.px)
+                }
+            }) {
+                val actionText = when (action) {
+                    BulkAction.START -> "start"
+                    BulkAction.STOP -> "stop"
+                    BulkAction.RESTART -> "restart"
+                }
+                
+                Text("Are you sure you want to $actionText $containerCount containers?")
+            }
+            
+            // Action buttons
+            Div({
+                style {
+                    display(DisplayStyle.Flex)
+                    justifyContent(JustifyContent.FlexEnd)
+                    gap(16.px)
+                }
+            }) {
+                Button({
+                    style {
+                        padding(8.px, 16.px)
+                        backgroundColor(Color("#f5f5f5"))
+                        border("1px", "solid", "#ccc")
+                        borderRadius(4.px)
+                        cursor("pointer")
+                    }
+                    onClick { onCancel() }
+                }) {
+                    Text("Cancel")
+                }
+                
+                Button({
+                    style {
+                        padding(8.px, 16.px)
+                        backgroundColor(
+                            when (action) {
+                                BulkAction.START -> Color("#4caf50")
+                                BulkAction.STOP -> Color("#f44336")
+                                BulkAction.RESTART -> Color("#2196f3")
+                            }
+                        )
+                        color(Color.white)
+                        border("0", "none", "transparent")
+                        borderRadius(4.px)
+                        cursor("pointer")
+                    }
+                    onClick { onConfirm() }
+                }) {
+                    Text("Confirm")
                 }
             }
         }
@@ -197,88 +466,7 @@ fun FilterButton(
     }
 }
 
-/**
- * Container row component.
- */
-@Composable
-fun ContainerRow(
-    container: Container,
-    onClick: () -> Unit,
-    onStartClick: () -> Unit,
-    onStopClick: () -> Unit,
-    onRestartClick: () -> Unit
-) {
-    Div({
-        style {
-            display(DisplayStyle.Grid)
-            gridTemplateColumns("2fr 1fr 1fr 1fr 1fr 1fr")
-            padding(12.px)
-            borderBottom("1px", "solid", "#e0e0e0")
-            cursor("pointer")
-            hover {
-                backgroundColor(Color("#f5f5f5"))
-            }
-        }
-        onClick { onClick() }
-    }) {
-        // Name
-        Div({
-            style {
-                fontWeight("500")
-            }
-        }) {
-            Text(container.name)
-        }
-        
-        // Image
-        Div {
-            Text(container.image.split(":").first())
-        }
-        
-        // Status
-        Div {
-            ContainerStatusBadge(container.state)
-        }
-        
-        // Created
-        Div {
-            Text(formatTimestamp(container.created))
-        }
-        
-        // Ports
-        Div {
-            if (container.ports.isNotEmpty()) {
-                Text(container.ports.joinToString(", ") { 
-                    "${it.publicPort ?: "-"}:${it.privatePort}" 
-                })
-            } else {
-                Text("-")
-            }
-        }
-        
-        // Actions
-        Div({
-            style {
-                display(DisplayStyle.Flex)
-                gap(8.px)
-            }
-        }) {
-            when (container.state) {
-                ContainerState.RUNNING -> {
-                    ActionButton("Stop", "stop", onStopClick)
-                    ActionButton("Restart", "restart", onRestartClick)
-                }
-                ContainerState.STOPPED, ContainerState.CREATED, ContainerState.DEAD -> {
-                    ActionButton("Start", "play", onStartClick)
-                }
-                else -> {
-                    // For other states, show a disabled button
-                    ActionButton("Wait", "hourglass", {}, disabled = true)
-                }
-            }
-        }
-    }
-}
+// ContainerRow implementation moved to ContainerRow.kt
 
 /**
  * Container status badge component.
@@ -373,11 +561,4 @@ fun EmptyStateContainer(title: String, message: String) {
     }
 }
 
-/**
- * Format a Unix timestamp to a human-readable date.
- */
-fun formatTimestamp(timestamp: Long): String {
-    // In a real implementation, this would use proper date formatting
-    // For now, just return a simplified string
-    return "Timestamp: $timestamp"
-}
+// formatTimestamp function moved to ContainerRow.kt

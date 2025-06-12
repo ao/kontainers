@@ -29,7 +29,9 @@ object HashRouter {
             "dashboard", "" -> Screen.DASHBOARD
             "containers" -> Screen.CONTAINERS
             "proxy" -> Screen.PROXY
+            "proxy_analytics" -> Screen.PROXY_ANALYTICS
             "settings" -> Screen.SETTINGS
+            "metrics" -> Screen.METRICS
             else -> Screen.DASHBOARD
         }
         
@@ -44,7 +46,9 @@ object HashRouter {
             Screen.DASHBOARD -> "dashboard"
             Screen.CONTAINERS -> "containers"
             Screen.PROXY -> "proxy"
+            Screen.PROXY_ANALYTICS -> "proxy_analytics"
             Screen.SETTINGS -> "settings"
+            Screen.METRICS -> "metrics"
         }
         
         window.location.hash = "#/$hash"

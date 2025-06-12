@@ -1,10 +1,14 @@
 package io.kontainers
 
+import io.kontainers.api.configurationRoutes
 import io.kontainers.api.containerRoutes
+import io.kontainers.api.healthRoutes
 import io.kontainers.api.proxyRoutes
 import io.kontainers.docker.ContainerService
 import io.kontainers.docker.DockerClientConfig
 import io.kontainers.proxy.ProxyService
+import io.kontainers.system.ConfigurationService
+import io.kontainers.system.HealthMonitoringService
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
@@ -26,6 +30,9 @@ fun main() {
     // Get port from environment variable or use default (9090)
     val port = System.getenv("PORT")?.toIntOrNull() ?: 9090
     
+    // Set development mode
+    System.setProperty("dev.mode", "true")
+    
     println("Starting Kontainers server on port $port")
     embeddedServer(Netty, port = port, host = "0.0.0.0") {
         module()
@@ -39,7 +46,12 @@ fun Application.module() {
     // Create Docker client and services
     val dockerClient = DockerClientConfig.create()
     val containerService = ContainerService(dockerClient)
-    val proxyService = ProxyService("nginx.conf", "conf.d")
+    val proxyService = ProxyService() // Use default paths that now respect dev.mode
+    val configurationService = ConfigurationService(proxyService, containerService)
+    val healthMonitoringService = HealthMonitoringService(containerService, proxyService)
+    
+    // Start health monitoring service
+    healthMonitoringService.start()
     
     // Install plugins
     install(ContentNegotiation) {
@@ -67,16 +79,23 @@ fun Application.module() {
     }
     
     // Configure routing
-    configureRouting(containerService, proxyService)
+    configureRouting(containerService, proxyService, configurationService, healthMonitoringService)
 }
 
 /**
  * Configure application routing.
  */
-fun Application.configureRouting(containerService: ContainerService, proxyService: ProxyService) {
+fun Application.configureRouting(
+    containerService: ContainerService,
+    proxyService: ProxyService,
+    configurationService: ConfigurationService,
+    healthMonitoringService: HealthMonitoringService
+) {
     routing {
         containerRoutes(containerService)
         proxyRoutes(proxyService)
+        configurationRoutes(configurationService)
+        healthRoutes(healthMonitoringService)
         
         // Serve files from the root resources directory (for kontainers.js)
         staticResources("/", "")

@@ -1,8 +1,16 @@
 package io.kontainers.ui.components
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import io.kontainers.model.ProxyRule
 import io.kontainers.ui.util.*
+import kotlinx.browser.window
+import kotlinx.coroutines.delay
+import org.jetbrains.compose.web.attributes.InputType
 import org.jetbrains.compose.web.css.*
 import org.jetbrains.compose.web.dom.*
 
@@ -16,8 +24,89 @@ fun ProxyRuleList(
     onDeleteClick: (ProxyRule) -> Unit,
     onToggleClick: (ProxyRule, Boolean) -> Unit
 ) {
-    if (rules.isEmpty()) {
-        EmptyStateProxy("No proxy rules found", "Create a new rule to get started")
+    var selectedRules by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showBulkActionConfirmation by remember { mutableStateOf(false) }
+    var bulkAction by remember { mutableStateOf<ProxyBulkAction?>(null) }
+    var visibleRules by remember { mutableStateOf<List<ProxyRule>>(emptyList()) }
+    var currentPage by remember { mutableStateOf(1) }
+    var isLoading by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    
+    // Pagination settings
+    val pageSize = 10
+    val totalPages = (rules.size + pageSize - 1) / pageSize
+    
+    // Filter rules based on search query
+    val filteredRules = remember(rules, searchQuery) {
+        if (searchQuery.isBlank()) {
+            rules
+        } else {
+            rules.filter { rule ->
+                rule.name.contains(searchQuery, ignoreCase = true) ||
+                rule.sourceHost.contains(searchQuery, ignoreCase = true) ||
+                rule.targetContainer.contains(searchQuery, ignoreCase = true)
+            }
+        }
+    }
+    
+    // Update visible rules when page changes or filtered rules change
+    LaunchedEffect(currentPage, filteredRules) {
+        isLoading = true
+        
+        // Simulate network delay for demonstration purposes
+        delay(300)
+        
+        val startIndex = (currentPage - 1) * pageSize
+        visibleRules = filteredRules
+            .drop(startIndex)
+            .take(pageSize)
+        
+        isLoading = false
+    }
+    
+    // Toggle rule selection
+    fun toggleRuleSelection(ruleId: String) {
+        selectedRules = if (selectedRules.contains(ruleId)) {
+            selectedRules - ruleId
+        } else {
+            selectedRules + ruleId
+        }
+    }
+    
+    // Toggle all rules selection
+    fun toggleAllRules() {
+        selectedRules = if (selectedRules.size == rules.size) {
+            emptySet()
+        } else {
+            rules.map { it.id }.toSet()
+        }
+    }
+    
+    // Execute bulk action
+    fun executeBulkAction() {
+        val selectedRulesList = rules.filter { selectedRules.contains(it.id) }
+        when (bulkAction) {
+            ProxyBulkAction.ENABLE -> selectedRulesList.forEach { onToggleClick(it, true) }
+            ProxyBulkAction.DISABLE -> selectedRulesList.forEach { onToggleClick(it, false) }
+            ProxyBulkAction.DELETE -> selectedRulesList.forEach { onDeleteClick(it) }
+            null -> {}
+        }
+        showBulkActionConfirmation = false
+        bulkAction = null
+    }
+    
+    // Show confirmation dialog for bulk action
+    fun confirmBulkAction(action: ProxyBulkAction) {
+        bulkAction = action
+        showBulkActionConfirmation = true
+    }
+    
+    if (filteredRules.isEmpty()) {
+        if (searchQuery.isNotBlank()) {
+            EmptyStateProxy("No matching rules found", "Try a different search term")
+        } else {
+            EmptyStateProxy("No proxy rules found", "Create a new rule to get started")
+        }
     } else {
         Div({
             style {
@@ -26,17 +115,137 @@ fun ProxyRuleList(
                 gap(16.px)
             }
         }) {
+            // Search bar
+            Div({
+                style {
+                    marginBottom(16.px)
+                }
+            }) {
+                Input(InputType.Text) {
+                    style {
+                        padding(8.px)
+                        width(100.percent)
+                        maxWidth(400.px)
+                        borderRadius(4.px)
+                        border(1.px, LineStyle.Solid, Color("#ccc"))
+                    }
+                    placeholder("Search rules...")
+                    value(searchQuery)
+                    onInput { searchQuery = it.value }
+                }
+            }
+            
+            // Bulk action buttons (only visible when rules are selected)
+            if (selectedRules.isNotEmpty()) {
+                Div({
+                    style {
+                        display(DisplayStyle.Flex)
+                        gap(8.px)
+                        alignItems(AlignItems.Center)
+                        marginBottom(16.px)
+                        padding(8.px)
+                        backgroundColor(Color("#e3f2fd"))
+                        borderRadius(4.px)
+                    }
+                }) {
+                    Text("${selectedRules.size} rules selected: ")
+                    
+                    // Bulk action buttons
+                    Button({
+                        style {
+                            padding(6.px, 12.px)
+                            borderRadius(4.px)
+                            border("0", "none", "transparent")
+                            backgroundColor(Color("#4caf50"))
+                            color(Color.white)
+                            cursor("pointer")
+                            fontSize(14.px)
+                        }
+                        onClick { confirmBulkAction(ProxyBulkAction.ENABLE) }
+                    }) {
+                        Text("Enable All")
+                    }
+                    
+                    Button({
+                        style {
+                            padding(6.px, 12.px)
+                            borderRadius(4.px)
+                            border("0", "none", "transparent")
+                            backgroundColor(Color("#ff9800"))
+                            color(Color.white)
+                            cursor("pointer")
+                            fontSize(14.px)
+                        }
+                        onClick { confirmBulkAction(ProxyBulkAction.DISABLE) }
+                    }) {
+                        Text("Disable All")
+                    }
+                    
+                    Button({
+                        style {
+                            padding(6.px, 12.px)
+                            borderRadius(4.px)
+                            border("0", "none", "transparent")
+                            backgroundColor(Color("#f44336"))
+                            color(Color.white)
+                            cursor("pointer")
+                            fontSize(14.px)
+                        }
+                        onClick { confirmBulkAction(ProxyBulkAction.DELETE) }
+                    }) {
+                        Text("Delete All")
+                    }
+                    
+                    // Clear selection button
+                    Button({
+                        style {
+                            padding(6.px, 12.px)
+                            borderRadius(4.px)
+                            border("0", "none", "transparent")
+                            backgroundColor(Color("#9e9e9e"))
+                            color(Color.white)
+                            cursor("pointer")
+                            fontSize(14.px)
+                            marginLeft(8.px)
+                        }
+                        onClick { selectedRules = emptySet() }
+                    }) {
+                        Text("Clear Selection")
+                    }
+                }
+            }
+            
             // Table header
             Div({
                 style {
                     display(DisplayStyle.Grid)
-                    gridTemplateColumns("2fr 1fr 1fr 1fr 1fr 1fr")
+                    gridTemplateColumns("auto 2fr 1fr 1fr 1fr 1fr 1fr")
                     padding(12.px)
                     backgroundColor(Color("#f5f5f5"))
                     borderRadius(4.px)
                     fontWeight("bold")
+                    alignItems(AlignItems.Center)
                 }
             }) {
+                // Checkbox for selecting all rules
+                Div({
+                    style {
+                        display(DisplayStyle.Flex)
+                        alignItems(AlignItems.Center)
+                        justifyContent(JustifyContent.Center)
+                    }
+                }) {
+                    Input(InputType.Checkbox) {
+                        style {
+                            cursor("pointer")
+                            width(18.px)
+                            height(18.px)
+                        }
+                        checked(selectedRules.size == rules.size && rules.isNotEmpty())
+                        onChange { toggleAllRules() }
+                    }
+                }
+                
                 Div { Text("Name") }
                 Div { Text("Source") }
                 Div { Text("Target") }
@@ -45,109 +254,214 @@ fun ProxyRuleList(
                 Div { Text("Actions") }
             }
             
-            // Rule rows
-            rules.forEach { rule ->
-                ProxyRuleRow(
-                    rule = rule,
-                    onEditClick = { onEditClick(rule) },
-                    onDeleteClick = { onDeleteClick(rule) },
-                    onToggleClick = { enabled -> onToggleClick(rule, enabled) }
-                )
+            // Loading indicator
+            if (isLoading) {
+                Div({
+                    style {
+                        padding(16.px)
+                        textAlign("center")
+                    }
+                }) {
+                    LoadingIndicator()
+                }
+            } else {
+                // Rule rows
+                visibleRules.forEach { rule ->
+                    ProxyRuleRow(
+                        rule = rule,
+                        isSelected = selectedRules.contains(rule.id),
+                        onToggleSelect = { toggleRuleSelection(rule.id) },
+                        onEditClick = { onEditClick(rule) },
+                        onDeleteClick = { onDeleteClick(rule) },
+                        onToggleClick = { enabled -> onToggleClick(rule, enabled) }
+                    )
+                }
+                
+                // Pagination controls
+                if (totalPages > 1) {
+                    Div({
+                        style {
+                            display(DisplayStyle.Flex)
+                            justifyContent(JustifyContent.Center)
+                            alignItems(AlignItems.Center)
+                            gap(8.px)
+                            marginTop(16.px)
+                        }
+                    }) {
+                        // Previous page button
+                        Button({
+                            style {
+                                padding(6.px, 12.px)
+                                borderRadius(4.px)
+                                border(1.px, LineStyle.Solid, Color("#ccc"))
+                                backgroundColor(Color.white)
+                                cursor(if (currentPage > 1) "pointer" else "not-allowed")
+                                opacity(if (currentPage > 1) 1 else 0.5)
+                            }
+                            disabled(currentPage <= 1)
+                            onClick { if (currentPage > 1) currentPage-- }
+                        }) {
+                            Text("Previous")
+                        }
+                        
+                        // Page indicator
+                        Span({
+                            style {
+                                padding(6.px, 12.px)
+                            }
+                        }) {
+                            Text("Page $currentPage of $totalPages")
+                        }
+                        
+                        // Next page button
+                        Button({
+                            style {
+                                padding(6.px, 12.px)
+                                borderRadius(4.px)
+                                border(1.px, LineStyle.Solid, Color("#ccc"))
+                                backgroundColor(Color.white)
+                                cursor(if (currentPage < totalPages) "pointer" else "not-allowed")
+                                opacity(if (currentPage < totalPages) 1 else 0.5)
+                            }
+                            disabled(currentPage >= totalPages)
+                            onClick { if (currentPage < totalPages) currentPage++ }
+                        }) {
+                            Text("Next")
+                        }
+                    }
+                }
             }
+        }
+        
+        // Confirmation dialog for bulk actions
+        if (showBulkActionConfirmation && bulkAction != null) {
+            ProxyBulkActionConfirmationDialog(
+                action = bulkAction!!,
+                ruleCount = selectedRules.size,
+                onConfirm = { executeBulkAction() },
+                onCancel = {
+                    showBulkActionConfirmation = false
+                    bulkAction = null
+                }
+            )
         }
     }
 }
 
 /**
- * Component for displaying a single proxy rule row.
+ * Enum representing bulk actions for proxy rules.
+ */
+enum class ProxyBulkAction {
+    ENABLE,
+    DISABLE,
+    DELETE
+}
+
+/**
+ * Bulk action confirmation dialog component.
  */
 @Composable
-fun ProxyRuleRow(
-    rule: ProxyRule,
-    onEditClick: () -> Unit,
-    onDeleteClick: () -> Unit,
-    onToggleClick: (Boolean) -> Unit
+fun ProxyBulkActionConfirmationDialog(
+    action: ProxyBulkAction,
+    ruleCount: Int,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit
 ) {
+    // Modal overlay
     Div({
         style {
-            display(DisplayStyle.Grid)
-            gridTemplateColumns("2fr 1fr 1fr 1fr 1fr 1fr")
-            padding(12.px)
-            borderBottom("1px", "solid", "#e0e0e0")
+            position(Position.Fixed)
+            top(0.px)
+            left(0.px)
+            right(0.px)
+            bottom(0.px)
+            backgroundColor(Color("rgba(0, 0, 0, 0.5)"))
+            display(DisplayStyle.Flex)
+            justifyContent(JustifyContent.Center)
+            alignItems(AlignItems.Center)
+            zIndex(1000)
         }
     }) {
-        // Name
+        // Modal dialog
         Div({
             style {
-                fontWeight("500")
+                backgroundColor(Color.white)
+                borderRadius(8.px)
+                padding(24.px)
+                width(400.px)
+                maxWidth(90.percent)
             }
+            onClick { it.stopPropagation() }
         }) {
-            Text(rule.name)
-        }
-        
-        // Source
-        Div {
-            Text("${rule.sourceHost}${rule.sourcePath}")
-        }
-        
-        // Target
-        Div {
-            Text("${rule.targetContainer}:${rule.targetPort}")
-        }
-        
-        // Protocol
-        Div {
-            ProxyProtocolBadge(rule.protocol.name, rule.sslEnabled)
-        }
-        
-        // Status
-        Div {
-            StatusToggle(rule.enabled) { enabled ->
-                onToggleClick(enabled)
-            }
-        }
-        
-        // Actions
-        Div({
-            style {
-                display(DisplayStyle.Flex)
-                gap(8.px)
-            }
-        }) {
-            // Edit button
-            Button({
+            H3({
                 style {
-                    padding(6.px, 12.px)
-                    borderRadius(4.px)
-                    border("0", "none", "transparent")
-                    backgroundColor(Color("#1976d2"))
-                    color(Color.white)
-                    cursor("pointer")
-                    fontSize(14.px)
+                    margin(0.px)
+                    marginBottom(16.px)
                 }
-                onClick { onEditClick() }
             }) {
-                Text("Edit")
+                Text("Confirm Bulk Action")
             }
             
-            // Delete button
-            Button({
+            P({
                 style {
-                    padding(6.px, 12.px)
-                    borderRadius(4.px)
-                    border("0", "none", "transparent")
-                    backgroundColor(Color("#f44336"))
-                    color(Color.white)
-                    cursor("pointer")
-                    fontSize(14.px)
+                    marginBottom(24.px)
                 }
-                onClick { onDeleteClick() }
             }) {
-                Text("Delete")
+                val actionText = when (action) {
+                    ProxyBulkAction.ENABLE -> "enable"
+                    ProxyBulkAction.DISABLE -> "disable"
+                    ProxyBulkAction.DELETE -> "delete"
+                }
+                
+                Text("Are you sure you want to $actionText $ruleCount proxy rules?")
+            }
+            
+            // Action buttons
+            Div({
+                style {
+                    display(DisplayStyle.Flex)
+                    justifyContent(JustifyContent.FlexEnd)
+                    gap(16.px)
+                }
+            }) {
+                Button({
+                    style {
+                        padding(8.px, 16.px)
+                        backgroundColor(Color("#f5f5f5"))
+                        border("1px", "solid", "#ccc")
+                        borderRadius(4.px)
+                        cursor("pointer")
+                    }
+                    onClick { onCancel() }
+                }) {
+                    Text("Cancel")
+                }
+                
+                Button({
+                    style {
+                        padding(8.px, 16.px)
+                        backgroundColor(
+                            when (action) {
+                                ProxyBulkAction.ENABLE -> Color("#4caf50")
+                                ProxyBulkAction.DISABLE -> Color("#ff9800")
+                                ProxyBulkAction.DELETE -> Color("#f44336")
+                            }
+                        )
+                        color(Color.white)
+                        border("0", "none", "transparent")
+                        borderRadius(4.px)
+                        cursor("pointer")
+                    }
+                    onClick { onConfirm() }
+                }) {
+                    Text("Confirm")
+                }
             }
         }
     }
 }
+
+// ProxyRuleRow implementation moved to ProxyRuleRow.kt
 
 /**
  * Component for displaying a proxy protocol badge.

@@ -1,7 +1,6 @@
 package io.kontainers.state
 
-import io.kontainers.model.Container
-import io.kontainers.model.ProxyRule
+import io.kontainers.model.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -14,7 +13,9 @@ enum class Screen {
     DASHBOARD,
     CONTAINERS,
     PROXY,
-    SETTINGS
+    SETTINGS,
+    METRICS,
+    PROXY_ANALYTICS
 }
 
 /**
@@ -25,6 +26,15 @@ data class AppState(
     val containers: List<Container> = emptyList(),
     val proxyRules: List<ProxyRule> = emptyList(),
     val selectedContainerId: String? = null,
+    val selectedProxyRuleId: String? = null,
+    val proxyTrafficData: Map<String, List<ProxyTrafficData>> = emptyMap(),
+    val proxyTrafficSummaries: Map<String, ProxyTrafficSummary> = emptyMap(),
+    val proxyErrors: Map<String, List<ProxyError>> = emptyMap(),
+    val proxyErrorSummaries: Map<String, ProxyErrorSummary> = emptyMap(),
+    val requestLogs: Map<String, List<RequestResponseLog>> = emptyMap(),
+    val alertConfigs: List<ErrorAlertConfig> = emptyList(),
+    val activeAlerts: List<ErrorAlert> = emptyList(),
+    val selectedTimeRange: String = "last_hour",
     val isLoading: Boolean = false,
     val error: String? = null
 )
@@ -98,5 +108,96 @@ object AppStateManager {
      */
     fun reset() {
         _state.value = AppState()
+    }
+    
+    /**
+     * Selects a proxy rule by ID.
+     */
+    fun selectProxyRule(id: String?) {
+        _state.update { it.copy(selectedProxyRuleId = id) }
+    }
+    
+    /**
+     * Gets the currently selected proxy rule.
+     */
+    fun getSelectedProxyRule(): ProxyRule? {
+        val id = state.value.selectedProxyRuleId ?: return null
+        return state.value.proxyRules.find { it.id == id }
+    }
+    
+    /**
+     * Updates the proxy traffic data.
+     */
+    fun updateProxyTrafficData(ruleId: String, data: List<ProxyTrafficData>) {
+        _state.update {
+            val updatedMap = it.proxyTrafficData.toMutableMap()
+            updatedMap[ruleId] = data
+            it.copy(proxyTrafficData = updatedMap)
+        }
+    }
+    
+    /**
+     * Updates the proxy traffic summary.
+     */
+    fun updateProxyTrafficSummary(ruleId: String, summary: ProxyTrafficSummary) {
+        _state.update {
+            val updatedMap = it.proxyTrafficSummaries.toMutableMap()
+            updatedMap[ruleId] = summary
+            it.copy(proxyTrafficSummaries = updatedMap)
+        }
+    }
+    
+    /**
+     * Updates the proxy errors.
+     */
+    fun updateProxyErrors(ruleId: String, errors: List<ProxyError>) {
+        _state.update {
+            val updatedMap = it.proxyErrors.toMutableMap()
+            updatedMap[ruleId] = errors
+            it.copy(proxyErrors = updatedMap)
+        }
+    }
+    
+    /**
+     * Updates the proxy error summary.
+     */
+    fun updateProxyErrorSummary(ruleId: String, summary: ProxyErrorSummary) {
+        _state.update {
+            val updatedMap = it.proxyErrorSummaries.toMutableMap()
+            updatedMap[ruleId] = summary
+            it.copy(proxyErrorSummaries = updatedMap)
+        }
+    }
+    
+    /**
+     * Updates the request logs.
+     */
+    fun updateRequestLogs(ruleId: String, logs: List<RequestResponseLog>) {
+        _state.update {
+            val updatedMap = it.requestLogs.toMutableMap()
+            updatedMap[ruleId] = logs
+            it.copy(requestLogs = updatedMap)
+        }
+    }
+    
+    /**
+     * Updates the alert configurations.
+     */
+    fun updateAlertConfigs(configs: List<ErrorAlertConfig>) {
+        _state.update { it.copy(alertConfigs = configs) }
+    }
+    
+    /**
+     * Updates the active alerts.
+     */
+    fun updateActiveAlerts(alerts: List<ErrorAlert>) {
+        _state.update { it.copy(activeAlerts = alerts) }
+    }
+    
+    /**
+     * Sets the selected time range.
+     */
+    fun setSelectedTimeRange(range: String) {
+        _state.update { it.copy(selectedTimeRange = range) }
     }
 }

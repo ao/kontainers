@@ -1,14 +1,18 @@
 package io.kontainers.api
 
 import io.kontainers.docker.ContainerService
+import io.kontainers.model.ContainerCreationRequest
 import io.ktor.http.*
 import io.ktor.server.application.*
+import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.server.websocket.*
 import io.ktor.websocket.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.isActive
 import kotlinx.serialization.json.Json
 
 /**
@@ -18,9 +22,13 @@ fun Route.containerRoutes(containerService: ContainerService) {
     route("/api/containers") {
         // Get all containers
         get {
-            val all = call.request.queryParameters["all"]?.toBoolean() ?: true
-            val containers = containerService.listContainers(all)
-            call.respond(containers)
+            try {
+                val all = call.request.queryParameters["all"]?.toBoolean() ?: true
+                val containers = containerService.listContainers(all)
+                call.respond(containers)
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, "Failed to get containers: ${e.message}")
+            }
         }
         
         // Get container by ID
@@ -31,7 +39,13 @@ fun Route.containerRoutes(containerService: ContainerService) {
             val container = containers.find { it.id == id || it.name == id }
             
             if (container != null) {
-                call.respond(container)
+                try {
+                    // Get detailed stats for the container
+                    val stats = containerService.getDetailedContainerStats(container.id)
+                    call.respond(mapOf("container" to container, "stats" to stats))
+                } catch (e: Exception) {
+                    call.respond(container)
+                }
             } else {
                 call.respond(HttpStatusCode.NotFound, "Container not found")
             }
@@ -112,6 +126,127 @@ fun Route.containerRoutes(containerService: ContainerService) {
                     // Connection might already be closed
                 }
             }
+        }
+        
+        // Get container statistics
+        get("/{id}/stats") {
+            val id = call.parameters["id"] ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing container ID")
+            val detailed = call.request.queryParameters["detailed"]?.toBoolean() ?: false
+            
+            try {
+                val stats = if (detailed) {
+                    containerService.getDetailedContainerStats(id)
+                } else {
+                    // For backward compatibility, convert detailed stats to basic stats
+                    val detailedStats = containerService.getDetailedContainerStats(id)
+                    io.kontainers.model.ContainerStats(
+                        containerId = detailedStats.containerId,
+                        timestamp = detailedStats.timestamp,
+                        cpuUsage = detailedStats.cpuUsage,
+                        memoryUsage = detailedStats.memoryUsage,
+                        memoryLimit = detailedStats.memoryLimit,
+                        networkRx = detailedStats.networkRx,
+                        networkTx = detailedStats.networkTx,
+                        blockRead = detailedStats.blockRead,
+                        blockWrite = detailedStats.blockWrite
+                    )
+                }
+                call.respond(stats)
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, "Failed to get container statistics: ${e.message}")
+            }
+        }
+        
+        // Get container statistics history
+        get("/{id}/stats/history") {
+            val id = call.parameters["id"] ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing container ID")
+            val limit = call.request.queryParameters["limit"]?.toIntOrNull() ?: 100
+            
+            try {
+                val history = containerService.getContainerStatsHistory(id, limit)
+                call.respond(history)
+            } catch (e: Exception) {
+                call.respond(HttpStatusCode.InternalServerError, "Failed to get container statistics history: ${e.message}")
+            }
+        }
+        
+        // WebSocket endpoint for streaming container statistics
+        webSocket("/{id}/stats/stream") {
+            val id = call.parameters["id"] ?: return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Missing container ID"))
+            val interval = call.parameters["interval"]?.toLongOrNull() ?: 1000L // Default to 1 second
+            val detailed = call.parameters["detailed"]?.toBoolean() ?: true
+            
+            try {
+                while (isActive) {
+                    try {
+                        val stats = containerService.getDetailedContainerStats(id)
+                        val jsonString = if (detailed) {
+                            Json.encodeToString(
+                                io.kontainers.model.DetailedContainerStats.serializer(),
+                                stats
+                            )
+                        } else {
+                            Json.encodeToString(
+                                io.kontainers.model.ContainerStats.serializer(),
+                                io.kontainers.model.ContainerStats(
+                                    containerId = stats.containerId,
+                                    timestamp = stats.timestamp,
+                                    cpuUsage = stats.cpuUsage,
+                                    memoryUsage = stats.memoryUsage,
+                                    memoryLimit = stats.memoryLimit,
+                                    networkRx = stats.networkRx,
+                                    networkTx = stats.networkTx,
+                                    blockRead = stats.blockRead,
+                                    blockWrite = stats.blockWrite
+                                )
+                            )
+                        }
+                        outgoing.send(Frame.Text(jsonString))
+                        delay(interval)
+                    } catch (e: Exception) {
+                        // Log the error but continue streaming
+                        println("Error streaming container stats: ${e.message}")
+                        delay(interval)
+                    }
+                }
+            } catch (e: Exception) {
+                try {
+                    close(CloseReason(CloseReason.Codes.INTERNAL_ERROR, e.message ?: "Unknown error"))
+                } catch (closeEx: Exception) {
+                    // Connection might already be closed
+                }
+            }
+        }
+    }
+    
+    // Create container
+    post {
+        try {
+            val request = call.receive<ContainerCreationRequest>()
+            val result = containerService.createContainer(request)
+            
+            if (result.success) {
+                call.respond(HttpStatusCode.Created, result)
+            } else {
+                call.respond(HttpStatusCode.BadRequest, result)
+            }
+        } catch (e: Exception) {
+            call.respond(
+                HttpStatusCode.InternalServerError,
+                mapOf("success" to false, "message" to "Failed to create container: ${e.message}")
+            )
+        }
+    }
+    
+    // Get detailed stats for a container
+    get("/{id}/detailed-stats") {
+        val id = call.parameters["id"] ?: return@get call.respond(HttpStatusCode.BadRequest, "Missing container ID")
+        
+        try {
+            val stats = containerService.getDetailedContainerStats(id)
+            call.respond(stats)
+        } catch (e: Exception) {
+            call.respond(HttpStatusCode.InternalServerError, "Failed to get detailed container statistics: ${e.message}")
         }
     }
 }

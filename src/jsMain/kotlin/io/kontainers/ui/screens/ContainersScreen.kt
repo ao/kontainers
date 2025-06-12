@@ -11,8 +11,10 @@ import io.kontainers.api.KontainersApiClient
 import io.kontainers.model.Container
 import io.kontainers.model.ContainerState
 import io.kontainers.state.AppStateManager
+import io.kontainers.ui.components.ContainerCreationWizard
 import io.kontainers.ui.components.ContainerDetail
 import io.kontainers.ui.components.ContainerList
+import io.kontainers.ui.components.LoadingIndicator
 import io.kontainers.ui.util.*
 import io.kontainers.ui.util.ErrorMessage
 import io.kontainers.ui.util.InfoMessage
@@ -36,6 +38,9 @@ fun ContainersScreen() {
     var error by remember { mutableStateOf<String?>(null) }
     var containerLogs = remember { MutableStateFlow<List<String>>(emptyList()) }
     val logs by containerLogs.collectAsState()
+    
+    // Wizard state
+    var showWizard by remember { mutableStateOf(false) }
     
     // Load containers on initial render
     LaunchedEffect(Unit) {
@@ -98,8 +103,39 @@ fun ContainersScreen() {
                 }
             )
         } else {
-            H1 { Text("Containers") }
-            P { Text("Manage your Docker containers") }
+            // Show wizard if enabled
+            if (showWizard) {
+                ContainerCreationWizard(onClose = { showWizard = false })
+            }
+            
+            // Header with create button
+            Div({
+                style {
+                    display(DisplayStyle.Flex)
+                    justifyContent(JustifyContent.SpaceBetween)
+                    alignItems(AlignItems.Center)
+                    marginBottom(16.px)
+                }
+            }) {
+                Div {
+                    H1({ style { margin(0.px) } }) { Text("Containers") }
+                    P({ style { margin(0.px) } }) { Text("Manage your Docker containers") }
+                }
+                
+                Button({
+                    style {
+                        padding(8.px, 16.px)
+                        backgroundColor(Color("#2196f3"))
+                        color(Color.white)
+                        border("0", "none", "transparent")
+                        borderRadius(4.px)
+                        cursor("pointer")
+                    }
+                    onClick { showWizard = true }
+                }) {
+                    Text("Create Container")
+                }
+            }
             
             ContainerList(
                 containers = appState.containers,
@@ -209,22 +245,7 @@ private fun restartContainer(apiClient: KontainersApiClient, container: Containe
     }
 }
 
-/**
- * Loading indicator component.
- */
-@Composable
-fun LoadingIndicator() {
-    Div({
-        style {
-            display(DisplayStyle.Flex)
-            justifyContent(JustifyContent.Center)
-            alignItems(AlignItems.Center)
-            padding(32.px)
-        }
-    }) {
-        Text("Loading...")
-    }
-}
+// LoadingIndicator moved to io.kontainers.ui.components.LoadingIndicator
 
 /**
  * Error message component.
