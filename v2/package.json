@@ -1,0 +1,28 @@
+{
+  "name": "kontainers-v2",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "backend",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "concurrently \"bun run dev:frontend\" \"bun run dev:backend\"",
+    "dev:frontend": "bun --cwd frontend run dev",
+    "dev:backend": "bun --cwd backend run dev",
+    "build": "bun run build:shared && bun run build:frontend && bun run build:backend",
+    "build:frontend": "bun --cwd frontend run build",
+    "build:backend": "bun --cwd backend run build",
+    "build:shared": "bun --cwd shared run build",
+    "start": "bun --cwd backend run start",
+    "clean": "rm -rf node_modules && rm -rf frontend/node_modules && rm -rf backend/node_modules && rm -rf shared/node_modules"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "typescript": "^5.3.3"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}

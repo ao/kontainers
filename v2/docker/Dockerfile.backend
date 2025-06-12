@@ -1,0 +1,30 @@
+FROM oven/bun:1
+
+WORKDIR /app
+
+# Copy package.json files
+COPY package.json ./
+COPY backend/package.json ./backend/
+COPY shared/package.json ./shared/
+
+# Install dependencies
+RUN bun install
+
+# Copy source code
+COPY . .
+
+# Build shared package
+RUN cd shared && bun run build
+
+# Build backend
+RUN cd backend && bun run build
+
+# Set environment variables
+ENV NODE_ENV=production
+ENV PORT=3001
+
+# Expose the port
+EXPOSE 3001
+
+# Start the application
+CMD ["bun", "backend/dist/index.js"]
