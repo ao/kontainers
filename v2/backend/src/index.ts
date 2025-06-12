@@ -1,20 +1,24 @@
 import { Elysia } from 'elysia';
-import { swagger } from '@elysiajs/swagger';
 
 // Import routes and middleware
 import { router } from './routes';
 import { middleware } from './middleware';
 import { websocketServer } from './websocket';
+import { apiDocs } from './api/docs';
 
 // Import services
 import { configService } from './services/config';
 import { containerService } from './services/container';
 import { proxyService } from './services/proxy';
 import { monitoringService } from './services/monitoring';
+import { initializeDatabase } from './db';
 
 // Initialize services
 async function initializeServices() {
   try {
+    console.log('Initializing database...');
+    await initializeDatabase();
+    
     console.log('Initializing configuration service...');
     await configService.initialize();
     
@@ -39,15 +43,7 @@ async function startApp() {
   
   const app = new Elysia()
     .use(middleware) // Apply middleware (CORS, logging, error handling)
-    .use(swagger({
-      documentation: {
-        info: {
-          title: 'Kontainers API',
-          version: '2.0.0',
-          description: 'API for Kontainers v2'
-        }
-      }
-    }))
+    .use(apiDocs) // API documentation with Swagger UI
     .use(websocketServer) // Set up WebSocket server
     .use(router) // Apply API routes
     .get('/', () => 'Kontainers v2 API is running')

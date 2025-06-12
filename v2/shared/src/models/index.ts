@@ -15,3 +15,6 @@ export * from './proxy-error';
 // System models
 export * from './health';
 export * from './configuration';
+
+// User-related models
+export * from './user';

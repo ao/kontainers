@@ -1,136 +1,154 @@
 import { Elysia, t } from 'elysia';
-import { monitoringService } from '../services/monitoring';
-import { containerService } from '../services/container';
-import { proxyService } from '../services/proxy';
-import { configService } from '../services/config';
+import { db } from '../db';
+import { HealthStatus } from 'kontainers-shared';
+import os from 'os';
+import { adminOnly } from '../middleware/auth';
 
+/**
+ * Health check and monitoring endpoints
+ */
 export const healthRoutes = new Elysia({ prefix: '/health' })
-  // Get overall system health status
+  // Public basic health check
   .get('/', async () => {
-    const health = monitoringService.getOverallHealth();
     return {
-      status: health.status,
+      status: 'ok',
       timestamp: new Date().toISOString(),
-      components: health.components
+      version: process.env.APP_VERSION || '2.0.0'
     };
   })
   
-  // Get Docker health status
-  .get('/docker', async () => {
+  // Detailed health check (requires authentication)
+  .use(adminOnly)
+  .get('/detailed', async () => {
+    // Check database connection
+    let dbStatus: HealthStatus = HealthStatus.HEALTHY;
+    let dbMessage = 'Database connection is healthy';
+    
     try {
-      const dockerInfo = await containerService.getDockerInfo();
-      const dockerVersion = await containerService.getDockerVersion();
-      const containers = await containerService.getContainers(true);
-      
-      const runningContainers = containers.filter(c => c.state === 'RUNNING').length;
-      const stoppedContainers = containers.filter(c => c.state === 'STOPPED').length;
-      
-      return {
-        status: 'healthy',
-        version: dockerVersion.Version,
-        apiVersion: dockerVersion.ApiVersion,
-        containers: {
-          running: runningContainers,
-          stopped: stoppedContainers,
-          total: containers.length
+      // Simple query to check if database is responsive
+      await db.select({ count: db.fn.count() }).from(db.dynamic('sqlite_master'));
+    } catch (error) {
+      dbStatus = HealthStatus.UNHEALTHY;
+      dbMessage = `Database connection error: ${(error as Error).message}`;
+    }
+    
+    // Check system resources
+    const totalMemory = os.totalmem();
+    const freeMemory = os.freemem();
+    const memoryUsage = 1 - (freeMemory / totalMemory);
+    
+    let systemStatus: HealthStatus = HealthStatus.HEALTHY;
+    if (memoryUsage > 0.9) {
+      systemStatus = HealthStatus.DEGRADED;
+    }
+    if (memoryUsage > 0.95) {
+      systemStatus = HealthStatus.UNHEALTHY;
+    }
+    
+    // Check CPU load
+    const cpuLoad = os.loadavg()[0] / os.cpus().length;
+    if (cpuLoad > 0.8) {
+      systemStatus = HealthStatus.DEGRADED;
+    }
+    if (cpuLoad > 0.95) {
+      systemStatus = HealthStatus.UNHEALTHY;
+    }
+    
+    // Check disk space (simplified - would need a proper implementation)
+    const diskStatus: HealthStatus = HealthStatus.HEALTHY;
+    
+    // Determine overall status (worst of all components)
+    const overallStatus = [dbStatus, systemStatus, diskStatus].reduce((worst, current) => {
+      if (current === HealthStatus.UNHEALTHY) return HealthStatus.UNHEALTHY;
+      if (current === HealthStatus.DEGRADED && worst !== HealthStatus.UNHEALTHY) return HealthStatus.DEGRADED;
+      return worst;
+    }, HealthStatus.HEALTHY);
+    
+    return {
+      status: overallStatus,
+      timestamp: new Date().toISOString(),
+      version: process.env.APP_VERSION || '2.0.0',
+      uptime: process.uptime(),
+      components: {
+        database: {
+          status: dbStatus,
+          message: dbMessage
+        },
+        system: {
+          status: systemStatus,
+          cpu: {
+            cores: os.cpus().length,
+            model: os.cpus()[0].model,
+            load: cpuLoad
+          },
+          memory: {
+            total: totalMemory,
+            free: freeMemory,
+            usage: memoryUsage
+          }
+        },
+        disk: {
+          status: diskStatus
         }
-      };
-    } catch (error: any) {
-      return {
-        status: 'unhealthy',
-        error: error.message
-      };
-    }
-  })
-  
-  // Get proxy health status
-  .get('/proxy', async () => {
-    try {
-      const nginxStatus = await proxyService.getNginxStatus();
-      const rules = await proxyService.getRules();
-      
-      return {
-        status: nginxStatus.running ? 'healthy' : 'unhealthy',
-        type: 'nginx',
-        version: nginxStatus.version,
-        rules: rules.length,
-        activeRules: rules.filter(r => r.enabled).length
-      };
-    } catch (error: any) {
-      return {
-        status: 'unhealthy',
-        error: error.message
-      };
-    }
-  })
-  
-  // Get system resource metrics
-  .get('/resources', async () => {
-    try {
-      const metrics = await monitoringService.collectSystemMetrics();
-      return metrics;
-    } catch (error: any) {
-      return {
-        status: 'error',
-        error: error.message
-      };
-    }
-  })
-  
-  // Get configuration health status
-  .get('/config', async () => {
-    try {
-      const config = configService.getConfig();
-      const backups = await configService.getBackups();
-      
-      return {
-        status: 'healthy',
-        version: config.version,
-        backups: backups.length
-      };
-    } catch (error: any) {
-      return {
-        status: 'unhealthy',
-        error: error.message
-      };
-    }
-  })
-  
-  // WebSocket for streaming health updates
-  .ws('/stream', {
-    open(ws) {
-      // Register event handler for health updates
-      monitoringService.on('monitoring:health', (health) => {
-        ws.send(JSON.stringify({ type: 'health', data: health }));
-      });
-      
-      // Register event handler for metrics updates
-      monitoringService.on('monitoring:metrics', (metrics) => {
-        ws.send(JSON.stringify({ type: 'metrics', data: metrics }));
-      });
-      
-      // Send initial data
-      const health = monitoringService.getOverallHealth();
-      const metrics = monitoringService.getLatestMetrics();
-      
-      ws.send(JSON.stringify({ type: 'health', data: health }));
-      if (metrics) {
-        ws.send(JSON.stringify({ type: 'metrics', data: metrics }));
       }
-    },
-    message(ws, message) {
-      // Handle client messages if needed
-      try {
-        const data = JSON.parse(message as string);
-        
-        if (data.type === 'ping') {
-          ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
-        }
-      } catch (error) {
-        // Ignore invalid messages
+    };
+  })
+  
+  // Metrics endpoint (Prometheus compatible)
+  .get('/metrics', async () => {
+    // CPU metrics
+    const cpuCount = os.cpus().length;
+    const cpuLoad = os.loadavg()[0];
+    const cpuUsage = cpuLoad / cpuCount;
+    
+    // Memory metrics
+    const totalMemory = os.totalmem();
+    const freeMemory = os.freemem();
+    const usedMemory = totalMemory - freeMemory;
+    
+    // System metrics
+    const uptime = process.uptime();
+    
+    // Format metrics in Prometheus format
+    const metrics = [
+      '# HELP kontainers_uptime_seconds The uptime of the Kontainers service in seconds',
+      '# TYPE kontainers_uptime_seconds gauge',
+      `kontainers_uptime_seconds ${uptime}`,
+      
+      '# HELP kontainers_cpu_count Number of CPU cores',
+      '# TYPE kontainers_cpu_count gauge',
+      `kontainers_cpu_count ${cpuCount}`,
+      
+      '# HELP kontainers_cpu_load System load average (1 minute)',
+      '# TYPE kontainers_cpu_load gauge',
+      `kontainers_cpu_load ${cpuLoad}`,
+      
+      '# HELP kontainers_cpu_usage CPU usage (load/cores)',
+      '# TYPE kontainers_cpu_usage gauge',
+      `kontainers_cpu_usage ${cpuUsage}`,
+      
+      '# HELP kontainers_memory_total_bytes Total memory in bytes',
+      '# TYPE kontainers_memory_total_bytes gauge',
+      `kontainers_memory_total_bytes ${totalMemory}`,
+      
+      '# HELP kontainers_memory_free_bytes Free memory in bytes',
+      '# TYPE kontainers_memory_free_bytes gauge',
+      `kontainers_memory_free_bytes ${freeMemory}`,
+      
+      '# HELP kontainers_memory_used_bytes Used memory in bytes',
+      '# TYPE kontainers_memory_used_bytes gauge',
+      `kontainers_memory_used_bytes ${usedMemory}`,
+      
+      '# HELP kontainers_memory_usage Memory usage ratio',
+      '# TYPE kontainers_memory_usage gauge',
+      `kontainers_memory_usage ${usedMemory / totalMemory}`
+    ].join('\n');
+    
+    return new Response(metrics, {
+      headers: {
+        'Content-Type': 'text/plain; version=0.0.4'
       }
-    },
-    close(ws) {
-      // Clean up if needed
-    }
+    });
   });
+
+export default healthRoutes;
