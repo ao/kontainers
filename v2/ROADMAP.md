@@ -23,19 +23,25 @@ This roadmap outlines the development phases for Kontainers v2, a complete rewri
   - Settings Components
     - ConfigurationForm component
     - BackupRestorePanel component
+- **Backend Infrastructure** - All tasks completed
+  - Bun server with routing
+  - Docker API integration
+  - REST API endpoints for container operations
+  - WebSocket server for real-time updates
+  - CORS and middleware configuration
 
 ### 🚧 In Progress
-- **Backend Integration** - In progress
-  - API endpoints for container operations
-  - WebSocket server for real-time updates
-  - Proxy configuration management
-  - System metrics collection
+- **Security & Authentication** - Planning phase
+  - User registration and login system
+  - Role-based access control
+  - API rate limiting and throttling
+  - Audit logging for user actions
 
 ### 📈 Progress Metrics
 - Frontend Components: 100% complete
-- Backend Integration: 60% complete
-- Docker Integration: 70% complete
-- Overall v2 Progress: 75% complete
+- Backend Integration: 100% complete
+- Docker Integration: 100% complete
+- Overall v2 Progress: 85% complete
 
 ## 🎯 v2 Vision & Goals
 
@@ -72,11 +78,11 @@ Establish the fundamental architecture and deliver basic container visibility wi
 - [x] Create API client for backend communication
 
 **Backend Infrastructure**
-- [ ] Set up Bun server with routing
-- [ ] Implement Docker API integration
-- [ ] Create REST API endpoints for container operations
-- [ ] Set up WebSocket server for real-time updates
-- [ ] Configure CORS and middleware
+- [x] Set up Bun server with routing
+- [x] Implement Docker API integration
+- [x] Create REST API endpoints for container operations
+- [x] Set up WebSocket server for real-time updates
+- [x] Configure CORS and middleware
 
 #### Core Features
 **Container Management UI**
