@@ -1,310 +1,395 @@
 # Kontainers
 
-A modern, web-based container management platform that combines the power of container orchestration with intelligent reverse proxy management. Built with Kotlin Multiplatform and Kotlin Compose UI for a seamless, responsive experience.
+![Build Status](https://github.com/ao/kontainers/workflows/Test%20Suite/badge.svg)
+![Coverage](https://codecov.io/gh/kontainers/kontainers/branch/main/graph/badge.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![Bun](https://img.shields.io/badge/Bun-1.0.0-black)
 
-## 🚀 Project Overview
+Kontainers is a modern, high-performance container management and reverse proxy platform built with Bun, React, and TypeScript. It provides an intuitive web interface for managing Docker containers, setting up reverse proxy rules, and monitoring system performance.
 
-Kontainers is designed to simplify container management by providing an intuitive web interface that combines the essential features of container orchestration (similar to Portainer) with reverse proxy management (similar to Nginx Proxy Manager) in a single, unified platform.
-
-### Value Proposition
-
-- **Unified Management**: Single interface for both container management and reverse proxy configuration
-- **Modern Technology**: Built with Kotlin Multiplatform for performance and maintainability
-- **Flexible Deployment**: Can be self-hosted or deployed as a SaaS solution
-- **Developer-Friendly**: Clean, responsive UI built with Kotlin Compose
-- **Docker Native**: Direct integration with Docker Engine for seamless container operations
-
-## ✨ Key MVP Features
+## 🚀 Features
 
 ### Container Management
-- **Container Visibility**: View all running and stopped containers with real-time status
-- **Lifecycle Control**: Start, stop, and restart containers with one click
-- **Log Viewing**: Access container logs directly from the web interface
-- **Resource Monitoring**: Basic CPU and memory usage display
-- **Container Details**: Inspect container configuration, ports, and volumes
+- View and manage Docker containers through an intuitive web interface
+- Start, stop, restart, and remove containers with a single click
+- View container logs in real-time
+- Create new containers with a user-friendly wizard
+- Configure volumes, networks, environment variables, and port mappings
 
-### Reverse Proxy Management
-- **Simple Proxy Rules**: Create basic HTTP/HTTPS proxy configurations
-- **Domain Mapping**: Map custom domains to container services
-- **Port Management**: Automatic port discovery and mapping
-- **SSL Support**: Basic SSL certificate management for HTTPS endpoints
-- **Health Checks**: Monitor proxy endpoint availability
+### Proxy Management
+- Create and manage reverse proxy rules for your containers
+- Configure advanced routing options including path-based routing
+- Set up load balancing between multiple containers
+- Manage SSL certificates for secure connections
+- Monitor proxy traffic and performance metrics
+- Configure custom headers, health checks, and more
 
-## 🛠 Technology Stack
+### Monitoring & Analytics
+- Real-time system health monitoring
+- Resource usage graphs for CPU, memory, disk, and network
+- Container-specific performance metrics
+- Proxy traffic analytics and error tracking
+- Historical data visualization for trend analysis
 
-### Frontend
-- **Kotlin/JS**: Modern JavaScript alternative with type safety
-- **Kotlin Compose for Web**: Declarative UI framework for responsive web interfaces
-- **Ktor Client**: HTTP client for API communication
+### Configuration & Settings
+- Comprehensive system configuration options
+- Backup and restore functionality
+- Import/export proxy rules
+- Dark/light theme support
+- Mobile-responsive design
 
-### Backend
-- **Ktor Server**: Lightweight, asynchronous web framework
-- **Docker Java API**: Direct integration with Docker Engine
-- **Kotlinx Serialization**: JSON serialization for API communication
-- **Kotlinx Coroutines**: Asynchronous programming for better performance
+## 🛠️ Technology Stack
 
-### Infrastructure
-- **Docker**: Container runtime and orchestration
-- **Nginx/Traefik**: Reverse proxy backend (configurable)
-- **Docker Compose**: Multi-container deployment orchestration
+- **Frontend**: React, TypeScript, Tailwind CSS, Zustand
+- **Backend**: Bun, Node.js
+- **Container Management**: Docker API
+- **Proxy Server**: Nginx
+- **Real-time Updates**: WebSockets
+- **Data Visualization**: Custom SVG charts
 
-## 🚀 Quick Start
+## 🏗️ Architecture
+
+Kontainers follows a modern architecture with a clear separation of concerns:
+
+1. **Frontend Layer**: React-based single-page application with TypeScript for type safety
+2. **Backend API**: RESTful API built with Bun for high performance
+3. **WebSocket Server**: Real-time updates for container status and metrics
+4. **Docker Integration**: Direct communication with Docker API
+5. **Proxy Management**: Dynamic Nginx configuration generation and management
+6. **Metrics Collection**: System and container metrics collection and storage
+
+## 🚦 Getting Started
 
 ### Prerequisites
-- Docker Engine 20.10+
-- Docker Compose 2.0+
-- Modern web browser (Chrome, Firefox, Safari, Edge)
+
+- Docker 20.10.0 or higher
+- Bun 1.0.0 or higher
+- Node.js 18.0.0 or higher (optional, for development)
 
 ### Installation
 
-#### Option 1: Docker Compose (Recommended)
+#### Using Docker (Recommended)
+
 ```bash
-# Clone the repository
-git clone https://github.com/ao/kontainers.git
-cd kontainers
+# Pull the Kontainers image
+docker pull kontainers/kontainers:latest
 
-# Start the application
-docker-compose up -d
-
-# Access the web interface
-open http://localhost:9090
-```
-
-#### Option 2: Docker Run
-```bash
-# Run Kontainers container
+# Run the container
 docker run -d \
   --name kontainers \
-  -p 9090:9090 \
+  -p 3000:3000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
+  -v kontainers-data:/app/data \
   kontainers/kontainers:latest
-
-# Access the web interface
-open http://localhost:9090
 ```
 
-#### Option 3: Development Setup
+#### Using Docker Compose
+
+```yaml
+# docker-compose.yml
+version: '3'
+services:
+  kontainers:
+    image: kontainers/kontainers:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - kontainers-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  kontainers-data:
+```
+
+Run with:
+
 ```bash
-# Clone and setup development environment
-git clone https://github.com/ao/kontainers.git
-cd kontainers
-
-# Install dependencies and run
-./gradlew run
-
-# Access development server
-open http://localhost:9090
+docker-compose up -d
 ```
 
-### First Steps
-1. **Connect to Docker**: Kontainers will automatically detect your local Docker installation
-2. **View Containers**: Browse your existing containers in the dashboard
-3. **Create Proxy Rule**: Set up your first reverse proxy mapping
-4. **Monitor Services**: Use the dashboard to monitor container health and proxy status
+#### Manual Installation
 
-## 🏗 Architecture Overview
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Web Browser                              │
-│                 (Kotlin Compose UI)                         │
-└─────────────────────┬───────────────────────────────────────┘
-                      │ HTTP/WebSocket
-┌─────────────────────▼───────────────────────────────────────┐
-│                 Ktor Web Server                             │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────┐ │
-│  │   API Routes    │  │  WebSocket Hub  │  │ Static Files │ │
-│  └─────────────────┘  └─────────────────┘  └──────────────┘ │
-└─────────────────────┬───────────────────────────────────────┘
-                      │
-┌─────────────────────▼───────────────────────────────────────┐
-│                Service Layer                                │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────┐ │
-│  │ Container Mgmt  │  │  Proxy Manager  │  │ Config Store │ │
-│  └─────────────────┘  └─────────────────┘  └──────────────┘ │
-└─────────────────────┬───────────────────────────────────────┘
-                      │
-┌─────────────────────▼───────────────────────────────────────┐
-│              Infrastructure Layer                           │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────┐ │
-│  │  Docker Engine  │  │ Reverse Proxy   │  │ File System  │ │
-│  │     (API)       │  │ (Nginx/Traefik) │  │   Storage    │ │
-│  └─────────────────┘  └─────────────────┘  └──────────────┘ │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Key Components
-
-- **Frontend**: Single-page application built with Kotlin Compose for Web
-- **API Server**: RESTful API with WebSocket support for real-time updates
-- **Container Service**: Docker API integration for container lifecycle management
-- **Proxy Service**: Dynamic reverse proxy configuration management
-- **Configuration**: File-based configuration with hot-reload support
-
-## 🔧 Development Setup
-
-### Requirements
-- JDK 17+
-- Gradle 8.0+
-- Docker Desktop or Docker Engine
-- Node.js 18+ (for frontend development)
-
-### Building from Source
 ```bash
 # Clone the repository
 git clone https://github.com/ao/kontainers.git
 cd kontainers
 
-# Build the application
-./gradlew build
+# Install dependencies
+bun install
 
-# Run tests
-./gradlew test
+# Build the frontend
+bun run build
+
+# Start the application
+bun run start
+```
+
+### Accessing the Application
+
+Once running, access the web interface at:
+
+```
+http://localhost:3000
+```
+
+## 🧩 Components
+
+Kontainers includes the following key components:
+
+### Proxy Management Components
+- **ProxyRuleDetail**: View detailed information about proxy rules
+- **ProxyRuleForm**: Create and edit proxy rules
+- **ProxyTrafficMonitor**: Monitor proxy traffic metrics
+
+### Metrics and Monitoring Components
+- **SystemHealthMonitor**: Monitor overall system health
+- **ResourceUsageGraphs**: View resource usage over time
+- **MetricsDashboard**: Comprehensive metrics dashboard
+
+### Settings Components
+- **ConfigurationForm**: Configure system settings
+- **BackupRestorePanel**: Backup and restore system configuration
+
+## 🔧 Configuration
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PORT` | Port to run the application on | `3000` |
+| `DATA_DIR` | Directory to store application data | `/app/data` |
+| `LOG_LEVEL` | Logging level (debug, info, warn, error) | `info` |
+| `DOCKER_HOST` | Docker host to connect to | `unix:///var/run/docker.sock` |
+| `NGINX_CONFIG_PATH` | Path to Nginx configuration | `/etc/nginx` |
+| `METRICS_RETENTION_DAYS` | Days to retain metrics data | `30` |
+
+### Configuration File
+
+Advanced configuration can be done through the `config.json` file:
+
+```json
+{
+  "system": {
+    "name": "Kontainers",
+    "adminEmail": "admin@example.com",
+    "logLevel": "info",
+    "dataRetentionDays": 30,
+    "enableTelemetry": true
+  },
+  "proxy": {
+    "defaultTimeout": 30000,
+    "maxConnections": 1000,
+    "enableCompression": true,
+    "tlsVersion": "TLS 1.3",
+    "cipherSuites": ["TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384"]
+  },
+  "security": {
+    "enableFirewall": true,
+    "allowedIPs": [],
+    "blockedIPs": [],
+    "rateLimiting": {
+      "enabled": true,
+      "requestsPerMinute": 60,
+      "burstSize": 10
+    }
+  }
+}
+```
+
+## 📊 API Reference
+
+Kontainers provides a comprehensive REST API for integration with other tools:
+
+### Container Endpoints
+
+- `GET /api/containers` - List all containers
+- `GET /api/containers/:id` - Get container details
+- `POST /api/containers` - Create a new container
+- `PUT /api/containers/:id/start` - Start a container
+- `PUT /api/containers/:id/stop` - Stop a container
+- `PUT /api/containers/:id/restart` - Restart a container
+- `DELETE /api/containers/:id` - Remove a container
+- `GET /api/containers/:id/logs` - Get container logs
+
+### Proxy Endpoints
+
+- `GET /api/proxy/rules` - List all proxy rules
+- `GET /api/proxy/rules/:id` - Get proxy rule details
+- `POST /api/proxy/rules` - Create a new proxy rule
+- `PUT /api/proxy/rules/:id` - Update a proxy rule
+- `DELETE /api/proxy/rules/:id` - Delete a proxy rule
+- `GET /api/proxy/traffic` - Get proxy traffic metrics
+
+### System Endpoints
+
+- `GET /api/system/health` - Get system health information
+- `GET /api/system/metrics` - Get system metrics
+- `GET /api/system/resources` - Get resource usage
+- `POST /api/system/backup` - Create a system backup
+- `POST /api/system/restore` - Restore from a backup
+
+## 🧪 Development
+
+### Setting Up Development Environment
+
+```bash
+# Clone the repository
+git clone https://github.com/ao/kontainers.git
+cd kontainers
+
+# Install dependencies
+bun install
+
+# Install git hooks for development
+bun hooks:install
 
 # Start development server
-./gradlew run
+bun run dev
 ```
 
 ### Project Structure
+
 ```
 kontainers/
 ├── src/
-│   ├── commonMain/          # Shared Kotlin code
-│   ├── jsMain/              # Frontend (Kotlin/JS + Compose)
-│   ├── jvmMain/             # Backend (Ktor server)
-│   └── commonTest/          # Shared tests
-├── docker/                  # Docker configuration
-├── docs/                    # Documentation
-├── gradle/                  # Gradle wrapper
-└── build.gradle.kts         # Build configuration
+│   ├── backend/         # Backend API code
+│   ├── frontend/        # Frontend React application
+│   │   ├── components/  # React components
+│   │   │   ├── proxy/   # Proxy management components
+│   │   │   ├── metrics/ # Metrics and monitoring components
+│   │   │   └── settings/# Settings components
+│   │   ├── stores/      # Zustand state stores
+│   │   ├── models/      # TypeScript interfaces
+│   │   └── utils/       # Utility functions
+│   └── shared/          # Shared code between frontend and backend
+├── public/              # Static assets
+├── config/              # Configuration files
+├── scripts/             # Build and deployment scripts
+│   └── git-hooks/       # Git hooks for development workflow
+└── tests/               # Test files
+    ├── frontend/        # Frontend component tests
+    ├── backend/         # Backend API tests
+    ├── integration/     # Integration tests
+    └── performance/     # Performance tests
 ```
 
-### Development Workflow
-1. **Backend Development**: Use `./gradlew runJvm` for server-only development
-2. **Frontend Development**: Use `./gradlew runJs` for frontend-only development
-3. **Full Stack**: Use `./gradlew run` for complete application
-4. **Testing**: Use `./gradlew test` for all tests
-5. **Docker Build**: Use `./gradlew dockerBuild` for container image
+### Running Tests
 
-### Configuration
+```bash
+# Run all tests
+bun test
 
-#### Port Configuration
-By default, Kontainers runs on port 9090. You can customize this in several ways:
+# Run tests with coverage report
+bun test:coverage
 
-1. **Environment Variable**:
-   ```bash
-   # Set custom port before running
-   export PORT=8090
-   ./gradlew run
-   ```
+# Run frontend tests
+bun test:frontend
 
-2. **Docker Run**:
-   ```bash
-   docker run -d \
-     --name kontainers \
-     -p 8090:9090 \
-     -e PORT=9090 \
-     -v /var/run/docker.sock:/var/run/docker.sock \
-     kontainers/kontainers:latest
-   ```
+# Run backend tests
+bun test:backend
 
-3. **Docker Compose**:
-   ```yaml
-   services:
-     kontainers:
-       image: kontainers/kontainers:latest
-       ports:
-         - "8090:9090"
-       environment:
-         - PORT=9090
-       volumes:
-         - /var/run/docker.sock:/var/run/docker.sock
-   ```
+# Run integration tests
+bun test:integration
 
-## 📚 Usage Guide
+# Run performance tests
+bun test:performance
+```
 
-### Container Management
+### Git Hooks
 
-#### Viewing Containers
-- Navigate to the **Containers** tab to see all containers
-- Use filters to show running, stopped, or all containers
-- Click on any container to view detailed information
+The project includes Git hooks to ensure code quality:
 
-#### Managing Container Lifecycle
-- **Start**: Click the play button to start a stopped container
-- **Stop**: Click the stop button to gracefully stop a running container
-- **Restart**: Use the restart button to restart a container
-- **Remove**: Delete stopped containers (with confirmation)
+- **Pre-commit hook**: Runs tests on changed files
+- **Pre-push hook**: Runs the full test suite and checks coverage
 
-#### Viewing Logs
-- Click on a container name to open the detail view
-- Navigate to the **Logs** tab to view real-time container logs
-- Use the search and filter options to find specific log entries
+You can temporarily disable hooks using:
 
-### Reverse Proxy Management
+```bash
+# For a single commit/push
+SKIP_HOOKS=true git commit
+SKIP_HOOKS=true git push
 
-#### Creating Proxy Rules
-1. Navigate to the **Proxy** tab
-2. Click **Add New Rule**
-3. Configure:
-   - **Source Domain**: The domain that will receive requests
-   - **Target Container**: Select the container to proxy to
-   - **Target Port**: Specify the container port
-   - **SSL**: Enable HTTPS if needed
+# For the current terminal session
+bun hooks:skip
+```
 
-#### Managing SSL Certificates
-- Upload custom SSL certificates in the **SSL** section
-- Enable automatic Let's Encrypt integration (coming in Phase 2)
-- View certificate expiration dates and renewal status
+## 🔄 CI/CD Pipeline
 
-## 🤝 Contributing
+![Build Status](https://github.com/ao/kontainers/workflows/Test%20Suite/badge.svg)
+![Coverage](https://codecov.io/gh/kontainers/kontainers/branch/main/graph/badge.svg)
 
-We welcome contributions from the community! Here's how you can help:
+Kontainers uses GitHub Actions for continuous integration and deployment.
 
-### Getting Started
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Make your changes and add tests
-4. Commit your changes: `git commit -m 'Add amazing feature'`
-5. Push to the branch: `git push origin feature/amazing-feature`
-6. Open a Pull Request
+### Test Workflow
 
-### Development Guidelines
-- **Code Style**: Follow Kotlin coding conventions
-- **Testing**: Write tests for new features and bug fixes
-- **Documentation**: Update documentation for user-facing changes
-- **Commits**: Use conventional commit messages
+The test workflow runs on every push to the main branch and on pull requests:
 
-### Areas for Contribution
-- **UI/UX Improvements**: Enhance the user interface and experience
-- **Docker Integration**: Improve container management features
-- **Proxy Features**: Add advanced reverse proxy capabilities
-- **Testing**: Increase test coverage and add integration tests
-- **Documentation**: Improve guides, tutorials, and API documentation
+- Sets up the Bun environment
+- Installs dependencies
+- Runs the test suite with coverage reporting
+- Fails the build if test coverage falls below 80%
+- Uploads coverage reports as artifacts
+- Integrates with Codecov for coverage visualization
 
-### Reporting Issues
-- Use GitHub Issues to report bugs or request features
-- Provide detailed reproduction steps for bugs
-- Include system information and logs when relevant
+### Performance Testing
+
+A separate workflow runs performance tests on a nightly schedule:
+
+- Measures API response times and throughput
+- Generates performance trend reports
+- Tracks performance metrics over time
+
+### Pull Request Integration
+
+The CI pipeline integrates with pull requests to provide:
+
+- Automated test results as PR comments
+- Status checks that prevent merging if tests fail
+- Coverage reports to ensure code quality
+
+### Local Development Integration
+
+The CI/CD pipeline is integrated with local development through Git hooks:
+
+- Pre-commit hook runs tests on changed files
+- Pre-push hook runs the full test suite
+- Coverage checks ensure code quality
+
+To view the CI/CD configuration, see the workflow files in `.github/workflows/`.
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Kontainers is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
-## 🔗 Links
+## 🤝 Contributing
 
-- **Documentation**: [docs.kontainers.io](https://docs.kontainers.io)
-- **Docker Hub**: [hub.docker.com/r/kontainers/kontainers](https://hub.docker.com/r/kontainers/kontainers)
-- **Issue Tracker**: [github.com/ao/kontainers/issues](https://github.com/ao/kontainers/issues)
-- **Discussions**: [github.com/ao/kontainers/discussions](https://github.com/ao/kontainers/discussions)
+Contributions are welcome! Please feel free to submit a Pull Request.
 
-## 🙏 Acknowledgments
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
 
-- Inspired by [Portainer](https://www.portainer.io/) for container management
-- Inspired by [Nginx Proxy Manager](https://nginxproxymanager.com/) for reverse proxy management
-- Built with [Kotlin Multiplatform](https://kotlinlang.org/docs/multiplatform.html)
-- UI powered by [Kotlin Compose for Web](https://github.com/JetBrains/compose-multiplatform)
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
 
----
+## 📚 Documentation
 
-**Ready to simplify your container management?** Get started with Kontainers today!
+For full documentation, visit [docs.kontainers.io](https://docs.kontainers.io).
+
+## 🙏 Acknowledgements
+
+- [Docker](https://www.docker.com/) for container technology
+- [Bun](https://bun.sh/) for the high-performance JavaScript runtime
+- [React](https://reactjs.org/) for the frontend framework
+- [Tailwind CSS](https://tailwindcss.com/) for styling
+- [Zustand](https://github.com/pmndrs/zustand) for state management
+- [Nginx](https://nginx.org/) for the proxy server
+
+## 📞 Contact
+
+- Website: [kontainers.io](https://kontainers.io)
+- Email: [info@kontainers.io](mailto:info@kontainers.io)
+- Twitter: [@kontainersio](https://twitter.com/kontainersio)
+- GitHub: [github.com/ao](https://github.com/ao)

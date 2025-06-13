@@ -21,15 +21,15 @@ jobs:
           bun-version: latest
       
       - name: Install dependencies
-        working-directory: ./v2
+        working-directory: ./
         run: bun install
       
       - name: Run tests with coverage
-        working-directory: ./v2
+        working-directory: ./
         run: bun test --coverage
       
       - name: Check coverage threshold
-        working-directory: ./v2
+        working-directory: ./
         run: |
           COVERAGE=$(cat coverage/coverage-summary.json | jq '.total.lines.pct')
           echo "Coverage: $COVERAGE%"
@@ -42,17 +42,17 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: coverage-report
-          path: v2/coverage/
+          path: coverage/
       
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v3
         with:
-          directory: ./v2/coverage/
+          directory: ./coverage/
           fail_ci_if_error: true
       
       - name: Generate test summary
         if: always()
-        working-directory: ./v2
+        working-directory: ./
         run: |
           echo "## Test Results" > test-summary.md
           echo "### Coverage: $(cat coverage/coverage-summary.json | jq '.total.lines.pct')%" >> test-summary.md
@@ -67,7 +67,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
-            const summary = fs.readFileSync('v2/test-summary.md', 'utf8');
+            const summary = fs.readFileSync('test-summary.md', 'utf8');
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,

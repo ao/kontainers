@@ -1,0 +1,34 @@
+{
+  "name": "kontainers-testing-demo",
+  "version": "1.0.0",
+  "description": "A demonstration of the Kontainers testing framework",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "test:coverage": "bun test --coverage",
+    "test:unit": "bun test tests/unit",
+    "test:integration": "bun test tests/integration",
+    "test:performance": "bun test tests/performance",
+    "lint": "eslint src tests --ext .ts",
+    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\""
+  },
+  "keywords": [
+    "kontainers",
+    "testing",
+    "demo"
+  ],
+  "author": "Kontainers Team",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "bun-types": "^1.2.16",
+    "eslint": "^8.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {},
+  "engines": {
+    "bun": ">=1.2.16"
+  }
+}

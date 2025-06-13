@@ -24,18 +24,18 @@ jobs:
           bun-version: latest
       
       - name: Install dependencies
-        working-directory: ./v2
+        working-directory: ./
         run: bun install
       
       - name: Run performance tests
-        working-directory: ./v2
+        working-directory: ./
         run: |
           mkdir -p performance-reports
           # Run performance tests and output to JSON format
           bun test tests/performance --timeout 60000 > performance-reports/results.json
       
       - name: Generate performance trend report
-        working-directory: ./v2
+        working-directory: ./
         run: |
           # Create a simple HTML report with charts
           echo '<!DOCTYPE html>
@@ -69,14 +69,14 @@ jobs:
         uses: actions/upload-artifact@v3
         with:
           name: performance-reports
-          path: v2/performance-reports/
+          path: performance-reports/
       
       - name: Store performance data
         uses: benchmark-action/github-action-benchmark@v1
         with:
           name: Performance Benchmarks
           tool: 'customBiggerIsBetter'
-          output-file-path: v2/performance-reports/results.json
+          output-file-path: performance-reports/results.json
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: true
           # Comment out the following line if you don't want to create GitHub Pages for benchmark results

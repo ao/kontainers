@@ -7,15 +7,15 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'v2/package.json'
-      - 'v2/package-lock.json'
-      - 'v2/bun.lockb'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'bun.lockb'
   pull_request:
     branches: [ main ]
     paths:
-      - 'v2/package.json'
-      - 'v2/package-lock.json'
-      - 'v2/bun.lockb'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'bun.lockb'
   workflow_dispatch:
     # Allow manual triggering
 
@@ -37,19 +37,19 @@ jobs:
         run: npm install -g @cyclonedx/bom
       
       - name: Generate Software Bill of Materials (SBOM)
-        working-directory: ./v2
+        working-directory: ./
         run: cyclonedx-bom -o bom.json
       
       - name: Run OWASP Dependency Check
         uses: dependency-check/Dependency-Check_Action@main
         with:
-          project: 'Kontainers v2'
-          path: './v2'
+          project: 'Kontainers'
+          path: './'
           format: 'HTML'
           out: './reports'
           args: >
             --enableExperimental
-            --suppression ./v2/.github/dependency-check-suppressions.xml
+            --suppression ./.github/dependency-check-suppressions.xml
       
       - name: Upload dependency check report
         uses: actions/upload-artifact@v3

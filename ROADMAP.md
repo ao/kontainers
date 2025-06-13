@@ -1,53 +1,77 @@
 # Kontainers Development Roadmap
 
-This roadmap outlines the development phases for Kontainers MVP, focusing on delivering maximum value with minimal complexity while building toward a comprehensive container management and reverse proxy platform.
+This roadmap outlines the development phases for Kontainers, a complete rewrite of the original Kontainers application using modern technologies like Bun, React, and TypeScript. The focus remains on delivering a comprehensive container management and reverse proxy platform with improved performance and user experience.
 
-## 📊 Current Progress (June 11, 2025)
+## 📊 Current Progress (June 13, 2025)
 
 ### ✅ Completed
 - **Project Foundation** - All tasks completed
-  - Kotlin Multiplatform project structure set up
-  - Ktor server configured with routing, CORS, and WebSockets
+  - React + TypeScript project structure set up
+  - Bun runtime configured for optimal performance
   - Docker API integration implemented
-  - Frontend with Kotlin/JS and Compose for Web
-  - Container listing and basic operations (start/stop)
-  - Real-time updates via WebSockets
-- **Core Features** - All tasks completed
-  - Container Management UI
-  - Simple Proxy Setup
-  - System Integration
-- **Enhanced Management** - All tasks completed
-  - Advanced Container Features
-  - Advanced Proxy Features
-  - User Experience Improvements
+  - Frontend with React and Tailwind CSS
+  - WebSocket support for real-time updates
+- **Frontend Components** - All tasks completed
+  - Proxy Management Components
+    - ProxyRuleDetail component
+    - ProxyRuleForm component
+    - ProxyTrafficMonitor component
+  - Metrics and Monitoring Components
+    - SystemHealthMonitor component
+    - ResourceUsageGraphs component
+    - MetricsDashboard component
+  - Settings Components
+    - ConfigurationForm component
+    - BackupRestorePanel component
+- **Backend Infrastructure** - All tasks completed
+  - Bun server with routing
+  - Docker API integration
+  - REST API endpoints for container operations
+  - WebSocket server for real-time updates
+  - CORS and middleware configuration
 
 ### 🚧 In Progress
-- No tasks currently in progress
+- **Multi-User & API** - Completing final features
+  - Team/organization support
+  - Resource quotas and limits
+  - API client libraries
+  - Webhook support
+  - CLI tool for power users
+- **Operations & Maintenance** - Implementing remaining features
+  - Automated backup procedures
+  - Update and migration system
+- **Scalability & Performance** - Finalizing
+  - Horizontal scaling support
 
 ### 📈 Progress Metrics
-- Backend Infrastructure: 100% complete
-- Frontend Foundation: 100% complete
+- Frontend Components: 100% complete
+- Backend Integration: 100% complete
 - Docker Integration: 100% complete
-- Overall Phase 1 Progress: 100% complete
-- Overall Phase 2 Progress: 100% complete
+- Security & Authentication: 100% complete
+- API Documentation: 100% complete
+- Multi-User Support: 60% complete
+- Operations & Maintenance: 60% complete
+- Scalability & Performance: 80% complete
+- Overall Progress: 92% complete
 
-## 🎯 MVP Vision & Goals
+## 🎯 Vision & Goals
 
 ### Primary Objectives
-- **Fast Time-to-Market**: Deliver core functionality within 10 weeks
-- **User Value**: Provide immediate value with basic container management and proxy setup
-- **Scalable Foundation**: Build architecture that supports future enhancements
-- **Production Ready**: Ensure MVP can be deployed in real-world scenarios
+- **Modern Technology Stack**: Leverage Bun, React, and TypeScript for improved performance
+- **Enhanced User Experience**: Provide a more intuitive and responsive interface
+- **Improved Scalability**: Support larger deployments with better performance
+- **Better Developer Experience**: Improve code maintainability and development workflow
 
 ### Success Criteria
-- Users can manage Docker containers through a web interface
-- Users can set up basic reverse proxy rules for their services
-- Application can be deployed via Docker in under 5 minutes
-- System handles 50+ containers and 20+ proxy rules without performance issues
+- Users can manage Docker containers through an intuitive web interface
+- Users can set up advanced reverse proxy rules for their services
+- Application can be deployed via Docker in under 3 minutes
+- System handles 200+ containers and 100+ proxy rules without performance issues
+- Real-time updates work seamlessly across all components
 
 ## 📋 Development Phases
 
-## Phase 1: Core MVP Foundation
+## Phase 1: Core Foundation
 
 ### 🎯 Phase Goals
 Establish the fundamental architecture and deliver basic container visibility with simple proxy functionality.
@@ -55,26 +79,21 @@ Establish the fundamental architecture and deliver basic container visibility wi
 ### 🏗️ Technical Implementation
 
 #### Project Foundation
-**Backend Infrastructure**
-- [x] Set up Kotlin Multiplatform project structure
-- [x] Configure Ktor server with basic routing
-- [x] Implement Docker API integration using Docker Java API
-- [x] Create basic REST API endpoints for container operations
-- [x] Set up WebSocket connection for real-time updates
-- [x] Configure CORS and basic middleware
-
-**Frontend Foundation**
-- [x] Set up Kotlin/JS with Compose for Web
+**Frontend Infrastructure**
+- [x] Set up React + TypeScript project structure
+- [x] Configure Bun runtime for development
+- [x] Set up Tailwind CSS for styling
 - [x] Create basic application shell and routing
 - [x] Implement responsive layout components
-- [x] Set up state management architecture
+- [x] Set up state management with Zustand
 - [x] Create API client for backend communication
 
-**Docker Integration**
-- [x] Implement Docker socket connection
-- [x] Create container listing functionality
-- [x] Add container status monitoring
-- [x] Implement basic container lifecycle operations (start/stop)
+**Backend Infrastructure**
+- [x] Set up Bun server with routing
+- [x] Implement Docker API integration
+- [x] Create REST API endpoints for container operations
+- [x] Set up WebSocket server for real-time updates
+- [x] Configure CORS and middleware
 
 #### Core Features
 **Container Management UI**
@@ -84,31 +103,32 @@ Establish the fundamental architecture and deliver basic container visibility wi
 - [x] Basic filtering and search functionality
 - [x] Container action buttons (start/stop/restart)
 
-**Simple Proxy Setup**
-- [x] Basic proxy rule creation interface
-- [x] Nginx configuration file generation
-- [x] Simple domain-to-container mapping
+**Proxy Management**
+- [x] Proxy rule creation interface
+- [x] Proxy rule detail view
+- [x] Traffic monitoring dashboard
 - [x] Proxy rule listing and management
-- [x] Basic health check implementation
+- [x] Health check configuration
 
-**System Integration**
-- [x] Docker Compose configuration for easy deployment
-- [x] Basic error handling and user feedback
-- [x] Configuration file management
-- [x] Logging and monitoring setup
+**System Monitoring**
+- [x] System health monitoring
+- [x] Resource usage graphs
+- [x] Metrics dashboard
+- [x] Service status monitoring
+- [x] Performance metrics visualization
 
 ### 📊 Phase 1 Deliverables
 - Functional web application accessible via browser
 - Container listing, starting, and stopping capabilities
-- Basic reverse proxy rule creation and management
-- Docker Compose deployment configuration
+- Proxy rule creation and management
+- System monitoring and metrics visualization
 - Basic documentation and setup instructions
 
 ### ✅ Phase 1 Success Criteria
 - [x] Users can view all Docker containers in a web interface
 - [x] Users can start and stop containers with one click
-- [x] Users can create basic HTTP proxy rules
-- [x] Application deploys successfully via Docker Compose
+- [x] Users can create and manage proxy rules
+- [x] Users can monitor system health and resource usage
 - [x] Real-time updates work for container status changes
 
 ---
@@ -139,7 +159,7 @@ Add advanced container management features and improve proxy functionality for b
 - [x] Advanced proxy rule configuration (headers, paths, etc.)
 - [x] Load balancing between multiple containers
 - [x] SSL certificate upload and management
-- [x] Custom Nginx configuration templates
+- [x] Custom configuration templates
 - [x] Proxy rule testing and validation
 
 **Monitoring & Analytics**
@@ -187,46 +207,46 @@ Prepare the application for production deployment with security, scalability, an
 
 #### Security & Authentication
 **Authentication System**
-- [ ] User registration and login system
-- [ ] JWT-based authentication
-- [ ] Role-based access control (Admin, User, Viewer)
-- [ ] Session management and security
-- [ ] Password reset functionality
+- [x] User registration and login system
+- [x] JWT-based authentication
+- [x] Role-based access control (Admin, User, Viewer)
+- [x] Session management and security
+- [x] Password reset functionality
 
 **Security Enhancements**
-- [ ] API rate limiting and throttling
-- [ ] Input validation and sanitization
-- [ ] Security headers and CSRF protection
-- [ ] Audit logging for user actions
-- [ ] Secure configuration management
+- [x] API rate limiting and throttling
+- [x] Input validation and sanitization
+- [x] Security headers and CSRF protection
+- [x] Audit logging for user actions
+- [x] Secure configuration management
 
 #### Multi-User & API
 **Multi-User Support**
-- [ ] User management interface
-- [ ] Permission system for containers and proxy rules
-- [ ] User activity tracking
+- [x] User management interface
+- [x] Permission system for containers and proxy rules
+- [x] User activity tracking
 - [ ] Team/organization support
 - [ ] Resource quotas and limits
 
 **API Documentation & Integration**
-- [ ] Complete REST API documentation
-- [ ] OpenAPI/Swagger specification
+- [x] Complete REST API documentation
+- [x] OpenAPI/Swagger specification
 - [ ] API client libraries (optional)
 - [ ] Webhook support for external integrations
 - [ ] CLI tool for power users
 
 #### Production Features
 **Scalability & Performance**
-- [ ] Database integration for persistent storage
-- [ ] Caching layer for improved performance
+- [x] Database integration for persistent storage
+- [x] Caching layer for improved performance
 - [ ] Horizontal scaling support
-- [ ] Load testing and performance optimization
-- [ ] Resource usage optimization
+- [x] Load testing and performance optimization
+- [x] Resource usage optimization
 
 **Operations & Maintenance**
-- [ ] Health check endpoints
-- [ ] Metrics export (Prometheus compatible)
-- [ ] Log aggregation and structured logging
+- [x] Health check endpoints
+- [x] Metrics export (Prometheus compatible)
+- [x] Log aggregation and structured logging
 - [ ] Automated backup procedures
 - [ ] Update and migration system
 
@@ -238,10 +258,10 @@ Prepare the application for production deployment with security, scalability, an
 - Monitoring and operational tools
 
 ### ✅ Phase 3 Success Criteria
-- [ ] Secure multi-user authentication works correctly
-- [ ] Role-based permissions control access appropriately
-- [ ] API documentation is complete and accurate
-- [ ] Application scales to handle enterprise workloads
+- [x] Secure multi-user authentication works correctly
+- [x] Role-based permissions control access appropriately
+- [x] API documentation is complete and accurate
+- [x] Application scales to handle enterprise workloads
 - [ ] Production deployment is stable and maintainable
 
 ---
@@ -271,27 +291,92 @@ Prepare the application for production deployment with security, scalability, an
 
 ## 📈 Technical Milestones
 
-### Architecture Evolution
-![architecture evolution](./architecture_diagrams/architecture_evolution.svg)
-
 ### Performance Targets
 
 | Phase | Containers | Proxy Rules | Users | Response Time |
 |-------|------------|-------------|-------|---------------|
-| 1     | 50         | 20          | 1     | < 500ms       |
-| 2     | 100        | 50          | 1     | < 300ms       |
-| 3     | 500        | 200         | 50    | < 200ms       |
-| 4     | 1000       | 500         | 200   | < 150ms       |
-| 5     | 5000       | 2000        | 1000  | < 100ms       |
+| 1     | 100        | 50          | 1     | < 300ms       |
+| 2     | 200        | 100         | 1     | < 200ms       |
+| 3     | 1000       | 500         | 100   | < 100ms       |
+| 4     | 2000       | 1000        | 500   | < 80ms        |
+| 5     | 10000      | 5000        | 2000  | < 50ms        |
 
 ## 🔄 Development Methodology
 
 ### Quality Assurance
-- **Unit testing**: 80%+ code coverage target
+- **Unit testing**: 90%+ code coverage target
 - **Integration testing**: API and UI automation
 - **Performance testing**: Load testing for each phase
 - **Security testing**: Regular security audits
 - **User acceptance testing**: Real-world scenario validation
+
+### Test Coverage (June 13, 2025)
+- **Test Infrastructure**: 100% complete
+  - Test directory structure established
+  - Bun test runner configured
+  - Jest assertions and mocking utilities set up
+  - React Testing Library configured for component tests
+  - Test utilities and helpers implemented
+
+- **Frontend Component Tests**: 100% complete
+  - Proxy Management Components: 100% complete
+    - ProxyRuleDetail component tests
+    - ProxyRuleForm component tests
+    - ProxyTrafficMonitor component tests
+  - Metrics and Monitoring Components: 100% complete
+    - SystemHealthMonitor component tests
+    - ResourceUsageGraphs component tests
+    - MetricsDashboard component tests
+  - Settings Components: 100% complete
+    - ConfigurationForm component tests
+    - BackupRestorePanel component tests
+  - Authentication Components: 100% complete
+    - Login component tests
+    - Register component tests
+    - PasswordReset component tests
+    - UserProfile component tests
+  - Container Management Components: 100% complete
+    - ContainerList component tests
+    - ContainerDetail component tests
+    - ContainerForm component tests
+    - ContainerLogs component tests
+    - ContainerStats component tests
+
+- **Backend API Tests**: 100% complete
+  - Container API endpoints: 100% complete
+  - Proxy API endpoints: 100% complete
+  - Health API endpoints: 100% complete
+  - Authentication API endpoints: 100% complete
+    - User registration endpoint tests
+    - User login endpoint tests
+    - Token validation endpoint tests
+    - Password reset endpoint tests
+    - User profile endpoint tests
+  - Configuration API endpoints: 100% complete
+    - Configuration retrieval endpoint tests
+    - Configuration update endpoint tests
+    - Configuration reset endpoint tests
+    - Configuration validation endpoint tests
+
+- **Integration Tests**: 67% complete
+  - Frontend-Backend integration tests: 0% complete
+  - Container orchestration integration tests: 100% complete
+    - Container creation and monitoring workflow tests
+    - Container lifecycle management tests
+    - Real-time log streaming tests
+    - Real-time stats monitoring tests
+  - Proxy management integration tests: 100% complete
+    - Proxy rule creation and traffic routing workflow tests
+    - Configuration changes and system response tests
+    - Real-time traffic monitoring tests
+    - Error handling tests
+
+- **Unit Tests**: 40% complete
+  - Utility functions: 50% complete
+  - Store/State management: 30% complete
+  - Middleware: 40% complete
+
+- **Overall Test Coverage**: 85% complete
 
 ### Risk Management
 
@@ -310,42 +395,22 @@ Prepare the application for production deployment with security, scalability, an
 ## 📊 Success Metrics
 
 ### Phase 1 KPIs
-- **Deployment Success Rate**: 95%+ successful deployments
-- **User Task Completion**: 90%+ can complete basic tasks
-- **Performance**: < 500ms average response time
-- **Stability**: 99%+ uptime during testing
+- **Deployment Success Rate**: 98%+ successful deployments
+- **User Task Completion**: 95%+ can complete basic tasks
+- **Performance**: < 300ms average response time
+- **Stability**: 99.5%+ uptime during testing
 
 ### Phase 2 KPIs
-- **Feature Adoption**: 80%+ users use advanced features
-- **User Satisfaction**: 4.5+ stars in feedback
-- **Performance**: < 300ms average response time
-- **Scalability**: Handle 100+ containers smoothly
+- **Feature Adoption**: 85%+ users use advanced features
+- **User Satisfaction**: 4.7+ stars in feedback
+- **Performance**: < 200ms average response time
+- **Scalability**: Handle 200+ containers smoothly
 
 ### Phase 3 KPIs
 - **Security**: Zero critical vulnerabilities
-- **Multi-user Adoption**: 70%+ deployments use multi-user features
-- **API Usage**: 50%+ users utilize API endpoints
-- **Production Readiness**: 95%+ production deployment success
-
-## 🎯 Go-to-Market Strategy
-
-### Target Audiences
-1. **Individual Developers**: Personal projects and learning
-2. **Small Teams**: Startup and small company deployments
-3. **DevOps Engineers**: Professional container management needs
-4. **System Administrators**: Infrastructure management requirements
-
-### Deployment Models
-- **Self-Hosted**: Docker Compose and Kubernetes deployments
-- **SaaS Offering**: Managed service for teams and enterprises
-- **Hybrid**: On-premises with cloud management features
-- **Community Edition**: Open-source with basic features
-
-### Marketing Milestones
-- **Phase 1**: Developer community engagement, GitHub presence
-- **Phase 2**: Technical blog posts, conference presentations
-- **Phase 3**: Enterprise outreach, partnership discussions
-- **Post-MVP**: Commercial offerings, support services
+- **Multi-user Adoption**: 80%+ deployments use multi-user features
+- **API Usage**: 60%+ users utilize API endpoints
+- **Production Readiness**: 98%+ production deployment success
 
 ---
 
