@@ -1,0 +1,83 @@
+name: Performance Tests
+
+on:
+  schedule:
+    # Run at midnight UTC every day
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    # Allow manual triggering
+
+jobs:
+  performance:
+    name: Run Performance Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Fetch all history for proper trend analysis
+      
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+      
+      - name: Install dependencies
+        working-directory: ./v2
+        run: bun install
+      
+      - name: Run performance tests
+        working-directory: ./v2
+        run: |
+          mkdir -p performance-reports
+          # Run performance tests and output to JSON format
+          bun test tests/performance --timeout 60000 > performance-reports/results.json
+      
+      - name: Generate performance trend report
+        working-directory: ./v2
+        run: |
+          # Create a simple HTML report with charts
+          echo '<!DOCTYPE html>
+          <html>
+          <head>
+            <title>Performance Trend Report</title>
+            <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+            <style>
+              body { font-family: Arial, sans-serif; margin: 20px; }
+              .chart-container { width: 800px; height: 400px; margin-bottom: 30px; }
+            </style>
+          </head>
+          <body>
+            <h1>Performance Trend Report</h1>
+            <p>Generated on: '"$(date)"'</p>
+            <div class="chart-container">
+              <canvas id="responseTimeChart"></canvas>
+            </div>
+            <div class="chart-container">
+              <canvas id="throughputChart"></canvas>
+            </div>
+            <script>
+              const results = JSON.parse(`cat performance-reports/results.json`);
+              // Create charts using the results data
+              // This is a placeholder - actual implementation would depend on test output format
+            </script>
+          </body>
+          </html>' > performance-reports/trend-report.html
+      
+      - name: Upload performance reports
+        uses: actions/upload-artifact@v3
+        with:
+          name: performance-reports
+          path: v2/performance-reports/
+      
+      - name: Store performance data
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Performance Benchmarks
+          tool: 'customBiggerIsBetter'
+          output-file-path: v2/performance-reports/results.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          # Comment out the following line if you don't want to create GitHub Pages for benchmark results
+          # gh-pages-branch: gh-pages

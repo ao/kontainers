@@ -1,0 +1,50 @@
+codecov:
+  require_ci_to_pass: true
+  notify:
+    wait_for_ci: true
+
+coverage:
+  precision: 2
+  round: down
+  range: "70...100"
+  status:
+    project:
+      default:
+        # basic
+        target: 80%
+        threshold: 2%
+        base: auto
+        # advanced
+        branches:
+          - main
+        if_ci_failed: error
+        informational: false
+        only_pulls: false
+    patch:
+      default:
+        # basic
+        target: 80%
+        threshold: 5%
+        base: auto
+        # advanced
+        branches:
+          - main
+        if_ci_failed: error
+        informational: false
+        only_pulls: false
+
+parsers:
+  javascript:
+    enable_partials: yes
+
+comment:
+  layout: "reach,diff,flags,files,footer"
+  behavior: default
+  require_changes: false
+  require_base: false
+  require_head: true
+
+ignore:
+  - "v2/tests/**/*"
+  - "**/*.d.ts"
+  - "v2/dist/**/*"

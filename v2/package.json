@@ -1,28 +1,49 @@
 {
   "name": "kontainers-v2",
-  "version": "0.1.0",
-  "private": true,
-  "workspaces": [
-    "frontend",
-    "backend",
-    "shared"
-  ],
+  "version": "1.0.0",
+  "description": "Container management and reverse proxy platform",
+  "main": "src/index.ts",
+  "type": "module",
   "scripts": {
-    "dev": "concurrently \"bun run dev:frontend\" \"bun run dev:backend\"",
-    "dev:frontend": "bun --cwd frontend run dev",
-    "dev:backend": "bun --cwd backend run dev",
-    "build": "bun run build:shared && bun run build:frontend && bun run build:backend",
-    "build:frontend": "bun --cwd frontend run build",
-    "build:backend": "bun --cwd backend run build",
-    "build:shared": "bun --cwd shared run build",
-    "start": "bun --cwd backend run start",
-    "clean": "rm -rf node_modules && rm -rf frontend/node_modules && rm -rf backend/node_modules && rm -rf shared/node_modules"
+    "dev": "bun run --watch src/index.ts",
+    "build": "bun build src/index.ts --outdir dist",
+    "start": "bun run dist/index.js",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "test:coverage": "bun test --coverage",
+    "test:frontend": "bun test tests/frontend",
+    "test:backend": "bun test tests/backend",
+    "test:integration": "bun test tests/integration",
+    "test:utils": "bun test tests/utils",
+    "test:performance": "bun test tests/performance --timeout 60000",
+    "lint": "eslint src tests --ext .ts,.tsx",
+    "prepare": "bash scripts/install-hooks.sh",
+    "hooks:install": "bash scripts/install-hooks.sh",
+    "hooks:skip": "export SKIP_HOOKS=true"
+  },
+  "dependencies": {
+    "elysia": "^0.8.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "zustand": "^4.4.0",
+    "jsonwebtoken": "^9.0.2",
+    "date-fns": "^2.30.0",
+    "tailwindcss": "^3.3.3",
+    "chart.js": "^4.4.0",
+    "react-router-dom": "^6.16.0"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2",
-    "typescript": "^5.3.3"
-  },
-  "engines": {
-    "bun": ">=1.0.0"
+    "@testing-library/react": "^14.0.0",
+    "@testing-library/react-hooks": "^8.0.1",
+    "@testing-library/user-event": "^14.5.1",
+    "@types/react": "^18.2.21",
+    "@types/react-dom": "^18.2.7",
+    "@types/jsonwebtoken": "^9.0.3",
+    "@types/node": "^20.6.0",
+    "typescript": "^5.2.2",
+    "eslint": "^8.49.0",
+    "eslint-plugin-react": "^7.33.2",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "bun-types": "latest"
   }
 }

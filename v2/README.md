@@ -1,5 +1,10 @@
 # Kontainers v2
 
+![Build Status](https://github.com/kontainers/kontainers-v2/workflows/Test%20Suite/badge.svg)
+![Coverage](https://codecov.io/gh/kontainers/kontainers-v2/branch/main/graph/badge.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![Bun](https://img.shields.io/badge/Bun-1.0.0-black)
+
 Kontainers v2 is a modern, high-performance container management and reverse proxy platform built with Bun, React, and TypeScript. It provides an intuitive web interface for managing Docker containers, setting up reverse proxy rules, and monitoring system performance.
 
 ## 🚀 Features
@@ -236,6 +241,9 @@ cd kontainers-v2
 # Install dependencies
 bun install
 
+# Install git hooks for development
+bun hooks:install
+
 # Start development server
 bun run dev
 ```
@@ -258,7 +266,12 @@ kontainers-v2/
 ├── public/              # Static assets
 ├── config/              # Configuration files
 ├── scripts/             # Build and deployment scripts
+│   └── git-hooks/       # Git hooks for development workflow
 └── tests/               # Test files
+    ├── frontend/        # Frontend component tests
+    ├── backend/         # Backend API tests
+    ├── integration/     # Integration tests
+    └── performance/     # Performance tests
 ```
 
 ### Running Tests
@@ -267,12 +280,83 @@ kontainers-v2/
 # Run all tests
 bun test
 
+# Run tests with coverage report
+bun test:coverage
+
 # Run frontend tests
 bun test:frontend
 
 # Run backend tests
 bun test:backend
+
+# Run integration tests
+bun test:integration
+
+# Run performance tests
+bun test:performance
 ```
+
+### Git Hooks
+
+The project includes Git hooks to ensure code quality:
+
+- **Pre-commit hook**: Runs tests on changed files
+- **Pre-push hook**: Runs the full test suite and checks coverage
+
+You can temporarily disable hooks using:
+
+```bash
+# For a single commit/push
+SKIP_HOOKS=true git commit
+SKIP_HOOKS=true git push
+
+# For the current terminal session
+bun hooks:skip
+```
+
+## 🔄 CI/CD Pipeline
+
+![Build Status](https://github.com/kontainers/kontainers-v2/workflows/Test%20Suite/badge.svg)
+![Coverage](https://codecov.io/gh/kontainers/kontainers-v2/branch/main/graph/badge.svg)
+
+Kontainers v2 uses GitHub Actions for continuous integration and deployment.
+
+### Test Workflow
+
+The test workflow runs on every push to the main branch and on pull requests:
+
+- Sets up the Bun environment
+- Installs dependencies
+- Runs the test suite with coverage reporting
+- Fails the build if test coverage falls below 80%
+- Uploads coverage reports as artifacts
+- Integrates with Codecov for coverage visualization
+
+### Performance Testing
+
+A separate workflow runs performance tests on a nightly schedule:
+
+- Measures API response times and throughput
+- Generates performance trend reports
+- Tracks performance metrics over time
+
+### Pull Request Integration
+
+The CI pipeline integrates with pull requests to provide:
+
+- Automated test results as PR comments
+- Status checks that prevent merging if tests fail
+- Coverage reports to ensure code quality
+
+### Local Development Integration
+
+The CI/CD pipeline is integrated with local development through Git hooks:
+
+- Pre-commit hook runs tests on changed files
+- Pre-push hook runs the full test suite
+- Coverage checks ensure code quality
+
+To view the CI/CD configuration, see the workflow files in `.github/workflows/`.
 
 ## 📄 License
 

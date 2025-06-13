@@ -1,0 +1,76 @@
+name: Test Suite
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+      
+      - name: Install dependencies
+        working-directory: ./v2
+        run: bun install
+      
+      - name: Run tests with coverage
+        working-directory: ./v2
+        run: bun test --coverage
+      
+      - name: Check coverage threshold
+        working-directory: ./v2
+        run: |
+          COVERAGE=$(cat coverage/coverage-summary.json | jq '.total.lines.pct')
+          echo "Coverage: $COVERAGE%"
+          if (( $(echo "$COVERAGE < 80" | bc -l) )); then
+            echo "Test coverage is below 80%"
+            exit 1
+          fi
+      
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v3
+        with:
+          name: coverage-report
+          path: v2/coverage/
+      
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          directory: ./v2/coverage/
+          fail_ci_if_error: true
+      
+      - name: Generate test summary
+        if: always()
+        working-directory: ./v2
+        run: |
+          echo "## Test Results" > test-summary.md
+          echo "### Coverage: $(cat coverage/coverage-summary.json | jq '.total.lines.pct')%" >> test-summary.md
+          echo "### Tests: $(cat coverage/coverage-summary.json | jq '.total.lines.total') total" >> test-summary.md
+          echo "### Passed: $(cat coverage/coverage-summary.json | jq '.total.lines.covered')" >> test-summary.md
+          echo "### Failed: $(cat coverage/coverage-summary.json | jq '.total.lines.total - .total.lines.covered')" >> test-summary.md
+      
+      - name: Comment PR with test results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const summary = fs.readFileSync('v2/test-summary.md', 'utf8');
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });

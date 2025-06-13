@@ -1,0 +1,65 @@
+name: Dependency Scanning
+
+on:
+  schedule:
+    # Run weekly on Monday at 00:00 UTC
+    - cron: '0 0 * * 1'
+  push:
+    branches: [ main ]
+    paths:
+      - 'v2/package.json'
+      - 'v2/package-lock.json'
+      - 'v2/bun.lockb'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'v2/package.json'
+      - 'v2/package-lock.json'
+      - 'v2/bun.lockb'
+  workflow_dispatch:
+    # Allow manual triggering
+
+jobs:
+  scan:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      
+      - name: Install dependencies
+        run: npm install -g @cyclonedx/bom
+      
+      - name: Generate Software Bill of Materials (SBOM)
+        working-directory: ./v2
+        run: cyclonedx-bom -o bom.json
+      
+      - name: Run OWASP Dependency Check
+        uses: dependency-check/Dependency-Check_Action@main
+        with:
+          project: 'Kontainers v2'
+          path: './v2'
+          format: 'HTML'
+          out: './reports'
+          args: >
+            --enableExperimental
+            --suppression ./v2/.github/dependency-check-suppressions.xml
+      
+      - name: Upload dependency check report
+        uses: actions/upload-artifact@v3
+        with:
+          name: dependency-check-report
+          path: ./reports
+      
+      - name: Check for vulnerabilities
+        run: |
+          if grep -q "CVSS Score: [7-9]" ./reports/dependency-check-report.html; then
+            echo "High severity vulnerabilities found!"
+            exit 1
+          fi
