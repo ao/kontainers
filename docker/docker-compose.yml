@@ -11,6 +11,8 @@ services:
       - backend
     volumes:
       - nginx-conf:/etc/nginx/conf.d
+      - letsencrypt-certs:/etc/nginx/ssl/letsencrypt
+      - acme-challenge:/var/www/.well-known/acme-challenge
     networks:
       - kontainers-network
     restart: unless-stopped
@@ -26,6 +28,8 @@ services:
       - ../config:/app/config
       - ../backups:/app/backups
       - nginx-conf:/etc/nginx/conf.d
+      - letsencrypt-certs:/etc/nginx/ssl/letsencrypt
+      - acme-challenge:/var/www/.well-known/acme-challenge
     environment:
       - NODE_ENV=production
       - DOCKER_HOST=unix:///var/run/docker.sock
@@ -45,4 +49,8 @@ networks:
 
 volumes:
   nginx-conf:
+    driver: local
+  letsencrypt-certs:
+    driver: local
+  acme-challenge:
     driver: local

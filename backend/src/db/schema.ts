@@ -40,6 +40,23 @@ export const proxyRules = sqliteTable('proxy_rules', {
   customNginxConfig: text('custom_nginx_config'),
   created: text('created').notNull(),
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  letsEncryptEnabled: integer('lets_encrypt_enabled', { mode: 'boolean' }).default(false),
+  letsEncryptEmail: text('lets_encrypt_email'),
+  letsEncryptStatus: text('lets_encrypt_status', { enum: ['PENDING', 'VALID', 'EXPIRED', 'ERROR'] }),
+  letsEncryptLastRenewal: text('lets_encrypt_last_renewal'),
+});
+
+export const sslCertificates = sqliteTable('ssl_certificates', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  domain: text('domain').notNull(),
+  certificate: text('certificate').notNull(),
+  privateKey: text('private_key').notNull(),
+  chainCertificate: text('chain_certificate'),
+  expiryDate: text('expiry_date').notNull(),
+  created: text('created').notNull(),
+  isLetsEncrypt: integer('is_lets_encrypt', { mode: 'boolean' }).default(false),
+  letsEncryptEmail: text('lets_encrypt_email'),
 });
 
 export const proxyTraffic = sqliteTable('proxy_traffic', {

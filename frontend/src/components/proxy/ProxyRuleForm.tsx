@@ -31,6 +31,9 @@ export const ProxyRuleForm: React.FC<ProxyRuleFormProps> = ({
       headers: {},
       responseHeaders: {},
       domain: '',
+      letsEncryptEnabled: false,
+      letsEncryptEmail: '',
+      letsEncryptStatus: undefined,
       healthCheck: {
         path: '/health',
         interval: 30000,
@@ -100,6 +103,7 @@ export const ProxyRuleForm: React.FC<ProxyRuleFormProps> = ({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [targetContainers, setTargetContainers] = useState<Array<{id: string, name: string}>>([]);
   const [showAdvancedSSL, setShowAdvancedSSL] = useState(rule.sslEnabled);
+  const [showLetsEncrypt, setShowLetsEncrypt] = useState(rule.letsEncryptEnabled);
   const [showStickySessions, setShowStickySessions] = useState(rule.loadBalancing.sticky);
   const [showCorsSettings, setShowCorsSettings] = useState(rule.advancedConfig.corsEnabled);
   const [showCacheSettings, setShowCacheSettings] = useState(rule.advancedConfig.cacheEnabled);
@@ -139,9 +143,19 @@ export const ProxyRuleForm: React.FC<ProxyRuleFormProps> = ({
     }
     
     // SSL validation
-    if (rule.sslEnabled) {
+    if (rule.sslEnabled && !rule.letsEncryptEnabled) {
       if (!rule.sslCertPath.trim()) newErrors.sslCertPath = 'SSL certificate path is required';
       if (!rule.sslKeyPath.trim()) newErrors.sslKeyPath = 'SSL key path is required';
+    }
+    
+    // Let's Encrypt validation
+    if (rule.letsEncryptEnabled) {
+      if (!rule.domain) {
+        newErrors.domain = 'Domain is required for Let\'s Encrypt';
+      }
+      if (!rule.letsEncryptEmail || !rule.letsEncryptEmail.includes('@')) {
+        newErrors.letsEncryptEmail = 'Valid email is required for Let\'s Encrypt';
+      }
     }
     
     // Health check validation
@@ -201,7 +215,30 @@ export const ProxyRuleForm: React.FC<ProxyRuleFormProps> = ({
       }));
       
       // Special handling for toggles that show/hide sections
-      if (name === 'sslEnabled') setShowAdvancedSSL(checked);
+      if (name === 'sslEnabled') {
+        setShowAdvancedSSL(checked);
+        // If enabling SSL, disable Let's Encrypt
+        if (checked && rule.letsEncryptEnabled) {
+          setRule(prev => ({
+            ...prev,
+            letsEncryptEnabled: false
+          }));
+          setShowLetsEncrypt(false);
+        }
+      }
+      if (name === 'letsEncryptEnabled') {
+        setShowLetsEncrypt(checked);
+        // If enabling Let's Encrypt, enable SSL and hide manual SSL settings
+        if (checked) {
+          setRule(prev => ({
+            ...prev,
+            sslEnabled: true
+          }));
+          setShowAdvancedSSL(false);
+        } else {
+          setShowAdvancedSSL(rule.sslEnabled);
+        }
+      }
       if (name === 'loadBalancing.sticky') setShowStickySessions(checked);
       if (name === 'advancedConfig.corsEnabled') setShowCorsSettings(checked);
       if (name === 'advancedConfig.cacheEnabled') setShowCacheSettings(checked);

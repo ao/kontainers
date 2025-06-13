@@ -30,6 +30,24 @@ export interface ProxyRule {
    * Domain name for domain-based routing
    */
   domain?: string;
+  
+  /**
+   * Let's Encrypt certificate management
+   */
+  letsEncryptEnabled?: boolean;
+  letsEncryptEmail?: string;
+  letsEncryptStatus?: LetsEncryptStatus;
+  letsEncryptLastRenewal?: number;
+}
+
+/**
+ * Represents the status of Let's Encrypt certificate
+ */
+export enum LetsEncryptStatus {
+  PENDING = 'PENDING',
+  VALID = 'VALID',
+  EXPIRED = 'EXPIRED',
+  ERROR = 'ERROR'
 }
 
 /**
@@ -44,6 +62,8 @@ export interface SslCertificate {
   chainCertificate?: string;
   expiryDate: string;
   created: number;
+  isLetsEncrypt?: boolean;
+  letsEncryptEmail?: string;
 }
 
 /**

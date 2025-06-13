@@ -22,6 +22,7 @@ Kontainers is a modern, high-performance container management and reverse proxy 
 - ✅ Configure advanced routing options including path-based routing
 - ✅ Set up load balancing between multiple containers
 - ✅ Manage SSL certificates for secure connections
+- ✅ Automatic Let's Encrypt certificate management with auto-renewal
 - ✅ Monitor proxy traffic and performance metrics with real-time analytics
 - ✅ Configure custom headers, health checks, rate limiting, and WAF protection
 
@@ -59,6 +60,7 @@ Kontainers follows a modern architecture with a clear separation of concerns:
 5. **Proxy Management**: Dynamic Nginx configuration generation and management
    - Domain-based routing with automatic configuration generation
    - SSL/TLS certificate management and secure connections
+   - Automated Let's Encrypt certificate provisioning and renewal
    - Advanced traffic management with load balancing, rate limiting, and WAF
 6. **Metrics Collection**: System and container metrics collection and storage
    - Domain-specific traffic analytics and monitoring
@@ -74,7 +76,6 @@ Kontainers follows a modern architecture with a clear separation of concerns:
 
 ### Vision for the Project
 - Further enhance the multi-domain proxy platform with additional enterprise features
-- Implement automated certificate management with Let's Encrypt integration
 - Develop advanced traffic analytics and reporting capabilities
 
 For detailed development plans and progress tracking, see the [ROADMAP.md](ROADMAP.md) file.
@@ -248,6 +249,9 @@ Kontainers provides a comprehensive REST API for integration with other tools:
 - `GET /api/proxy/certificates` - List all SSL/TLS certificates
 - `POST /api/proxy/certificates` - Upload a new SSL/TLS certificate
 - `DELETE /api/proxy/certificates/:id` - Delete an SSL/TLS certificate
+- `POST /api/proxy/certificates/letsencrypt` - Request a new Let's Encrypt certificate
+- `GET /api/proxy/certificates/letsencrypt/status/:domain` - Check Let's Encrypt certificate status
+- `POST /api/proxy/certificates/letsencrypt/renew/:id` - Manually renew a Let's Encrypt certificate
 
 ### System Endpoints
 

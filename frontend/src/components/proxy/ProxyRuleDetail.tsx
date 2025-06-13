@@ -195,7 +195,47 @@ export const ProxyRuleDetail: React.FC<ProxyRuleDetailProps> = ({ ruleId, onEdit
               <span className="text-sm text-gray-500">SSL Enabled</span>
               <p>{rule.sslEnabled ? 'Yes' : 'No'}</p>
             </div>
-            {rule.sslEnabled && (
+            {rule.letsEncryptEnabled && (
+              <>
+                <div>
+                  <span className="text-sm text-gray-500">Let's Encrypt</span>
+                  <p>Enabled</p>
+                </div>
+                <div>
+                  <span className="text-sm text-gray-500">Let's Encrypt Email</span>
+                  <p>{rule.letsEncryptEmail || 'N/A'}</p>
+                </div>
+                <div>
+                  <span className="text-sm text-gray-500">Certificate Status</span>
+                  <p>
+                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                      !rule.letsEncryptStatus || rule.letsEncryptStatus === 'PENDING'
+                        ? 'bg-yellow-100 text-yellow-800'
+                        : rule.letsEncryptStatus === 'VALID'
+                          ? 'bg-green-100 text-green-800'
+                          : rule.letsEncryptStatus === 'EXPIRED'
+                            ? 'bg-red-100 text-red-800'
+                            : 'bg-red-100 text-red-800'
+                    }`}>
+                      {rule.letsEncryptStatus || 'PENDING'}
+                    </span>
+                  </p>
+                </div>
+                {rule.letsEncryptLastRenewal && (
+                  <div>
+                    <span className="text-sm text-gray-500">Last Renewal</span>
+                    <p>{new Date(rule.letsEncryptLastRenewal).toLocaleString()}</p>
+                  </div>
+                )}
+                {rule.sslCertificate?.expiryDate && (
+                  <div>
+                    <span className="text-sm text-gray-500">Expires</span>
+                    <p>{new Date(rule.sslCertificate.expiryDate).toLocaleString()}</p>
+                  </div>
+                )}
+              </>
+            )}
+            {rule.sslEnabled && !rule.letsEncryptEnabled && (
               <>
                 <div>
                   <span className="text-sm text-gray-500">SSL Certificate Path</span>

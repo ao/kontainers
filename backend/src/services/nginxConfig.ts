@@ -7,7 +7,8 @@ import {
   SslCertificate,
   WafMode,
   WafRuleset,
-  IpAccessControlConfig
+  IpAccessControlConfig,
+  LetsEncryptStatus
 } from '../../../shared/src/models';
 import { nginxManager } from '../integrations/nginx';
 
@@ -18,19 +19,22 @@ const execAsync = promisify(exec);
  */
 export class NginxConfigService {
   private configDir: string;
-  private domainConfigsDir: string;
+  domainConfigsDir: string; // Changed to public for certManager access
   private sslCertsDir: string;
+  private letsEncryptDir: string;
   private modsecurityDir: string;
 
   constructor(options: {
     configDir?: string;
     domainConfigsDir?: string;
     sslCertsDir?: string;
+    letsEncryptDir?: string;
     modsecurityDir?: string;
   } = {}) {
     this.configDir = options.configDir || '/etc/nginx';
     this.domainConfigsDir = options.domainConfigsDir || path.join(this.configDir, 'conf.d');
     this.sslCertsDir = options.sslCertsDir || path.join(this.configDir, 'ssl');
+    this.letsEncryptDir = options.letsEncryptDir || path.join(this.configDir, 'ssl/letsencrypt');
     this.modsecurityDir = options.modsecurityDir || path.join(this.configDir, 'modsecurity');
   }
 
@@ -42,13 +46,20 @@ export class NginxConfigService {
       // Ensure required directories exist
       await fs.mkdir(this.domainConfigsDir, { recursive: true });
       await fs.mkdir(this.sslCertsDir, { recursive: true });
+      await fs.mkdir(this.letsEncryptDir, { recursive: true });
       await fs.mkdir(this.modsecurityDir, { recursive: true });
       await fs.mkdir(path.join(this.modsecurityDir, 'rules'), { recursive: true });
+      
+      // Create .well-known/acme-challenge directory for Let's Encrypt
+      const acmeChallengeDir = path.join('/var/www', '.well-known/acme-challenge');
+      await fs.mkdir(acmeChallengeDir, { recursive: true });
       
       console.log(`NginxConfigService initialized with:
         - Domain configs directory: ${this.domainConfigsDir}
         - SSL certificates directory: ${this.sslCertsDir}
-        - ModSecurity directory: ${this.modsecurityDir}`);
+        - Let's Encrypt directory: ${this.letsEncryptDir}
+        - ModSecurity directory: ${this.modsecurityDir}
+        - ACME challenge directory: ${acmeChallengeDir}`);
     } catch (error: any) {
       console.error('Error initializing NginxConfigService:', error);
       throw new Error(`Failed to initialize NginxConfigService: ${error.message}`);
@@ -82,10 +93,40 @@ server {
     error_log /var/log/nginx/${rule.id}_error.log;
 `;
 
+    // Add Let's Encrypt ACME challenge location
+    config += `
+    # Let's Encrypt ACME challenge location
+    location /.well-known/acme-challenge/ {
+        root /var/www;
+        try_files $uri =404;
+    }
+`;
+
+    // If Let's Encrypt is enabled but SSL is not yet set up, we only need the ACME challenge location
+    if (rule.letsEncryptEnabled && !rule.sslEnabled) {
+      config += `
+    # Redirect all HTTP traffic to HTTPS once certificate is issued
+    location / {
+        return 301 https://$host$request_uri;
+    }
+`;
+    }
+
     // Add SSL configuration if enabled
     if (rule.sslEnabled && rule.sslCertPath && rule.sslKeyPath) {
+      // Close the HTTP server block and start an HTTPS server block
       config += `
+}
+
+# HTTPS server for ${rule.name} (${rule.domain})
+server {
     listen 443 ssl;
+    server_name ${rule.domain};
+    
+    # Enhanced logging for analytics
+    access_log /var/log/nginx/${rule.id}_access.log ${rule.id}_analytics_fmt;
+    error_log /var/log/nginx/${rule.id}_error.log;
+    
     ssl_certificate ${rule.sslCertPath};
     ssl_certificate_key ${rule.sslKeyPath};
     ssl_session_timeout 1d;
@@ -96,6 +137,12 @@ server {
     ssl_stapling on;
     ssl_stapling_verify on;
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    
+    # Let's Encrypt ACME challenge location
+    location /.well-known/acme-challenge/ {
+        root /var/www;
+        try_files $uri =404;
+    }
 `;
     }
 
@@ -536,3 +583,39 @@ server {
 
 // Export a singleton instance
 export const nginxConfigService = new NginxConfigService();
+
+// Add a function to configure Nginx for Let's Encrypt
+export async function configureNginxForLetsEncrypt(): Promise<void> {
+  try {
+    // Create a special Nginx configuration for ACME challenges
+    const acmeConfig = `
+# Global ACME challenge configuration for Let's Encrypt
+server {
+    listen 80 default_server;
+    server_name _;
+    
+    # ACME challenge location
+    location /.well-known/acme-challenge/ {
+        root /var/www;
+        try_files $uri =404;
+    }
+    
+    # Redirect everything else to HTTPS if possible
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}`;
+    
+    // Write the configuration to a file
+    const configPath = path.join(nginxConfigService.domainConfigsDir, '00-acme-challenges.conf');
+    await fs.writeFile(configPath, acmeConfig);
+    
+    // Reload Nginx
+    await nginxConfigService.reloadNginx();
+    
+    console.log('Nginx configured for ACME challenges');
+  } catch (error: any) {
+    console.error('Error configuring Nginx for ACME challenges:', error);
+    throw new Error(`Failed to configure Nginx for ACME challenges: ${error.message}`);
+  }
+}

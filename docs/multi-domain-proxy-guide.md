@@ -13,6 +13,11 @@
   - [Configuring Security Features](#configuring-security-features)
     - [SSL/TLS Configuration](#ssltls-configuration)
       - [Using Self-Signed Certificates (Development Only)](#using-self-signed-certificates-development-only)
+      - [Let's Encrypt Certificate Management](#lets-encrypt-certificate-management)
+        - [Enabling Let's Encrypt for a Domain](#enabling-lets-encrypt-for-a-domain)
+        - [How Certificate Renewal Works](#how-certificate-renewal-works)
+        - [Viewing Certificate Status](#viewing-certificate-status)
+        - [Manual Certificate Operations](#manual-certificate-operations)
     - [Rate Limiting](#rate-limiting)
     - [Web Application Firewall (WAF)](#web-application-firewall-waf)
     - [IP Access Control](#ip-access-control)
@@ -24,6 +29,7 @@
     - [Common Issues and Solutions](#common-issues-and-solutions)
       - [Domain Not Routing to Container](#domain-not-routing-to-container)
       - [SSL Certificate Issues](#ssl-certificate-issues)
+      - [Let's Encrypt Certificate Issues](#lets-encrypt-certificate-issues)
       - [High Response Times](#high-response-times)
       - [High Error Rate](#high-error-rate)
     - [Viewing Logs](#viewing-logs)
@@ -132,6 +138,55 @@ openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout private.key -out cer
 ```
 
 **Note**: Self-signed certificates will trigger browser warnings and should not be used in production.
+
+#### Let's Encrypt Certificate Management
+
+Kontainers provides automated certificate management using Let's Encrypt, allowing you to obtain free, trusted SSL certificates for your domains with automatic renewal.
+
+##### Enabling Let's Encrypt for a Domain
+
+1. Navigate to the **Proxy Rules** section in the Kontainers dashboard
+2. Create a new proxy rule or edit an existing one
+3. In the **SSL Configuration** section:
+   - Check the **SSL Enabled** option
+   - Check the **Use Let's Encrypt** option
+   - Enter your email address (required for Let's Encrypt registration and expiry notifications)
+4. Click **Save** to apply the changes
+
+The system will automatically:
+1. Request a certificate from Let's Encrypt
+2. Configure the necessary ACME challenge responses
+3. Install the certificate when issued
+4. Configure Nginx to use the new certificate
+
+##### How Certificate Renewal Works
+
+Let's Encrypt certificates are valid for 90 days. Kontainers automatically handles renewal:
+
+1. The system checks certificate expiration dates daily
+2. When a certificate has less than 30 days remaining, renewal is automatically triggered
+3. The renewal process runs in the background without service interruption
+4. Once renewed, the new certificate is automatically deployed
+
+##### Viewing Certificate Status
+
+To view the status of your Let's Encrypt certificates:
+
+1. Navigate to the **Certificates** section in the Kontainers dashboard
+2. Let's Encrypt certificates are marked with a special badge
+3. You can see details including:
+   - Domain name
+   - Expiration date
+   - Last renewal date
+   - Current status (Pending, Valid, Expired, Error)
+
+##### Manual Certificate Operations
+
+You can also perform manual operations on Let's Encrypt certificates:
+
+1. **Force Renewal**: You can manually trigger renewal for a certificate before its automatic renewal date
+2. **Request New Certificate**: You can request a new certificate for an additional domain
+3. **View Certificate Details**: You can view the full certificate chain and details
 
 ### Rate Limiting
 
@@ -259,6 +314,30 @@ The analytics page includes:
 3. **Private Key Match**: Verify that the private key matches the certificate
 4. **Certificate Expiry**: Check if the certificate has expired
 
+#### Let's Encrypt Certificate Issues
+
+1. **Domain Verification Failure**: Ensure your domain is correctly pointing to your server's IP address
+   - Check your DNS settings and wait for propagation (can take up to 24-48 hours)
+   - Verify that port 80 is accessible from the internet for the HTTP-01 challenge
+
+2. **Rate Limiting Issues**: Let's Encrypt has rate limits that may affect certificate issuance
+   - 5 duplicate certificates per week
+   - 50 certificates per registered domain per week
+   - 300 new orders per account per 3 hours
+   
+3. **Certificate Renewal Failures**:
+   - Check that the ACME challenge path is accessible
+   - Verify that Nginx is properly configured to serve the challenge files
+   - Check the certificate manager logs for specific error messages:
+     ```bash
+     tail -f /var/log/kontainers/certmanager.log
+     ```
+
+4. **Manual Renewal**: If automatic renewal fails, you can trigger a manual renewal
+   - Navigate to the **Certificates** section
+   - Find the certificate and click the **Renew** button
+   - Check the logs for any errors during the renewal process
+
 #### High Response Times
 
 1. **Container Resources**: Check if the container has sufficient resources
@@ -305,9 +384,10 @@ nginx -t
 ### Security
 
 - Always use SSL/TLS in production
+- Use Let's Encrypt for automatic certificate management when possible
 - Implement rate limiting for public-facing APIs
 - Enable WAF protection for sensitive applications
-- Regularly update SSL certificates before they expire
+- Regularly monitor certificate expiration dates
 - Use strong cipher suites for SSL/TLS
 - Implement proper CORS settings for APIs
 
@@ -322,8 +402,9 @@ nginx -t
 ### Monitoring
 
 - Set up alerts for high error rates
-- Monitor certificate expiration dates
+- Monitor certificate expiration dates and renewal status
 - Regularly review traffic patterns for anomalies
 - Set up automated backups of your proxy configurations
+- Configure email notifications for Let's Encrypt certificate events
 
 By following these guidelines, you can effectively leverage Kontainers' multi-domain reverse proxy functionality to host and manage multiple applications securely and efficiently.
