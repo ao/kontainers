@@ -9,6 +9,8 @@ services:
       - "80:80"
     depends_on:
       - backend
+    volumes:
+      - nginx-conf:/etc/nginx/conf.d
     networks:
       - kontainers-network
     restart: unless-stopped
@@ -23,13 +25,24 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ../config:/app/config
       - ../backups:/app/backups
+      - nginx-conf:/etc/nginx/conf.d
     environment:
       - NODE_ENV=production
       - DOCKER_HOST=unix:///var/run/docker.sock
+      - NGINX_CONFIG_DIR=/etc/nginx
+      - NGINX_DOMAIN_CONFIGS_DIR=/etc/nginx/conf.d
     networks:
       - kontainers-network
     restart: unless-stopped
+    # Add capability to reload nginx in the frontend container
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
 
 networks:
   kontainers-network:
     driver: bridge
+
+volumes:
+  nginx-conf:
+    driver: local

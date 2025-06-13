@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { useProxyStore } from '../../stores/proxyStore';
-import { ProxyRule } from '../../../shared/src/models';
+import { useProxyStore } from '../../store/proxyStore';
+import { ProxyRule, ProxyProtocol } from '../../../shared/src/models';
 
 interface ProxyRuleFormProps {
   initialRule?: ProxyRule;
@@ -22,14 +22,15 @@ export const ProxyRuleForm: React.FC<ProxyRuleFormProps> = ({
       enabled: true,
       sourceHost: '',
       sourcePath: '/',
-      protocol: 'http',
+      protocol: ProxyProtocol.HTTP,
       targetContainer: '',
       targetPort: 80,
       sslEnabled: false,
       sslCertPath: '',
       sslKeyPath: '',
-      requestHeaders: {},
+      headers: {},
       responseHeaders: {},
+      domain: '',
       healthCheck: {
         path: '/health',
         interval: 30000,
@@ -57,11 +58,37 @@ export const ProxyRuleForm: React.FC<ProxyRuleFormProps> = ({
         corsAllowHeaders: 'Content-Type, Authorization',
         corsAllowCredentials: false,
         rateLimit: {
+          enabled: false,
           requestsPerSecond: 10,
           burstSize: 20,
-          nodelay: false
+          nodelay: false,
+          perIp: true,
+          responseCode: 429,
+          logLevel: 'error',
+          zone: ''
         },
-        rewriteRules: []
+        rewriteRules: [],
+        securityHeaders: {
+          xFrameOptions: 'SAMEORIGIN',
+          xContentTypeOptions: 'nosniff',
+          xXssProtection: '1; mode=block',
+          strictTransportSecurity: 'max-age=31536000; includeSubDomains',
+          contentSecurityPolicy: '',
+          referrerPolicy: 'strict-origin-when-cross-origin',
+          permissionsPolicy: '',
+          customHeaders: {}
+        },
+        wafConfig: {
+          enabled: false,
+          mode: 'detection',
+          rulesets: [],
+          customRules: ''
+        },
+        ipAccessControl: {
+          enabled: false,
+          defaultAction: 'allow',
+          rules: []
+        }
       },
       customNginxConfig: '',
       created: new Date().toISOString(),
@@ -76,6 +103,9 @@ export const ProxyRuleForm: React.FC<ProxyRuleFormProps> = ({
   const [showStickySessions, setShowStickySessions] = useState(rule.loadBalancing.sticky);
   const [showCorsSettings, setShowCorsSettings] = useState(rule.advancedConfig.corsEnabled);
   const [showCacheSettings, setShowCacheSettings] = useState(rule.advancedConfig.cacheEnabled);
+  const [showSecurityHeadersSettings, setShowSecurityHeadersSettings] = useState(true);
+  const [showWafSettings, setShowWafSettings] = useState(rule.advancedConfig.wafConfig?.enabled || false);
+  const [showIpAccessControlSettings, setShowIpAccessControlSettings] = useState(rule.advancedConfig.ipAccessControl?.enabled || false);
 
   // Load available containers for target selection
   useEffect(() => {
@@ -96,6 +126,11 @@ export const ProxyRuleForm: React.FC<ProxyRuleFormProps> = ({
     if (!rule.sourceHost.trim()) newErrors.sourceHost = 'Source host is required';
     if (!rule.targetContainer && rule.loadBalancing.targets.length === 0) {
       newErrors.targetContainer = 'Target container or load balancing targets are required';
+    }
+    
+    // Domain validation - domain is optional but if provided should be valid
+    if (rule.domain && !/^[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9](?:\.[a-zA-Z]{2,})+$/.test(rule.domain)) {
+      newErrors.domain = 'Please enter a valid domain name';
     }
     
     // Port validation
@@ -170,6 +205,8 @@ export const ProxyRuleForm: React.FC<ProxyRuleFormProps> = ({
       if (name === 'loadBalancing.sticky') setShowStickySessions(checked);
       if (name === 'advancedConfig.corsEnabled') setShowCorsSettings(checked);
       if (name === 'advancedConfig.cacheEnabled') setShowCacheSettings(checked);
+      if (name === 'advancedConfig.wafConfig.enabled') setShowWafSettings(checked);
+      if (name === 'advancedConfig.ipAccessControl.enabled') setShowIpAccessControlSettings(checked);
     }
   };
 
@@ -275,7 +312,7 @@ export const ProxyRuleForm: React.FC<ProxyRuleFormProps> = ({
     });
   };
 
-  const handleAddHeader = (type: 'requestHeaders' | 'responseHeaders') => {
+  const handleAddHeader = (type: 'headers' | 'responseHeaders') => {
     setRule(prev => ({
       ...prev,
       [type]: {
@@ -286,7 +323,7 @@ export const ProxyRuleForm: React.FC<ProxyRuleFormProps> = ({
   };
 
   const handleUpdateHeader = (
-    type: 'requestHeaders' | 'responseHeaders',
+    type: 'headers' | 'responseHeaders',
     oldKey: string,
     newKey: string,
     value: string
@@ -309,7 +346,7 @@ export const ProxyRuleForm: React.FC<ProxyRuleFormProps> = ({
     });
   };
 
-  const handleRemoveHeader = (type: 'requestHeaders' | 'responseHeaders', key: string) => {
+  const handleRemoveHeader = (type: 'headers' | 'responseHeaders', key: string) => {
     setRule(prev => {
       const headers = { ...prev[type] };
       delete headers[key];
@@ -362,6 +399,28 @@ export const ProxyRuleForm: React.FC<ProxyRuleFormProps> = ({
       <div className="border-t border-gray-200 pt-4">
         <h3 className="text-lg font-medium mb-4">Routing Configuration</h3>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Domain Name
+            </label>
+            <input
+              type="text"
+              name="domain"
+              value={rule.domain || ''}
+              onChange={handleChange}
+              placeholder="app.example.com"
+              className={`w-full px-3 py-2 border rounded-md ${
+                errors.domain ? 'border-red-500' : 'border-gray-300'
+              }`}
+            />
+            {errors.domain && (
+              <p className="mt-1 text-sm text-red-500">{errors.domain}</p>
+            )}
+            <p className="mt-1 text-xs text-gray-500">
+              Optional. If provided, this domain will be routed to the target container.
+            </p>
+          </div>
+          
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Source Host
@@ -475,44 +534,191 @@ export const ProxyRuleForm: React.FC<ProxyRuleFormProps> = ({
           </div>
           
           {showAdvancedSSL && (
-            <div className="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4 pl-6 border-l-2 border-gray-200">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  SSL Certificate Path
-                </label>
+            <div className="mt-4 pl-6 border-l-2 border-gray-200">
+              <div className="flex items-center mb-4">
                 <input
-                  type="text"
-                  name="sslCertPath"
-                  value={rule.sslCertPath}
-                  onChange={handleChange}
-                  placeholder="/path/to/cert.pem"
-                  className={`w-full px-3 py-2 border rounded-md ${
-                    errors.sslCertPath ? 'border-red-500' : 'border-gray-300'
-                  }`}
+                  type="radio"
+                  id="ssl-path-option"
+                  name="sslOption"
+                  checked={!rule.sslCertificate}
+                  onChange={() => {
+                    setRule(prev => ({
+                      ...prev,
+                      sslCertificate: undefined
+                    }));
+                  }}
+                  className="h-4 w-4 text-blue-600"
                 />
-                {errors.sslCertPath && (
-                  <p className="mt-1 text-sm text-red-500">{errors.sslCertPath}</p>
-                )}
+                <label htmlFor="ssl-path-option" className="ml-2 text-sm font-medium text-gray-700">
+                  Use certificate paths
+                </label>
               </div>
               
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  SSL Key Path
-                </label>
+              {!rule.sslCertificate && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4 pl-6">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      SSL Certificate Path
+                    </label>
+                    <input
+                      type="text"
+                      name="sslCertPath"
+                      value={rule.sslCertPath}
+                      onChange={handleChange}
+                      placeholder="/path/to/cert.pem"
+                      className={`w-full px-3 py-2 border rounded-md ${
+                        errors.sslCertPath ? 'border-red-500' : 'border-gray-300'
+                      }`}
+                    />
+                    {errors.sslCertPath && (
+                      <p className="mt-1 text-sm text-red-500">{errors.sslCertPath}</p>
+                    )}
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      SSL Key Path
+                    </label>
+                    <input
+                      type="text"
+                      name="sslKeyPath"
+                      value={rule.sslKeyPath}
+                      onChange={handleChange}
+                      placeholder="/path/to/key.pem"
+                      className={`w-full px-3 py-2 border rounded-md ${
+                        errors.sslKeyPath ? 'border-red-500' : 'border-gray-300'
+                      }`}
+                    />
+                    {errors.sslKeyPath && (
+                      <p className="mt-1 text-sm text-red-500">{errors.sslKeyPath}</p>
+                    )}
+                  </div>
+                </div>
+              )}
+              
+              <div className="flex items-center mb-4">
                 <input
-                  type="text"
-                  name="sslKeyPath"
-                  value={rule.sslKeyPath}
-                  onChange={handleChange}
-                  placeholder="/path/to/key.pem"
-                  className={`w-full px-3 py-2 border rounded-md ${
-                    errors.sslKeyPath ? 'border-red-500' : 'border-gray-300'
-                  }`}
+                  type="radio"
+                  id="ssl-upload-option"
+                  name="sslOption"
+                  checked={!!rule.sslCertificate}
+                  onChange={() => {
+                    setRule(prev => ({
+                      ...prev,
+                      sslCertificate: {
+                        id: '',
+                        name: '',
+                        domain: prev.domain || '',
+                        certificate: '',
+                        privateKey: '',
+                        expiryDate: '',
+                        created: Date.now()
+                      },
+                      sslCertPath: '',
+                      sslKeyPath: ''
+                    }));
+                  }}
+                  className="h-4 w-4 text-blue-600"
                 />
-                {errors.sslKeyPath && (
-                  <p className="mt-1 text-sm text-red-500">{errors.sslKeyPath}</p>
-                )}
+                <label htmlFor="ssl-upload-option" className="ml-2 text-sm font-medium text-gray-700">
+                  Upload certificate
+                </label>
               </div>
+              
+              {rule.sslCertificate && (
+                <div className="pl-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Certificate Name
+                      </label>
+                      <input
+                        type="text"
+                        name="sslCertificate.name"
+                        value={rule.sslCertificate.name}
+                        onChange={handleChange}
+                        placeholder="My Certificate"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                      />
+                    </div>
+                    
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Domain
+                      </label>
+                      <input
+                        type="text"
+                        name="sslCertificate.domain"
+                        value={rule.sslCertificate.domain}
+                        onChange={handleChange}
+                        placeholder="example.com"
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                      />
+                      <p className="mt-1 text-xs text-gray-500">
+                        Domain name for the certificate
+                      </p>
+                    </div>
+                  </div>
+                  
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Certificate (PEM format)
+                    </label>
+                    <textarea
+                      name="sslCertificate.certificate"
+                      value={rule.sslCertificate.certificate}
+                      onChange={handleChange}
+                      rows={5}
+                      placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm"
+                    />
+                  </div>
+                  
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Private Key (PEM format)
+                    </label>
+                    <textarea
+                      name="sslCertificate.privateKey"
+                      value={rule.sslCertificate.privateKey}
+                      onChange={handleChange}
+                      rows={5}
+                      placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm"
+                    />
+                  </div>
+                  
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Chain Certificate (optional)
+                    </label>
+                    <textarea
+                      name="sslCertificate.chainCertificate"
+                      value={rule.sslCertificate.chainCertificate || ''}
+                      onChange={handleChange}
+                      rows={5}
+                      placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm"
+                    />
+                    <p className="mt-1 text-xs text-gray-500">
+                      Intermediate certificate chain if needed
+                    </p>
+                  </div>
+                  
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Expiry Date
+                    </label>
+                    <input
+                      type="date"
+                      name="sslCertificate.expiryDate"
+                      value={rule.sslCertificate.expiryDate}
+                      onChange={handleChange}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -527,32 +733,32 @@ export const ProxyRuleForm: React.FC<ProxyRuleFormProps> = ({
           <h3 className="text-lg font-medium">Request Headers</h3>
           <button
             type="button"
-            onClick={() => handleAddHeader('requestHeaders')}
+            onClick={() => handleAddHeader('headers')}
             className="px-3 py-1 bg-blue-600 text-white rounded-md text-sm"
           >
             Add Header
           </button>
         </div>
         
-        {Object.entries(rule.requestHeaders).map(([key, value], index) => (
+        {Object.entries(rule.headers || {}).map(([key, value], index) => (
           <div key={`req-${index}`} className="flex items-center gap-2 mb-2">
             <input
               type="text"
               value={key}
-              onChange={(e) => handleUpdateHeader('requestHeaders', key, e.target.value, value)}
+              onChange={(e) => handleUpdateHeader('headers', key, e.target.value, value)}
               placeholder="Header name"
               className="flex-1 px-3 py-2 border border-gray-300 rounded-md"
             />
             <input
               type="text"
               value={value}
-              onChange={(e) => handleUpdateHeader('requestHeaders', key, key, e.target.value)}
+              onChange={(e) => handleUpdateHeader('headers', key, key, e.target.value)}
               placeholder="Header value"
               className="flex-1 px-3 py-2 border border-gray-300 rounded-md"
             />
             <button
               type="button"
-              onClick={() => handleRemoveHeader('requestHeaders', key)}
+              onClick={() => handleRemoveHeader('headers', key)}
               className="p-2 text-red-600 hover:text-red-800"
             >
               <span className="sr-only">Remove</span>
@@ -563,7 +769,7 @@ export const ProxyRuleForm: React.FC<ProxyRuleFormProps> = ({
           </div>
         ))}
         
-        {Object.keys(rule.requestHeaders).length === 0 && (
+        {(!rule.headers || Object.keys(rule.headers).length === 0) && (
           <p className="text-sm text-gray-500 italic">No request headers configured</p>
         )}
       </div>
@@ -870,49 +1076,113 @@ export const ProxyRuleForm: React.FC<ProxyRuleFormProps> = ({
   const renderAdvancedTab = () => (
     <div className="space-y-6">
       <div>
-        <h3 className="text-lg font-medium mb-4">Rate Limiting</h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Requests Per Second
-            </label>
-            <input
-              type="number"
-              name="advancedConfig.rateLimit.requestsPerSecond"
-              value={rule.advancedConfig.rateLimit.requestsPerSecond}
-              onChange={handleChange}
-              min="1"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md"
-            />
-          </div>
-          
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Burst Size
-            </label>
-            <input
-              type="number"
-              name="advancedConfig.rateLimit.burstSize"
-              value={rule.advancedConfig.rateLimit.burstSize}
-              onChange={handleChange}
-              min="1"
-              className="w-full px-3 py-2 border border-gray-300 rounded-md"
-            />
-          </div>
-          
-          <div>
-            <div className="flex items-center mt-7">
-              <input
-                type="checkbox"
-                name="advancedConfig.rateLimit.nodelay"
-                checked={rule.advancedConfig.rateLimit.nodelay}
-                onChange={handleChange}
-                className="h-4 w-4 text-blue-600 rounded"
-              />
-              <span className="ml-2 text-sm text-gray-700">No Delay</span>
+        <div className="flex items-center mb-4">
+          <input
+            type="checkbox"
+            name="advancedConfig.rateLimit.enabled"
+            checked={rule.advancedConfig.rateLimit.enabled}
+            onChange={handleChange}
+            className="h-4 w-4 text-blue-600 rounded"
+          />
+          <span className="ml-2 text-sm font-medium">Enable Rate Limiting</span>
+        </div>
+        
+        {rule.advancedConfig.rateLimit.enabled && (
+          <div className="pl-6 border-l-2 border-gray-200">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Requests Per Second
+                </label>
+                <input
+                  type="number"
+                  name="advancedConfig.rateLimit.requestsPerSecond"
+                  value={rule.advancedConfig.rateLimit.requestsPerSecond}
+                  onChange={handleChange}
+                  min="1"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                />
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Burst Size
+                </label>
+                <input
+                  type="number"
+                  name="advancedConfig.rateLimit.burstSize"
+                  value={rule.advancedConfig.rateLimit.burstSize}
+                  onChange={handleChange}
+                  min="1"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                />
+              </div>
+              
+              <div>
+                <div className="flex items-center mt-7">
+                  <input
+                    type="checkbox"
+                    name="advancedConfig.rateLimit.nodelay"
+                    checked={rule.advancedConfig.rateLimit.nodelay}
+                    onChange={handleChange}
+                    className="h-4 w-4 text-blue-600 rounded"
+                  />
+                  <span className="ml-2 text-sm text-gray-700">No Delay</span>
+                </div>
+              </div>
+            </div>
+            
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <div className="flex items-center mt-2">
+                  <input
+                    type="checkbox"
+                    name="advancedConfig.rateLimit.perIp"
+                    checked={rule.advancedConfig.rateLimit.perIp}
+                    onChange={handleChange}
+                    className="h-4 w-4 text-blue-600 rounded"
+                  />
+                  <span className="ml-2 text-sm text-gray-700">Limit Per IP</span>
+                </div>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Response Code
+                </label>
+                <input
+                  type="number"
+                  name="advancedConfig.rateLimit.responseCode"
+                  value={rule.advancedConfig.rateLimit.responseCode || 429}
+                  onChange={handleChange}
+                  min="400"
+                  max="599"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  HTTP status code for rate limit errors (default: 429)
+                </p>
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Log Level
+                </label>
+                <select
+                  name="advancedConfig.rateLimit.logLevel"
+                  value={rule.advancedConfig.rateLimit.logLevel || 'error'}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                >
+                  <option value="info">Info</option>
+                  <option value="notice">Notice</option>
+                  <option value="warn">Warning</option>
+                  <option value="error">Error</option>
+                </select>
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
       
       <div className="border-t border-gray-200 pt-4">
@@ -1013,6 +1283,426 @@ export const ProxyRuleForm: React.FC<ProxyRuleFormProps> = ({
                 />
                 <span className="ml-2 text-sm text-gray-700">Allow Credentials</span>
               </div>
+            </div>
+          </div>
+        )}
+      </div>
+      
+      <div className="border-t border-gray-200 pt-4">
+        <h3 className="text-lg font-medium mb-4">Security Headers</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              X-Frame-Options
+            </label>
+            <select
+              name="advancedConfig.securityHeaders.xFrameOptions"
+              value={rule.advancedConfig.securityHeaders?.xFrameOptions || 'SAMEORIGIN'}
+              onChange={handleChange}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md"
+            >
+              <option value="DENY">DENY</option>
+              <option value="SAMEORIGIN">SAMEORIGIN</option>
+              <option value="ALLOW-FROM">ALLOW-FROM</option>
+            </select>
+            <p className="mt-1 text-xs text-gray-500">
+              Controls whether the page can be displayed in frames
+            </p>
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              X-Content-Type-Options
+            </label>
+            <select
+              name="advancedConfig.securityHeaders.xContentTypeOptions"
+              value={rule.advancedConfig.securityHeaders?.xContentTypeOptions || 'nosniff'}
+              onChange={handleChange}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md"
+            >
+              <option value="nosniff">nosniff</option>
+            </select>
+            <p className="mt-1 text-xs text-gray-500">
+              Prevents MIME type sniffing
+            </p>
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              X-XSS-Protection
+            </label>
+            <select
+              name="advancedConfig.securityHeaders.xXssProtection"
+              value={rule.advancedConfig.securityHeaders?.xXssProtection || '1; mode=block'}
+              onChange={handleChange}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md"
+            >
+              <option value="0">0 (Disabled)</option>
+              <option value="1">1 (Enabled)</option>
+              <option value="1; mode=block">1; mode=block</option>
+              <option value="1; report=">1; report=</option>
+            </select>
+            <p className="mt-1 text-xs text-gray-500">
+              Enables XSS filtering in browsers
+            </p>
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Strict-Transport-Security
+            </label>
+            <input
+              type="text"
+              name="advancedConfig.securityHeaders.strictTransportSecurity"
+              value={rule.advancedConfig.securityHeaders?.strictTransportSecurity || 'max-age=31536000; includeSubDomains'}
+              onChange={handleChange}
+              placeholder="max-age=31536000; includeSubDomains"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md"
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              Forces HTTPS connections
+            </p>
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Content-Security-Policy
+            </label>
+            <input
+              type="text"
+              name="advancedConfig.securityHeaders.contentSecurityPolicy"
+              value={rule.advancedConfig.securityHeaders?.contentSecurityPolicy || ''}
+              onChange={handleChange}
+              placeholder="default-src 'self'"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md"
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              Controls resources the browser is allowed to load
+            </p>
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Referrer-Policy
+            </label>
+            <select
+              name="advancedConfig.securityHeaders.referrerPolicy"
+              value={rule.advancedConfig.securityHeaders?.referrerPolicy || 'strict-origin-when-cross-origin'}
+              onChange={handleChange}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md"
+            >
+              <option value="no-referrer">no-referrer</option>
+              <option value="no-referrer-when-downgrade">no-referrer-when-downgrade</option>
+              <option value="origin">origin</option>
+              <option value="origin-when-cross-origin">origin-when-cross-origin</option>
+              <option value="same-origin">same-origin</option>
+              <option value="strict-origin">strict-origin</option>
+              <option value="strict-origin-when-cross-origin">strict-origin-when-cross-origin</option>
+              <option value="unsafe-url">unsafe-url</option>
+            </select>
+            <p className="mt-1 text-xs text-gray-500">
+              Controls referrer information sent with requests
+            </p>
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Permissions-Policy
+            </label>
+            <input
+              type="text"
+              name="advancedConfig.securityHeaders.permissionsPolicy"
+              value={rule.advancedConfig.securityHeaders?.permissionsPolicy || ''}
+              onChange={handleChange}
+              placeholder="camera=(), microphone=(), geolocation=()"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md"
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              Controls browser features available to the site
+            </p>
+          </div>
+        </div>
+      </div>
+      
+      <div className="border-t border-gray-200 pt-4">
+        <div className="flex items-center mb-4">
+          <input
+            type="checkbox"
+            name="advancedConfig.wafConfig.enabled"
+            checked={rule.advancedConfig.wafConfig?.enabled || false}
+            onChange={handleChange}
+            className="h-4 w-4 text-blue-600 rounded"
+          />
+          <span className="ml-2 text-sm font-medium">Enable Web Application Firewall (WAF)</span>
+        </div>
+        
+        {showWafSettings && (
+          <div className="pl-6 border-l-2 border-gray-200">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  WAF Mode
+                </label>
+                <select
+                  name="advancedConfig.wafConfig.mode"
+                  value={rule.advancedConfig.wafConfig?.mode || 'detection'}
+                  onChange={handleChange}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                >
+                  <option value="detection">Detection Only</option>
+                  <option value="blocking">Blocking</option>
+                </select>
+                <p className="mt-1 text-xs text-gray-500">
+                  Detection mode logs violations, blocking mode rejects requests
+                </p>
+              </div>
+            </div>
+            
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Enabled Rulesets
+              </label>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="flex items-center">
+                  <input
+                    type="checkbox"
+                    name="advancedConfig.wafConfig.rulesets.core"
+                    checked={rule.advancedConfig.wafConfig?.rulesets?.includes('core') || false}
+                    onChange={(e) => {
+                      const rulesets = [...(rule.advancedConfig.wafConfig?.rulesets || [])];
+                      if (e.target.checked) {
+                        if (!rulesets.includes('core')) rulesets.push('core');
+                      } else {
+                        const index = rulesets.indexOf('core');
+                        if (index !== -1) rulesets.splice(index, 1);
+                      }
+                      handleNestedChange('advancedConfig', 'wafConfig', {
+                        ...rule.advancedConfig.wafConfig,
+                        rulesets
+                      });
+                    }}
+                    className="h-4 w-4 text-blue-600 rounded"
+                  />
+                  <span className="ml-2 text-sm text-gray-700">Core Rules</span>
+                </div>
+                
+                <div className="flex items-center">
+                  <input
+                    type="checkbox"
+                    name="advancedConfig.wafConfig.rulesets.sql"
+                    checked={rule.advancedConfig.wafConfig?.rulesets?.includes('sql') || false}
+                    onChange={(e) => {
+                      const rulesets = [...(rule.advancedConfig.wafConfig?.rulesets || [])];
+                      if (e.target.checked) {
+                        if (!rulesets.includes('sql')) rulesets.push('sql');
+                      } else {
+                        const index = rulesets.indexOf('sql');
+                        if (index !== -1) rulesets.splice(index, 1);
+                      }
+                      handleNestedChange('advancedConfig', 'wafConfig', {
+                        ...rule.advancedConfig.wafConfig,
+                        rulesets
+                      });
+                    }}
+                    className="h-4 w-4 text-blue-600 rounded"
+                  />
+                  <span className="ml-2 text-sm text-gray-700">SQL Injection</span>
+                </div>
+                
+                <div className="flex items-center">
+                  <input
+                    type="checkbox"
+                    name="advancedConfig.wafConfig.rulesets.xss"
+                    checked={rule.advancedConfig.wafConfig?.rulesets?.includes('xss') || false}
+                    onChange={(e) => {
+                      const rulesets = [...(rule.advancedConfig.wafConfig?.rulesets || [])];
+                      if (e.target.checked) {
+                        if (!rulesets.includes('xss')) rulesets.push('xss');
+                      } else {
+                        const index = rulesets.indexOf('xss');
+                        if (index !== -1) rulesets.splice(index, 1);
+                      }
+                      handleNestedChange('advancedConfig', 'wafConfig', {
+                        ...rule.advancedConfig.wafConfig,
+                        rulesets
+                      });
+                    }}
+                    className="h-4 w-4 text-blue-600 rounded"
+                  />
+                  <span className="ml-2 text-sm text-gray-700">XSS Protection</span>
+                </div>
+                
+                <div className="flex items-center">
+                  <input
+                    type="checkbox"
+                    name="advancedConfig.wafConfig.rulesets.lfi"
+                    checked={rule.advancedConfig.wafConfig?.rulesets?.includes('lfi') || false}
+                    onChange={(e) => {
+                      const rulesets = [...(rule.advancedConfig.wafConfig?.rulesets || [])];
+                      if (e.target.checked) {
+                        if (!rulesets.includes('lfi')) rulesets.push('lfi');
+                      } else {
+                        const index = rulesets.indexOf('lfi');
+                        if (index !== -1) rulesets.splice(index, 1);
+                      }
+                      handleNestedChange('advancedConfig', 'wafConfig', {
+                        ...rule.advancedConfig.wafConfig,
+                        rulesets
+                      });
+                    }}
+                    className="h-4 w-4 text-blue-600 rounded"
+                  />
+                  <span className="ml-2 text-sm text-gray-700">LFI Protection</span>
+                </div>
+              </div>
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Custom WAF Rules
+              </label>
+              <textarea
+                name="advancedConfig.wafConfig.customRules"
+                value={rule.advancedConfig.wafConfig?.customRules || ''}
+                onChange={handleChange}
+                rows={4}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md font-mono text-sm"
+                placeholder="# Custom ModSecurity rules"
+              />
+              <p className="mt-1 text-xs text-gray-500">
+                Add custom ModSecurity rules in the format: SecRule VARIABLES "OPERATOR" "ACTIONS"
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+      
+      <div className="border-t border-gray-200 pt-4">
+        <div className="flex items-center mb-4">
+          <input
+            type="checkbox"
+            name="advancedConfig.ipAccessControl.enabled"
+            checked={rule.advancedConfig.ipAccessControl?.enabled || false}
+            onChange={handleChange}
+            className="h-4 w-4 text-blue-600 rounded"
+          />
+          <span className="ml-2 text-sm font-medium">Enable IP Access Control</span>
+        </div>
+        
+        {showIpAccessControlSettings && (
+          <div className="pl-6 border-l-2 border-gray-200">
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Default Action
+              </label>
+              <select
+                name="advancedConfig.ipAccessControl.defaultAction"
+                value={rule.advancedConfig.ipAccessControl?.defaultAction || 'allow'}
+                onChange={handleChange}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md"
+              >
+                <option value="allow">Allow All (Deny Listed)</option>
+                <option value="deny">Deny All (Allow Listed)</option>
+              </select>
+              <p className="mt-1 text-xs text-gray-500">
+                Default action for IPs not in the rules list
+              </p>
+            </div>
+            
+            <div>
+              <div className="flex justify-between items-center mb-4">
+                <h4 className="text-md font-medium">IP Rules</h4>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const ipRules = [...(rule.advancedConfig.ipAccessControl?.rules || [])];
+                    ipRules.push({
+                      ip: '',
+                      action: rule.advancedConfig.ipAccessControl?.defaultAction === 'allow' ? 'deny' : 'allow',
+                      comment: ''
+                    });
+                    handleNestedChange('advancedConfig', 'ipAccessControl', {
+                      ...rule.advancedConfig.ipAccessControl,
+                      rules: ipRules
+                    });
+                  }}
+                  className="px-3 py-1 bg-blue-600 text-white rounded-md text-sm"
+                >
+                  Add IP Rule
+                </button>
+              </div>
+              
+              {(rule.advancedConfig.ipAccessControl?.rules || []).map((ipRule, index) => (
+                <div key={index} className="flex items-center gap-2 mb-2">
+                  <input
+                    type="text"
+                    value={ipRule.ip}
+                    onChange={(e) => {
+                      const ipRules = [...(rule.advancedConfig.ipAccessControl?.rules || [])];
+                      ipRules[index] = { ...ipRules[index], ip: e.target.value };
+                      handleNestedChange('advancedConfig', 'ipAccessControl', {
+                        ...rule.advancedConfig.ipAccessControl,
+                        rules: ipRules
+                      });
+                    }}
+                    placeholder="IP or CIDR (e.g., 192.168.1.1 or 10.0.0.0/24)"
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-md"
+                  />
+                  
+                  <select
+                    value={ipRule.action}
+                    onChange={(e) => {
+                      const ipRules = [...(rule.advancedConfig.ipAccessControl?.rules || [])];
+                      ipRules[index] = { ...ipRules[index], action: e.target.value };
+                      handleNestedChange('advancedConfig', 'ipAccessControl', {
+                        ...rule.advancedConfig.ipAccessControl,
+                        rules: ipRules
+                      });
+                    }}
+                    className="w-24 px-3 py-2 border border-gray-300 rounded-md"
+                  >
+                    <option value="allow">Allow</option>
+                    <option value="deny">Deny</option>
+                  </select>
+                  
+                  <input
+                    type="text"
+                    value={ipRule.comment || ''}
+                    onChange={(e) => {
+                      const ipRules = [...(rule.advancedConfig.ipAccessControl?.rules || [])];
+                      ipRules[index] = { ...ipRules[index], comment: e.target.value };
+                      handleNestedChange('advancedConfig', 'ipAccessControl', {
+                        ...rule.advancedConfig.ipAccessControl,
+                        rules: ipRules
+                      });
+                    }}
+                    placeholder="Comment"
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-md"
+                  />
+                  
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const ipRules = [...(rule.advancedConfig.ipAccessControl?.rules || [])];
+                      ipRules.splice(index, 1);
+                      handleNestedChange('advancedConfig', 'ipAccessControl', {
+                        ...rule.advancedConfig.ipAccessControl,
+                        rules: ipRules
+                      });
+                    }}
+                    className="p-2 text-red-600 hover:text-red-800"
+                  >
+                    <span className="sr-only">Remove</span>
+                    <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+              ))}
+              
+              {(!rule.advancedConfig.ipAccessControl?.rules || rule.advancedConfig.ipAccessControl.rules.length === 0) && (
+                <p className="text-sm text-gray-500 italic">No IP rules configured</p>
+              )}
             </div>
           </div>
         )}

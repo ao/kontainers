@@ -182,3 +182,30 @@ export const testProxyRule = async (ruleData: Partial<ProxyRule>): Promise<{
   }>(`${API_BASE_URL}/test`, ruleData);
   return response.data;
 };
+
+/**
+ * Service object for proxy-related operations
+ */
+export const proxyService = {
+  // Existing methods
+  getRules: fetchProxyRules,
+  getRule: fetchProxyRuleById,
+  createRule: createProxyRule,
+  updateRule: updateProxyRule,
+  deleteRule: deleteProxyRule,
+  enableRule: enableProxyRule,
+  disableRule: disableProxyRule,
+  testRule: testProxyRule,
+  
+  // Traffic data methods
+  getTrafficData: fetchProxyTrafficData,
+  getTrafficTimeSeries: fetchProxyTrafficTimeSeries,
+  getTrafficSummary: fetchProxyTrafficSummary,
+  
+  // Error data methods
+  getErrors: fetchProxyErrors,
+  getErrorSummary: fetchProxyErrorSummary,
+  
+  // Log methods
+  getRequestLogs: fetchRequestResponseLogs
+};

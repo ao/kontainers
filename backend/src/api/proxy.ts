@@ -1,5 +1,6 @@
 import { Elysia, t } from 'elysia';
 import { proxyService } from '../services/proxy';
+import { proxyAnalyticsService } from '../services/proxyAnalytics';
 import { ProxyProtocol } from '../../../shared/src/models';
 
 export const proxyRoutes = new Elysia({ prefix: '/proxy' })
@@ -240,4 +241,129 @@ export const proxyRoutes = new Elysia({ prefix: '/proxy' })
   .get('/status', async () => {
     const status = await proxyService.getNginxStatus();
     return status;
+  })
+  
+  // Get traffic summary for a rule
+  .get('/rules/:id/traffic/summary', async ({ params: { id }, query }) => {
+    try {
+      const summary = await proxyAnalyticsService.getTrafficSummary(id, query.period);
+      return summary;
+    } catch (error: any) {
+      return new Response(JSON.stringify({ error: error.message }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  }, {
+    params: t.Object({
+      id: t.String()
+    }),
+    query: t.Object({
+      period: t.Optional(t.String())
+    })
+  })
+  
+  // Get traffic time series for a rule
+  .get('/rules/:id/traffic/timeseries', async ({ params: { id }, query }) => {
+    try {
+      const startTime = query.startTime ? parseInt(query.startTime) : Date.now() - 24 * 60 * 60 * 1000;
+      const endTime = query.endTime ? parseInt(query.endTime) : Date.now();
+      const interval = query.interval ? parseInt(query.interval) : 3600000; // Default to 1 hour
+      
+      const timeSeries = await proxyAnalyticsService.getTrafficTimeSeries(
+        id,
+        startTime,
+        endTime,
+        interval
+      );
+      
+      return timeSeries;
+    } catch (error: any) {
+      return new Response(JSON.stringify({ error: error.message }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  }, {
+    params: t.Object({
+      id: t.String()
+    }),
+    query: t.Object({
+      startTime: t.Optional(t.String()),
+      endTime: t.Optional(t.String()),
+      interval: t.Optional(t.String())
+    })
+  })
+  
+  // Get error summary for a rule
+  .get('/rules/:id/errors/summary', async ({ params: { id }, query }) => {
+    try {
+      const summary = await proxyAnalyticsService.getErrorSummary(id, query.period);
+      return summary;
+    } catch (error: any) {
+      return new Response(JSON.stringify({ error: error.message }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  }, {
+    params: t.Object({
+      id: t.String()
+    }),
+    query: t.Object({
+      period: t.Optional(t.String())
+    })
+  })
+  
+  // Get detailed request logs for a rule
+  .get('/rules/:id/logs', async ({ params: { id }, query }) => {
+    try {
+      const options = {
+        limit: query.limit ? parseInt(query.limit) : 100,
+        offset: query.offset ? parseInt(query.offset) : 0,
+        startTime: query.startTime ? parseInt(query.startTime) : undefined,
+        endTime: query.endTime ? parseInt(query.endTime) : undefined,
+        statusCode: query.statusCode ? parseInt(query.statusCode) : undefined,
+        method: query.method,
+        path: query.path
+      };
+      
+      const logs = await proxyAnalyticsService.getRequestLogs(id, options);
+      return logs;
+    } catch (error: any) {
+      return new Response(JSON.stringify({ error: error.message }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  }, {
+    params: t.Object({
+      id: t.String()
+    }),
+    query: t.Object({
+      limit: t.Optional(t.String()),
+      offset: t.Optional(t.String()),
+      startTime: t.Optional(t.String()),
+      endTime: t.Optional(t.String()),
+      statusCode: t.Optional(t.String()),
+      method: t.Optional(t.String()),
+      path: t.Optional(t.String())
+    })
+  })
+  
+  // Manually parse logs for a rule
+  .post('/rules/:id/parse-logs', async ({ params: { id } }) => {
+    try {
+      await proxyAnalyticsService.parseLogsForRule(id);
+      return { success: true, message: 'Logs parsed successfully' };
+    } catch (error: any) {
+      return new Response(JSON.stringify({ error: error.message }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+  }, {
+    params: t.Object({
+      id: t.String()
+    })
   });

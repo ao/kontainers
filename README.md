@@ -3,7 +3,7 @@
 ![Build Status](https://github.com/ao/kontainers/workflows/Test%20Suite/badge.svg)
 ![Coverage](https://codecov.io/gh/kontainers/kontainers/branch/main/graph/badge.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
-![Bun](https://img.shields.io/badge/Bun-1.0.0-black)
+![Bun](https://img.shields.io/badge/Bun-1.2.16-black)
 
 Kontainers is a modern, high-performance container management and reverse proxy platform built with Bun, React, and TypeScript. It provides an intuitive web interface for managing Docker containers, setting up reverse proxy rules, and monitoring system performance.
 
@@ -17,12 +17,13 @@ Kontainers is a modern, high-performance container management and reverse proxy 
 - Configure volumes, networks, environment variables, and port mappings
 
 ### Proxy Management
-- Create and manage reverse proxy rules for your containers
-- Configure advanced routing options including path-based routing
-- Set up load balancing between multiple containers
-- Manage SSL certificates for secure connections
-- Monitor proxy traffic and performance metrics
-- Configure custom headers, health checks, and more
+- ✅ Create and manage reverse proxy rules for your containers
+- ✅ Configure domain-based routing to direct traffic based on domain names
+- ✅ Configure advanced routing options including path-based routing
+- ✅ Set up load balancing between multiple containers
+- ✅ Manage SSL certificates for secure connections
+- ✅ Monitor proxy traffic and performance metrics with real-time analytics
+- ✅ Configure custom headers, health checks, rate limiting, and WAF protection
 
 ### Monitoring & Analytics
 - Real-time system health monitoring
@@ -56,14 +57,34 @@ Kontainers follows a modern architecture with a clear separation of concerns:
 3. **WebSocket Server**: Real-time updates for container status and metrics
 4. **Docker Integration**: Direct communication with Docker API
 5. **Proxy Management**: Dynamic Nginx configuration generation and management
+   - Domain-based routing with automatic configuration generation
+   - SSL/TLS certificate management and secure connections
+   - Advanced traffic management with load balancing, rate limiting, and WAF
 6. **Metrics Collection**: System and container metrics collection and storage
+   - Domain-specific traffic analytics and monitoring
+   - Real-time traffic visualization and alerting
 
-## 🚦 Getting Started
+## 🚦 Current Status & Vision
+
+### Current Implementation Status
+- The platform provides comprehensive container management with advanced proxy functionality
+- Multi-domain reverse proxy capabilities allow routing traffic to different containers based on domain names
+- The Kontainers management UI can be accessed via a dedicated subdomain (e.g., admin.yourdomain.com)
+- Dynamic domain-to-container mapping with real-time configuration updates
+
+### Vision for the Project
+- Further enhance the multi-domain proxy platform with additional enterprise features
+- Implement automated certificate management with Let's Encrypt integration
+- Develop advanced traffic analytics and reporting capabilities
+
+For detailed development plans and progress tracking, see the [ROADMAP.md](ROADMAP.md) file.
+
+## � Getting Started
 
 ### Prerequisites
 
 - Docker 20.10.0 or higher
-- Bun 1.0.0 or higher
+- Bun 1.2.16 or higher
 - Node.js 18.0.0 or higher (optional, for development)
 
 ### Installation
@@ -72,7 +93,7 @@ Kontainers follows a modern architecture with a clear separation of concerns:
 
 ```bash
 # Pull the Kontainers image
-docker pull kontainers/kontainers:latest
+docker pull ataiva/kontainers:latest
 
 # Run the container
 docker run -d \
@@ -80,7 +101,7 @@ docker run -d \
   -p 3000:3000 \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v kontainers-data:/app/data \
-  kontainers/kontainers:latest
+  ataiva/kontainers:latest
 ```
 
 #### Using Docker Compose
@@ -90,7 +111,7 @@ docker run -d \
 version: '3'
 services:
   kontainers:
-    image: kontainers/kontainers:latest
+    image: ataiva/kontainers:latest
     ports:
       - "3000:3000"
     volumes:
@@ -220,6 +241,13 @@ Kontainers provides a comprehensive REST API for integration with other tools:
 - `PUT /api/proxy/rules/:id` - Update a proxy rule
 - `DELETE /api/proxy/rules/:id` - Delete a proxy rule
 - `GET /api/proxy/traffic` - Get proxy traffic metrics
+- `GET /api/proxy/domains` - List all domain-based proxy rules
+- `GET /api/proxy/domains/:domain` - Get domain-specific proxy rule details
+- `GET /api/proxy/traffic/:ruleId/summary` - Get traffic summary for a specific rule
+- `GET /api/proxy/traffic/:ruleId/timeseries` - Get time series traffic data for a specific rule
+- `GET /api/proxy/certificates` - List all SSL/TLS certificates
+- `POST /api/proxy/certificates` - Upload a new SSL/TLS certificate
+- `DELETE /api/proxy/certificates/:id` - Delete an SSL/TLS certificate
 
 ### System Endpoints
 
@@ -317,7 +345,7 @@ bun hooks:skip
 ## 🔄 CI/CD Pipeline
 
 ![Build Status](https://github.com/ao/kontainers/workflows/Test%20Suite/badge.svg)
-![Coverage](https://codecov.io/gh/kontainers/kontainers/branch/main/graph/badge.svg)
+![Coverage](https://codecov.io/gh/ao/kontainers/branch/main/graph/badge.svg)
 
 Kontainers uses GitHub Actions for continuous integration and deployment.
 
@@ -360,7 +388,7 @@ To view the CI/CD configuration, see the workflow files in `.github/workflows/`.
 
 ## 📄 License
 
-Kontainers is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+Kontainers is licensed under the MIT License. See the MIT file for details.
 
 ## 🤝 Contributing
 
@@ -372,11 +400,9 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
-
 ## 📚 Documentation
 
-For full documentation, visit [docs.kontainers.io](https://docs.kontainers.io).
+For full documentation, visit [github.com/ao/kontainers](https://github.com/ao/kontainers).
 
 ## 🙏 Acknowledgements
 
@@ -389,7 +415,4 @@ For full documentation, visit [docs.kontainers.io](https://docs.kontainers.io).
 
 ## 📞 Contact
 
-- Website: [kontainers.io](https://kontainers.io)
-- Email: [info@kontainers.io](mailto:info@kontainers.io)
-- Twitter: [@kontainersio](https://twitter.com/kontainersio)
 - GitHub: [github.com/ao](https://github.com/ao)

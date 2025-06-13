@@ -16,6 +16,7 @@ export interface ProxyRule {
   sslEnabled: boolean;
   sslCertPath?: string;
   sslKeyPath?: string;
+  sslCertificate?: SslCertificate;
   headers?: Record<string, string>;
   responseHeaders?: Record<string, string>;
   healthCheck?: HealthCheck;
@@ -24,6 +25,25 @@ export interface ProxyRule {
   customNginxConfig?: string;
   created: number;
   enabled: boolean;
+  
+  /**
+   * Domain name for domain-based routing
+   */
+  domain?: string;
+}
+
+/**
+ * Represents an SSL certificate.
+ */
+export interface SslCertificate {
+  id: string;
+  name: string;
+  domain: string;
+  certificate: string;
+  privateKey: string;
+  chainCertificate?: string;
+  expiryDate: string;
+  created: number;
 }
 
 /**
@@ -97,15 +117,106 @@ export interface AdvancedProxyConfig {
   corsAllowCredentials: boolean;
   rateLimit?: RateLimitConfig;
   rewriteRules: RewriteRule[];
+  securityHeaders?: SecurityHeadersConfig;
+  wafConfig?: WafConfig;
+  ipAccessControl?: IpAccessControlConfig;
 }
 
 /**
  * Represents a rate limit configuration.
  */
 export interface RateLimitConfig {
+  enabled: boolean;
   requestsPerSecond: number;
   burstSize: number;
   nodelay: boolean;
+  perIp: boolean;
+  zone?: string;
+  logLevel?: RateLimitLogLevel;
+  responseCode?: number;
+}
+
+/**
+ * Represents the log level for rate limiting.
+ */
+export enum RateLimitLogLevel {
+  INFO = 'info',
+  NOTICE = 'notice',
+  WARN = 'warn',
+  ERROR = 'error'
+}
+
+/**
+ * Represents security headers configuration.
+ */
+export interface SecurityHeadersConfig {
+  xFrameOptions?: string;
+  xContentTypeOptions?: string;
+  xXssProtection?: string;
+  strictTransportSecurity?: string;
+  contentSecurityPolicy?: string;
+  referrerPolicy?: string;
+  permissionsPolicy?: string;
+  customHeaders?: Record<string, string>;
+}
+
+/**
+ * Represents Web Application Firewall configuration.
+ */
+export interface WafConfig {
+  enabled: boolean;
+  mode: WafMode;
+  rulesets: WafRuleset[];
+  customRules?: string;
+}
+
+/**
+ * Represents WAF operation mode.
+ */
+export enum WafMode {
+  DETECTION = 'detection',
+  BLOCKING = 'blocking'
+}
+
+/**
+ * Represents WAF ruleset to enable.
+ */
+export enum WafRuleset {
+  CORE = 'core',
+  SQL = 'sql',
+  XSS = 'xss',
+  LFI = 'lfi',
+  RFI = 'rfi',
+  SCANNER = 'scanner',
+  SESSION = 'session',
+  PROTOCOL = 'protocol',
+  CUSTOM = 'custom'
+}
+
+/**
+ * Represents IP access control configuration.
+ */
+export interface IpAccessControlConfig {
+  enabled: boolean;
+  defaultAction: IpAccessAction;
+  rules: IpAccessRule[];
+}
+
+/**
+ * Represents IP access control action.
+ */
+export enum IpAccessAction {
+  ALLOW = 'allow',
+  DENY = 'deny'
+}
+
+/**
+ * Represents an IP access control rule.
+ */
+export interface IpAccessRule {
+  ip: string;
+  action: IpAccessAction;
+  comment?: string;
 }
 
 /**

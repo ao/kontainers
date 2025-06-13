@@ -3,7 +3,13 @@ import { websocket } from '@elysiajs/websocket';
 import { containerService } from '../services/container';
 import { proxyService } from '../services/proxy';
 import { monitoringService } from '../services/monitoring';
-import { handleContainerEvents, handleProxyEvents, handleSystemEvents } from './handlers';
+import { proxyAnalyticsService } from '../services/proxyAnalytics';
+import {
+  handleContainerEvents,
+  handleProxyEvents,
+  handleSystemEvents,
+  handleProxyAnalyticsEvents
+} from './handlers';
 
 /**
  * WebSocket server for real-time updates
@@ -82,6 +88,10 @@ function handleSubscription(ws: any, data: any) {
       
     case 'proxy':
       handleProxyEvents(ws, id);
+      break;
+      
+    case 'proxy-analytics':
+      handleProxyAnalyticsEvents(ws, id);
       break;
       
     case 'system':

@@ -8,7 +8,11 @@ function generateId(): string {
   });
 }
 import { nginxManager } from '../integrations/nginx';
+import { nginxConfigService } from './nginxConfig';
 import { ProxyRule, ProxyTrafficData, ProxyError, ProxyErrorType } from '../../../shared/src/models';
+import { db } from '../db';
+import { proxyRules, proxyTraffic, proxyErrors } from '../db/schema';
+import { eq } from 'drizzle-orm';
 
 /**
  * Service for managing proxy rules
@@ -50,9 +54,83 @@ export class ProxyService {
   async initialize(): Promise<void> {
     try {
       await nginxManager.initialize();
+      await nginxConfigService.initialize();
       
-      // TODO: Load existing rules from storage
+      // Load existing rules from database
+      const storedRules = await db.select().from(proxyRules).all();
       
+      // Convert stored rules to ProxyRule objects
+      for (const storedRule of storedRules) {
+        const rule: ProxyRule = {
+          ...storedRule,
+          headers: storedRule.headers ? JSON.parse(storedRule.headers) : undefined,
+          responseHeaders: storedRule.responseHeaders ? JSON.parse(storedRule.responseHeaders) : undefined,
+          healthCheck: storedRule.healthCheck ? JSON.parse(storedRule.healthCheck) : undefined,
+          loadBalancing: storedRule.loadBalancing ? JSON.parse(storedRule.loadBalancing) : undefined,
+          advancedConfig: storedRule.advancedConfig ? JSON.parse(storedRule.advancedConfig) : undefined,
+          created: parseInt(storedRule.created)
+        };
+        
+        // Add rule to in-memory map
+        this.rules.set(rule.id, rule);
+        
+        // Initialize traffic data and errors
+        this.trafficData.set(rule.id, []);
+        this.errors.set(rule.id, []);
+        
+        // Load recent traffic data
+        const recentTraffic = await db.select()
+          .from(proxyTraffic)
+          .where(eq(proxyTraffic.ruleId, rule.id))
+          .orderBy(proxyTraffic.timestamp)
+          .limit(100)
+          .all();
+          
+        if (recentTraffic.length > 0) {
+          const trafficDataList: ProxyTrafficData[] = recentTraffic.map(t => ({
+            id: t.id,
+            ruleId: t.ruleId,
+            timestamp: parseInt(t.timestamp),
+            method: t.method,
+            path: t.path,
+            statusCode: t.statusCode || undefined,
+            responseTime: t.responseTime || undefined,
+            bytesSent: t.bytesSent || undefined,
+            bytesReceived: t.bytesReceived || undefined,
+            clientIp: t.clientIp || undefined,
+            userAgent: t.userAgent || undefined
+          }));
+          
+          this.trafficData.set(rule.id, trafficDataList);
+        }
+        
+        // Load recent errors
+        const recentErrors = await db.select()
+          .from(proxyErrors)
+          .where(eq(proxyErrors.ruleId, rule.id))
+          .orderBy(proxyErrors.timestamp)
+          .limit(100)
+          .all();
+          
+        if (recentErrors.length > 0) {
+          const errorList: ProxyError[] = recentErrors.map(e => ({
+            id: e.id,
+            ruleId: e.ruleId,
+            timestamp: parseInt(e.timestamp),
+            type: e.type as ProxyErrorType,
+            code: e.code || undefined,
+            message: e.message || undefined,
+            path: e.path || undefined,
+            resolved: e.resolved === 1,
+            resolvedAt: e.resolvedAt ? parseInt(e.resolvedAt) : undefined,
+            resolution: e.resolution || undefined
+          }));
+          
+          this.errors.set(rule.id, errorList);
+        }
+      }
+      
+      console.log(`Loaded ${storedRules.length} proxy rules from database`);
       this.emit('proxy:initialized', { success: true });
     } catch (error: any) {
       console.error('Error initializing proxy service:', error);
@@ -88,8 +166,22 @@ export class ProxyService {
     };
     
     try {
+      // Validate domain name if provided
+      if (newRule.domain) {
+        const domainRegex = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9](?:\.[a-zA-Z]{2,})+$/;
+        if (!domainRegex.test(newRule.domain)) {
+          throw new Error(`Invalid domain name: ${newRule.domain}`);
+        }
+      }
+      
       // Save rule to Nginx
       await nginxManager.createOrUpdateProxyRule(newRule);
+      
+      // If domain is specified, generate domain-specific configuration
+      if (newRule.domain) {
+        await nginxConfigService.writeDomainConfig(newRule);
+        await nginxConfigService.reloadNginx();
+      }
       
       // Save rule to memory
       this.rules.set(id, newRule);
@@ -98,14 +190,37 @@ export class ProxyService {
       this.trafficData.set(id, []);
       this.errors.set(id, []);
       
+      // Save rule to database
+      await db.insert(proxyRules).values({
+        id: newRule.id,
+        name: newRule.name,
+        sourceHost: newRule.sourceHost,
+        sourcePath: newRule.sourcePath,
+        targetContainer: newRule.targetContainer,
+        targetPort: newRule.targetPort,
+        protocol: newRule.protocol,
+        sslEnabled: newRule.sslEnabled ? 1 : 0,
+        sslCertPath: newRule.sslCertPath,
+        sslKeyPath: newRule.sslKeyPath,
+        domain: newRule.domain,
+        headers: newRule.headers ? JSON.stringify(newRule.headers) : null,
+        responseHeaders: newRule.responseHeaders ? JSON.stringify(newRule.responseHeaders) : null,
+        healthCheck: newRule.healthCheck ? JSON.stringify(newRule.healthCheck) : null,
+        loadBalancing: newRule.loadBalancing ? JSON.stringify(newRule.loadBalancing) : null,
+        advancedConfig: newRule.advancedConfig ? JSON.stringify(newRule.advancedConfig) : null,
+        customNginxConfig: newRule.customNginxConfig,
+        created: newRule.created.toString(),
+        enabled: newRule.enabled ? 1 : 0
+      });
+      
       this.emit('proxy:rule:created', newRule);
       return newRule;
     } catch (error: any) {
       console.error('Error creating proxy rule:', error);
-      this.emit('proxy:rule:error', { 
-        ruleId: id, 
-        action: 'create', 
-        error: error.message 
+      this.emit('proxy:rule:error', {
+        ruleId: id,
+        action: 'create',
+        error: error.message
       });
       throw error;
     }
@@ -126,20 +241,67 @@ export class ProxyService {
     };
     
     try {
+      // Validate domain name if provided
+      if (updatedRule.domain) {
+        const domainRegex = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9](?:\.[a-zA-Z]{2,})+$/;
+        if (!domainRegex.test(updatedRule.domain)) {
+          throw new Error(`Invalid domain name: ${updatedRule.domain}`);
+        }
+      }
+      
       // Update rule in Nginx
       await nginxManager.createOrUpdateProxyRule(updatedRule);
       
+      // Handle domain configuration updates
+      if (updatedRule.domain) {
+        // If domain changed, delete old domain config if it exists
+        if (existingRule.domain && existingRule.domain !== updatedRule.domain) {
+          await nginxConfigService.deleteDomainConfig(id, existingRule.domain);
+        }
+        
+        // Write new domain config
+        await nginxConfigService.writeDomainConfig(updatedRule);
+        await nginxConfigService.reloadNginx();
+      } else if (existingRule.domain && !updatedRule.domain) {
+        // If domain was removed, delete the domain config
+        await nginxConfigService.deleteDomainConfig(id, existingRule.domain);
+        await nginxConfigService.reloadNginx();
+      }
+      
       // Update rule in memory
       this.rules.set(id, updatedRule);
+      
+      // Update rule in database
+      await db.update(proxyRules)
+        .set({
+          name: updatedRule.name,
+          sourceHost: updatedRule.sourceHost,
+          sourcePath: updatedRule.sourcePath,
+          targetContainer: updatedRule.targetContainer,
+          targetPort: updatedRule.targetPort,
+          protocol: updatedRule.protocol,
+          sslEnabled: updatedRule.sslEnabled ? 1 : 0,
+          sslCertPath: updatedRule.sslCertPath,
+          sslKeyPath: updatedRule.sslKeyPath,
+          domain: updatedRule.domain,
+          headers: updatedRule.headers ? JSON.stringify(updatedRule.headers) : null,
+          responseHeaders: updatedRule.responseHeaders ? JSON.stringify(updatedRule.responseHeaders) : null,
+          healthCheck: updatedRule.healthCheck ? JSON.stringify(updatedRule.healthCheck) : null,
+          loadBalancing: updatedRule.loadBalancing ? JSON.stringify(updatedRule.loadBalancing) : null,
+          advancedConfig: updatedRule.advancedConfig ? JSON.stringify(updatedRule.advancedConfig) : null,
+          customNginxConfig: updatedRule.customNginxConfig,
+          enabled: updatedRule.enabled ? 1 : 0
+        })
+        .where(eq(proxyRules.id, id));
       
       this.emit('proxy:rule:updated', updatedRule);
       return updatedRule;
     } catch (error: any) {
       console.error(`Error updating proxy rule ${id}:`, error);
-      this.emit('proxy:rule:error', { 
-        ruleId: id, 
-        action: 'update', 
-        error: error.message 
+      this.emit('proxy:rule:error', {
+        ruleId: id,
+        action: 'update',
+        error: error.message
       });
       throw error;
     }
@@ -158,18 +320,31 @@ export class ProxyService {
       // Delete rule from Nginx
       await nginxManager.deleteProxyRule(id);
       
+      // Delete domain configuration if it exists
+      if (rule.domain) {
+        await nginxConfigService.deleteDomainConfig(id, rule.domain);
+        await nginxConfigService.reloadNginx();
+      }
+      
       // Delete rule from memory
       this.rules.delete(id);
       this.trafficData.delete(id);
       this.errors.delete(id);
       
+      // Delete rule from database
+      await db.delete(proxyRules).where(eq(proxyRules.id, id));
+      
+      // Delete associated traffic data and errors
+      await db.delete(proxyTraffic).where(eq(proxyTraffic.ruleId, id));
+      await db.delete(proxyErrors).where(eq(proxyErrors.ruleId, id));
+      
       this.emit('proxy:rule:deleted', { id });
     } catch (error: any) {
       console.error(`Error deleting proxy rule ${id}:`, error);
-      this.emit('proxy:rule:error', { 
-        ruleId: id, 
-        action: 'delete', 
-        error: error.message 
+      this.emit('proxy:rule:error', {
+        ruleId: id,
+        action: 'delete',
+        error: error.message
       });
       throw error;
     }
@@ -193,17 +368,30 @@ export class ProxyService {
       // Update rule in Nginx
       await nginxManager.createOrUpdateProxyRule(updatedRule);
       
+      // Update domain configuration if it exists
+      if (updatedRule.domain) {
+        await nginxConfigService.writeDomainConfig(updatedRule);
+        await nginxConfigService.reloadNginx();
+      }
+      
       // Update rule in memory
       this.rules.set(id, updatedRule);
+      
+      // Update enabled state in database
+      await db.update(proxyRules)
+        .set({
+          enabled: updatedRule.enabled ? 1 : 0
+        })
+        .where(eq(proxyRules.id, id));
       
       this.emit('proxy:rule:toggled', updatedRule);
       return updatedRule;
     } catch (error: any) {
       console.error(`Error toggling proxy rule ${id}:`, error);
-      this.emit('proxy:rule:error', { 
-        ruleId: id, 
-        action: 'toggle', 
-        error: error.message 
+      this.emit('proxy:rule:error', {
+        ruleId: id,
+        action: 'toggle',
+        error: error.message
       });
       throw error;
     }
@@ -248,7 +436,7 @@ export class ProxyService {
   /**
    * Record traffic data for a rule
    */
-  recordTrafficData(data: Omit<ProxyTrafficData, 'id'>): void {
+  async recordTrafficData(data: Omit<ProxyTrafficData, 'id'>): Promise<void> {
     const { ruleId } = data;
     
     if (!this.rules.has(ruleId)) {
@@ -261,9 +449,33 @@ export class ProxyService {
       id: generateId()
     };
     
+    // Add to in-memory cache
     const ruleTrafficData = this.trafficData.get(ruleId) || [];
     ruleTrafficData.push(trafficData);
+    
+    // Limit in-memory cache to 1000 entries per rule
+    if (ruleTrafficData.length > 1000) {
+      ruleTrafficData.shift(); // Remove oldest entry
+    }
+    
     this.trafficData.set(ruleId, ruleTrafficData);
+    
+    // Persist to database (don't await to avoid blocking)
+    db.insert(proxyTraffic).values({
+      id: trafficData.id,
+      ruleId: trafficData.ruleId,
+      timestamp: trafficData.timestamp.toString(),
+      method: trafficData.method,
+      path: trafficData.path,
+      statusCode: trafficData.statusCode,
+      responseTime: trafficData.responseTime,
+      bytesSent: trafficData.bytesSent,
+      bytesReceived: trafficData.bytesReceived,
+      clientIp: trafficData.clientIp,
+      userAgent: trafficData.userAgent
+    }).catch(err => {
+      console.error('Error persisting traffic data to database:', err);
+    });
     
     this.emit('proxy:traffic:recorded', trafficData);
   }
@@ -295,7 +507,7 @@ export class ProxyService {
   /**
    * Record an error for a rule
    */
-  recordError(error: Omit<ProxyError, 'id'>): void {
+  async recordError(error: Omit<ProxyError, 'id'>): Promise<void> {
     const { ruleId } = error;
     
     if (!this.rules.has(ruleId)) {
@@ -308,9 +520,32 @@ export class ProxyService {
       id: generateId()
     };
     
+    // Add to in-memory cache
     const ruleErrors = this.errors.get(ruleId) || [];
     ruleErrors.push(proxyError);
+    
+    // Limit in-memory cache to 1000 entries per rule
+    if (ruleErrors.length > 1000) {
+      ruleErrors.shift(); // Remove oldest entry
+    }
+    
     this.errors.set(ruleId, ruleErrors);
+    
+    // Persist to database (don't await to avoid blocking)
+    db.insert(proxyErrors).values({
+      id: proxyError.id,
+      ruleId: proxyError.ruleId,
+      timestamp: proxyError.timestamp.toString(),
+      type: proxyError.type,
+      code: proxyError.code,
+      message: proxyError.message,
+      path: proxyError.path,
+      resolved: proxyError.resolved ? 1 : 0,
+      resolvedAt: proxyError.resolvedAt ? proxyError.resolvedAt.toString() : null,
+      resolution: proxyError.resolution
+    }).catch(err => {
+      console.error('Error persisting error to database:', err);
+    });
     
     this.emit('proxy:error:recorded', proxyError);
   }
@@ -347,7 +582,7 @@ export class ProxyService {
   /**
    * Mark an error as resolved
    */
-  resolveError(errorId: string, resolution: string): ProxyError | null {
+  async resolveError(errorId: string, resolution: string): Promise<ProxyError | null> {
     // Find the error in all rule errors
     for (const [ruleId, errors] of this.errors.entries()) {
       const errorIndex = errors.findIndex(error => error.id === errorId);
@@ -363,6 +598,20 @@ export class ProxyService {
         // Update the error in the array
         errors[errorIndex] = resolvedError;
         this.errors.set(ruleId, errors);
+        
+        // Update error in database
+        try {
+          await db.update(proxyErrors)
+            .set({
+              resolved: 1,
+              resolvedAt: resolvedError.resolvedAt.toString(),
+              resolution: resolvedError.resolution
+            })
+            .where(eq(proxyErrors.id, errorId));
+        } catch (err) {
+          console.error(`Error updating error resolution in database: ${err}`);
+          // Continue even if database update fails
+        }
         
         this.emit('proxy:error:resolved', resolvedError);
         return resolvedError;

@@ -1,6 +1,7 @@
 import { containerService } from '../services/container';
 import { proxyService } from '../services/proxy';
 import { monitoringService } from '../services/monitoring';
+import { proxyAnalyticsService } from '../services/proxyAnalytics';
 
 /**
  * Handle container events and send them to the WebSocket client
@@ -165,6 +166,53 @@ export function handleProxyEvents(ws: any, ruleId?: string) {
 }
 
 /**
+ * Handle proxy analytics events and send them to the WebSocket client
+ */
+export function handleProxyAnalyticsEvents(ws: any, ruleId?: string) {
+  // Handler for traffic data events
+  const trafficDataHandler = (data: any) => {
+    if (!ruleId || data.ruleId === ruleId) {
+      ws.send(JSON.stringify({
+        event: `proxy:traffic:${data.ruleId}`,
+        data
+      }));
+    }
+  };
+  
+  // Handler for error events
+  const errorHandler = (data: any) => {
+    if (!ruleId || data.ruleId === ruleId) {
+      ws.send(JSON.stringify({
+        event: `proxy:error:${data.ruleId}`,
+        data
+      }));
+    }
+  };
+  
+  // Handler for analytics update events
+  const analyticsUpdatedHandler = (data: any) => {
+    if (!ruleId || data.ruleId === ruleId) {
+      ws.send(JSON.stringify({
+        event: `proxy:analytics:updated:${data.ruleId}`,
+        data
+      }));
+    }
+  };
+  
+  // Register event handlers
+  proxyAnalyticsService.on('proxy:traffic:recorded', trafficDataHandler);
+  proxyAnalyticsService.on('proxy:error:recorded', errorHandler);
+  proxyAnalyticsService.on('analytics:updated', analyticsUpdatedHandler);
+  
+  // Store handlers on the WebSocket object for cleanup
+  ws.proxyAnalyticsEventHandlers = {
+    'proxy:traffic:recorded': trafficDataHandler,
+    'proxy:error:recorded': errorHandler,
+    'analytics:updated': analyticsUpdatedHandler
+  };
+}
+
+/**
  * Handle system events and send them to the WebSocket client
  */
 export function handleSystemEvents(ws: any) {
@@ -217,6 +265,12 @@ export function cleanupEventHandlers(ws: any) {
   if (ws.proxyEventHandlers) {
     console.log('Cleaning up proxy event handlers');
     delete ws.proxyEventHandlers;
+  }
+  
+  // Clean up proxy analytics event handlers
+  if (ws.proxyAnalyticsEventHandlers) {
+    console.log('Cleaning up proxy analytics event handlers');
+    delete ws.proxyAnalyticsEventHandlers;
   }
   
   // Clean up system event handlers

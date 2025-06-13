@@ -108,11 +108,12 @@ export const ProxyRuleList: React.FC<ProxyRuleListProps> = ({ onSelectRule, onCr
 
   // Filter and sort the rules
   const filteredRules = proxyRules.filter(rule => {
-    const matchesText = filterText === '' || 
+    const matchesText = filterText === '' ||
       rule.name.toLowerCase().includes(filterText.toLowerCase()) ||
       rule.sourceHost.toLowerCase().includes(filterText.toLowerCase()) ||
       rule.sourcePath.toLowerCase().includes(filterText.toLowerCase()) ||
-      rule.targetContainer.toLowerCase().includes(filterText.toLowerCase());
+      rule.targetContainer.toLowerCase().includes(filterText.toLowerCase()) ||
+      (rule.domain && rule.domain.toLowerCase().includes(filterText.toLowerCase()));
     
     const matchesProtocol = filterProtocol === 'ALL' || rule.protocol === filterProtocol;
     
@@ -144,6 +145,10 @@ export const ProxyRuleList: React.FC<ProxyRuleListProps> = ({ onSelectRule, onCr
 
   const columns = [
     { header: 'Name', accessor: 'name' as keyof ProxyRule },
+    {
+      header: 'Domain',
+      accessor: (rule: ProxyRule) => rule.domain || '-'
+    },
     { header: 'Source Host', accessor: 'sourceHost' as keyof ProxyRule },
     { header: 'Path', accessor: 'sourcePath' as keyof ProxyRule },
     { header: 'Protocol', accessor: 'protocol' as keyof ProxyRule },

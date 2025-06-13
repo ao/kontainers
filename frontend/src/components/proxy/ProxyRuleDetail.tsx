@@ -156,6 +156,12 @@ export const ProxyRuleDetail: React.FC<ProxyRuleDetailProps> = ({ ruleId, onEdit
           <h3 className="text-lg font-medium mb-4">Routing Configuration</h3>
           <div className="bg-gray-50 p-4 rounded-md">
             <div className="grid grid-cols-1 gap-3">
+              {rule.domain && (
+                <div>
+                  <span className="text-sm text-gray-500">Domain Name</span>
+                  <p className="font-medium">{rule.domain}</p>
+                </div>
+              )}
               <div>
                 <span className="text-sm text-gray-500">Source Host</span>
                 <p className="font-medium">{rule.sourceHost}</p>
