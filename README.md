@@ -17,14 +17,14 @@ Kontainers is a modern, high-performance container management and reverse proxy 
 - Configure volumes, networks, environment variables, and port mappings
 
 ### Proxy Management
-- ✅ Create and manage reverse proxy rules for your containers
-- ✅ Configure domain-based routing to direct traffic based on domain names
-- ✅ Configure advanced routing options including path-based routing
-- ✅ Set up load balancing between multiple containers
-- ✅ Manage SSL certificates for secure connections
-- ✅ Automatic Let's Encrypt certificate management with auto-renewal
-- ✅ Monitor proxy traffic and performance metrics with real-time analytics
-- ✅ Configure custom headers, health checks, rate limiting, and WAF protection
+- Create and manage reverse proxy rules for your containers
+- Configure domain-based routing to direct traffic based on domain names
+- Configure advanced routing options including path-based routing
+- Set up load balancing between multiple containers
+- Manage SSL certificates for secure connections
+- Automatic Let's Encrypt certificate management with auto-renewal
+- Monitor proxy traffic and performance metrics with real-time analytics
+- Configure custom headers, health checks, rate limiting, and WAF protection
 
 ### Monitoring & Analytics
 - Real-time system health monitoring

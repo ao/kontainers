@@ -1,0 +1,16 @@
+[test]
+preload = "./tests/setup-path-aliases.ts"
+
+[resolve]
+# Define path aliases
+"@frontend/" = "./frontend/src/"
+"@backend/" = "./backend/src/"
+"@shared/" = "./shared/src/"
+"@/" = "./frontend/src/"
+"@tests/" = "./tests/"
+
+[install]
+optional = true
+
+[install.typescript]
+types = ["bun-types", "node", "jest"]

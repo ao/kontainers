@@ -1,9 +1,9 @@
 import React, { ReactElement } from 'react';
 import { render, RenderOptions } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
-import { ThemeProvider } from '@frontend/src/contexts/ThemeContext';
-import { AuthContext } from '@frontend/src/contexts/AuthContext';
-import { NotificationProvider } from '@frontend/src/contexts/NotificationContext';
+import { ThemeProvider } from '@frontend/contexts/ThemeContext';
+import { AuthContext } from '@frontend/contexts/AuthContext';
+import { NotificationProvider } from '@frontend/contexts/NotificationContext';
 
 // Define the extended render options
 interface ExtendedRenderOptions extends Omit<RenderOptions, 'queries'> {

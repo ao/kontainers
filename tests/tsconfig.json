@@ -1,26 +1,15 @@
 {
   "extends": "../tsconfig.json",
   "compilerOptions": {
-    "target": "ESNext",
-    "module": "ESNext",
-    "moduleResolution": "node",
-    "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true,
-    "strict": true,
-    "forceConsistentCasingInFileNames": true,
-    "skipLibCheck": true,
-    "jsx": "react-jsx",
-    "resolveJsonModule": true,
-    "isolatedModules": true,
-    "noEmit": true,
-    "types": ["bun-types", "jest", "node"],
+    "baseUrl": ".",
     "paths": {
-      "@frontend/*": ["../src/frontend/*"],
-      "@backend/*": ["../src/backend/*"],
-      "@shared/*": ["../src/shared/*"],
+      "@frontend/*": ["../frontend/src/*"],
+      "@backend/*": ["../backend/src/*"],
+      "@shared/*": ["../shared/src/*"],
+      "@/*": ["../frontend/src/*"],
       "@tests/*": ["./*"]
     },
-    "baseUrl": "."
+    "types": ["bun-types", "node", "jest"]
   },
   "include": [
     "**/*.ts",

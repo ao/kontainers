@@ -117,11 +117,17 @@ describe('ProxyRule Workflow Integration', () => {
   let proxyService: ProxyRuleService;
   
   beforeEach(() => {
-    // Reset all mocks
-    jest.resetAllMocks();
-    
     // Create a fresh service for each test
     proxyService = new ProxyRuleService();
+    
+    // Reset mock implementations manually instead of using jest.resetAllMocks()
+    mockContainerService.isContainerRunning = jest.fn();
+    mockContainerService.getContainerPort = jest.fn();
+    mockContainerService.getContainerById = jest.fn();
+    mockApiClient.applyProxyRule = jest.fn();
+    mockApiClient.removeProxyRule = jest.fn();
+    mockApiClient.getProxyRuleStatus = jest.fn();
+    mockApiClient.reloadProxyConfiguration = jest.fn();
     
     // Set up default mock implementations
     mockContainerService.isContainerRunning.mockResolvedValue(true);
@@ -139,7 +145,7 @@ describe('ProxyRule Workflow Integration', () => {
   });
   
   afterEach(() => {
-    jest.clearAllMocks();
+    // No need to clear mocks as we're recreating them in beforeEach
   });
   
   it('should complete the full proxy rule lifecycle', async () => {
@@ -233,8 +239,9 @@ describe('ProxyRule Workflow Integration', () => {
     // Create a rule first
     const rule = await proxyService.createProxyRule('example.com', 8080);
     
-    // Reset mocks
-    jest.clearAllMocks();
+    // Reset mock implementations manually
+    mockApiClient.removeProxyRule = jest.fn();
+    mockApiClient.reloadProxyConfiguration = jest.fn();
     
     // Mock API error
     mockApiClient.removeProxyRule.mockRejectedValue(new Error('API error'));
@@ -256,8 +263,8 @@ describe('ProxyRule Workflow Integration', () => {
     // Create a rule first
     const rule = await proxyService.createProxyRule('example.com', 8080);
     
-    // Reset mocks
-    jest.clearAllMocks();
+    // Reset mock implementations manually
+    mockApiClient.getProxyRuleStatus = jest.fn();
     
     // Mock API returning error status
     mockApiClient.getProxyRuleStatus.mockResolvedValue(ProxyRuleStatus.ERROR);
