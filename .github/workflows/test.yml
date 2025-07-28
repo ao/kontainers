@@ -41,9 +41,9 @@ jobs:
           echo "Running tests..."
           bun test
           
-          # Check test coverage
+          # Check test coverage and generate coverage-summary.json
           echo "Checking test coverage..."
-          bun test --coverage
+          node scripts/generate-coverage-json.js
           
           # Copy coverage report to reports directory
           cp coverage/coverage-summary.json test-reports/results.json

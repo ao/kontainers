@@ -21,9 +21,9 @@ cd "$(git rev-parse --show-toplevel)"
 echo "Running tests..."
 bun test
 
-# Check test coverage
+# Check test coverage and generate coverage-summary.json
 echo "Checking test coverage..."
-bun test --coverage
+node scripts/generate-coverage-json.js
 
 # Extract coverage percentage
 COVERAGE=$(cat coverage/coverage-summary.json | grep -o '"pct": [0-9]*\.[0-9]*' | head -1 | grep -o '[0-9]*\.[0-9]*')
