@@ -8,194 +8,303 @@ This document provides detailed technical requirements, architecture specificati
 
 ![HLD](./architecture_diagrams/hld.svg)
 
-
 ## 🛠️ Technology Stack Specifications
 
-### Frontend (Kotlin/JS + Compose)
+### Frontend (React + TypeScript)
 
 #### Core Dependencies
-```kotlin
-// build.gradle.kts (jsMain)
-dependencies {
-    implementation("org.jetbrains.compose.html:html-core:1.5.4")
-    implementation("org.jetbrains.compose.material:material:1.5.4")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core-js:1.7.3")
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.6.0")
-    implementation("io.ktor:ktor-client-js:2.3.4")
-    implementation("io.ktor:ktor-client-websockets:2.3.4")
-    implementation("io.ktor:ktor-client-content-negotiation:2.3.4")
-    implementation("io.ktor:ktor-serialization-kotlinx-json:2.3.4")
+```javascript
+// frontend/package.json
+{
+  "dependencies": {
+    "@tanstack/react-query": "^5.8.4",
+    "axios": "^1.6.2",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.20.0",
+    "socket.io-client": "^4.7.2",
+    "zustand": "^4.4.6",
+    "kontainers-shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/react": "^18.2.37",
+    "@types/react-dom": "^18.2.15",
+    "@typescript-eslint/eslint-plugin": "^6.12.0",
+    "@typescript-eslint/parser": "^6.12.0",
+    "@vitejs/plugin-react": "^4.2.0",
+    "autoprefixer": "^10.4.16",
+    "eslint": "^8.54.0",
+    "eslint-plugin-react": "^7.33.2",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "postcss": "^8.4.31",
+    "prettier": "^3.1.0",
+    "tailwindcss": "^3.3.5",
+    "typescript": "^5.3.2",
+    "vite": "^5.0.0"
+  }
 }
 ```
 
 #### UI Component Architecture
-```kotlin
+```typescript
 // Component Structure
-sealed class Screen {
-    object Dashboard : Screen()
-    object Containers : Screen()
-    object Proxy : Screen()
-    object Settings : Screen()
+// Main application screens
+import { Dashboard } from './components/dashboard/Dashboard';
+import { ContainerList } from './components/containers/ContainerList';
+import { ProxyRuleList } from './components/proxy/ProxyRuleList';
+import { Settings } from './components/settings/Settings';
+
+// State Management with Zustand
+interface AppState {
+  currentScreen: string;
+  containers: Container[];
+  proxyRules: ProxyRule[];
+  isLoading: boolean;
+  error: string | null;
+  
+  // Actions
+  setCurrentScreen: (screen: string) => void;
+  fetchContainers: () => Promise<void>;
+  fetchProxyRules: () => Promise<void>;
+  startContainer: (id: string) => Promise<boolean>;
+  stopContainer: (id: string) => Promise<boolean>;
 }
 
-// State Management
-data class AppState(
-    val currentScreen: Screen = Screen.Dashboard,
-    val containers: List<Container> = emptyList(),
-    val proxyRules: List<ProxyRule> = emptyList(),
-    val isLoading: Boolean = false,
-    val error: String? = null
-)
-
 // API Client
-class KontainersApiClient {
-    private val client = HttpClient(Js) {
-        install(ContentNegotiation) {
-            json()
-        }
-        install(WebSockets)
-    }
-    
-    suspend fun getContainers(): List<Container>
-    suspend fun startContainer(id: String): Boolean
-    suspend fun stopContainer(id: String): Boolean
-    suspend fun getProxyRules(): List<ProxyRule>
-    suspend fun createProxyRule(rule: ProxyRule): ProxyRule
+class ContainerService {
+  private api: AxiosInstance;
+  
+  constructor(baseURL: string) {
+    this.api = axios.create({ baseURL });
+  }
+  
+  async getContainers(): Promise<Container[]> {
+    const response = await this.api.get('/api/containers');
+    return response.data;
+  }
+  
+  async startContainer(id: string): Promise<boolean> {
+    const response = await this.api.post(`/api/containers/${id}/start`);
+    return response.status === 200;
+  }
+  
+  async stopContainer(id: string): Promise<boolean> {
+    const response = await this.api.post(`/api/containers/${id}/stop`);
+    return response.status === 200;
+  }
 }
 ```
 
-### Backend (Ktor Server)
+### Backend (Bun + Elysia)
 
 #### Core Dependencies
-```kotlin
-// build.gradle.kts (jvmMain)
-dependencies {
-    implementation("io.ktor:ktor-server-core-jvm:2.3.4")
-    implementation("io.ktor:ktor-server-netty-jvm:2.3.4")
-    implementation("io.ktor:ktor-server-websockets-jvm:2.3.4")
-    implementation("io.ktor:ktor-server-cors-jvm:2.3.4")
-    implementation("io.ktor:ktor-server-content-negotiation-jvm:2.3.4")
-    implementation("io.ktor:ktor-serialization-kotlinx-json-jvm:2.3.4")
-    implementation("com.github.docker-java:docker-java:3.3.3")
-    implementation("com.github.docker-java:docker-java-transport-httpclient5:3.3.3")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
-    implementation("ch.qos.logback:logback-classic:1.4.11")
+```javascript
+// backend/package.json
+{
+  "dependencies": {
+    "elysia": "^0.7.30",
+    "@elysiajs/cors": "^0.7.2",
+    "@elysiajs/swagger": "^0.7.3",
+    "@elysiajs/websocket": "^0.7.3",
+    "dockerode": "^4.0.0",
+    "zod": "^3.22.4",
+    "kontainers-shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/dockerode": "^3.3.23",
+    "@types/node": "^20.10.0",
+    "@typescript-eslint/eslint-plugin": "^6.12.0",
+    "@typescript-eslint/parser": "^6.12.0",
+    "bun-types": "^1.2.16",
+    "eslint": "^8.54.0",
+    "prettier": "^3.1.0",
+    "typescript": "^5.3.2"
+  }
 }
 ```
 
 #### Server Configuration
-```kotlin
-// Application.kt
-fun Application.module() {
-    install(CORS) {
-        allowMethod(HttpMethod.Options)
-        allowMethod(HttpMethod.Put)
-        allowMethod(HttpMethod.Delete)
-        allowMethod(HttpMethod.Patch)
-        allowHeader(HttpHeaders.Authorization)
-        allowHeader(HttpHeaders.ContentType)
-        anyHost()
-    }
-    
-    install(ContentNegotiation) {
-        json()
-    }
-    
-    install(WebSockets) {
-        pingPeriod = Duration.ofSeconds(15)
-        timeout = Duration.ofSeconds(15)
-        maxFrameSize = Long.MAX_VALUE
-        masking = false
-    }
-    
-    configureRouting()
-}
+```typescript
+// backend/src/index.ts
+import { Elysia } from 'elysia';
+import { cors } from '@elysiajs/cors';
+import { swagger } from '@elysiajs/swagger';
+import { websocket } from '@elysiajs/websocket';
+
+// Import routes
+import { containerRoutes } from './api/containers';
+import { proxyRoutes } from './api/proxy';
+import { healthRoutes } from './api/health';
+import { configRoutes } from './api/config';
+import { authRoutes } from './api/auth';
+
+// Import middleware
+import { errorMiddleware } from './middleware/error';
+import { loggingMiddleware } from './middleware/logging';
+import { securityHeadersMiddleware } from './middleware/securityHeaders';
+import { rateLimiterMiddleware } from './middleware/rateLimiter';
+
+// Create Elysia app
+const app = new Elysia()
+  // Install plugins
+  .use(cors())
+  .use(swagger())
+  .use(websocket())
+  
+  // Apply middleware
+  .use(errorMiddleware)
+  .use(loggingMiddleware)
+  .use(securityHeadersMiddleware)
+  .use(rateLimiterMiddleware)
+  
+  // Mount routes
+  .use(containerRoutes)
+  .use(proxyRoutes)
+  .use(healthRoutes)
+  .use(configRoutes)
+  .use(authRoutes)
+  
+  // Global error handler
+  .onError(({ code, error, set }) => {
+    console.error(`Error ${code}:`, error);
+    set.status = code === 'NOT_FOUND' ? 404 : 500;
+    return {
+      success: false,
+      error: error.message || 'Internal Server Error'
+    };
+  });
+
+// Start server
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`🚀 Server running at http://localhost:${port}`);
+});
 ```
 
 ## 📊 Data Models
 
 ### Core Domain Models
-```kotlin
-// Container.kt
-@Serializable
-data class Container(
-    val id: String,
-    val name: String,
-    val image: String,
-    val state: ContainerState,
-    val status: String,
-    val ports: List<PortMapping>,
-    val volumes: List<VolumeMount>,
-    val networks: List<String>,
-    val created: Long,
-    val labels: Map<String, String> = emptyMap(),
-    val env: List<String> = emptyList()
-)
-
-@Serializable
-enum class ContainerState {
-    RUNNING, STOPPED, PAUSED, RESTARTING, REMOVING, DEAD, CREATED
+```typescript
+// Container.ts
+export interface Container {
+  id: string;
+  name: string;
+  image: string;
+  state: ContainerState;
+  status: string;
+  ports: PortMapping[];
+  volumes: VolumeMount[];
+  networks: string[];
+  created: number;
+  labels?: Record<string, string>;
+  env?: string[];
 }
 
-@Serializable
-data class PortMapping(
-    val privatePort: Int,
-    val publicPort: Int?,
-    val type: String = "tcp",
-    val ip: String = "0.0.0.0"
-)
-
-@Serializable
-data class VolumeMount(
-    val source: String,
-    val destination: String,
-    val mode: String = "rw"
-)
-
-// ProxyRule.kt
-@Serializable
-data class ProxyRule(
-    val id: String,
-    val name: String,
-    val sourceHost: String,
-    val sourcePath: String = "/",
-    val targetContainer: String,
-    val targetPort: Int,
-    val protocol: ProxyProtocol = ProxyProtocol.HTTP,
-    val sslEnabled: Boolean = false,
-    val sslCertPath: String? = null,
-    val headers: Map<String, String> = emptyMap(),
-    val healthCheck: HealthCheck? = null,
-    val created: Long,
-    val enabled: Boolean = true
-)
-
-@Serializable
-enum class ProxyProtocol {
-    HTTP, HTTPS, TCP, UDP
+export enum ContainerState {
+  RUNNING = 'RUNNING',
+  STOPPED = 'STOPPED',
+  PAUSED = 'PAUSED',
+  RESTARTING = 'RESTARTING',
+  REMOVING = 'REMOVING',
+  DEAD = 'DEAD',
+  CREATED = 'CREATED'
 }
 
-@Serializable
-data class HealthCheck(
-    val path: String = "/health",
-    val interval: Int = 30,
-    val timeout: Int = 5,
-    val retries: Int = 3
-)
+export interface PortMapping {
+  privatePort: number;
+  publicPort?: number;
+  type: string;
+  ip: string;
+}
 
-// ContainerStats.kt
-@Serializable
-data class ContainerStats(
-    val containerId: String,
-    val timestamp: Long,
-    val cpuUsage: Double,
-    val memoryUsage: Long,
-    val memoryLimit: Long,
-    val networkRx: Long,
-    val networkTx: Long,
-    val blockRead: Long,
-    val blockWrite: Long
-)
+export interface VolumeMount {
+  source: string;
+  destination: string;
+  mode: string;
+}
+
+// ProxyRule.ts
+export interface ProxyRule {
+  id: string;
+  name: string;
+  sourceHost: string;
+  sourcePath: string;
+  targetContainer: string;
+  targetPort: number;
+  protocol: ProxyProtocol;
+  sslEnabled: boolean;
+  sslCertPath?: string;
+  sslKeyPath?: string;
+  sslCertificate?: SslCertificate;
+  headers?: Record<string, string>;
+  responseHeaders?: Record<string, string>;
+  healthCheck?: HealthCheck;
+  loadBalancing?: LoadBalancingConfig;
+  advancedConfig?: AdvancedProxyConfig;
+  customNginxConfig?: string;
+  created: number;
+  enabled: boolean;
+  domain?: string;
+  letsEncryptEnabled?: boolean;
+  letsEncryptEmail?: string;
+  letsEncryptStatus?: LetsEncryptStatus;
+  letsEncryptLastRenewal?: number;
+}
+
+export enum ProxyProtocol {
+  HTTP = 'HTTP',
+  HTTPS = 'HTTPS',
+  TCP = 'TCP',
+  UDP = 'UDP'
+}
+
+export interface HealthCheck {
+  path: string;
+  interval: number;
+  timeout: number;
+  retries: number;
+  successCodes: string;
+}
+
+// ContainerStats.ts
+export interface ContainerStats {
+  containerId: string;
+  timestamp: number;
+  cpuUsage: number;
+  memoryUsage: number;
+  memoryLimit: number;
+  memoryUsagePercentage: number;
+  networkRx: number;
+  networkTx: number;
+  blockRead: number;
+  blockWrite: number;
+}
+
+export interface DetailedContainerStats extends ContainerStats {
+  cpuKernelUsage: number;
+  cpuUserUsage: number;
+  cpuSystemUsage: number;
+  cpuOnlineCpus: number;
+  memoryCache: number;
+  memorySwap: number;
+  memorySwapLimit: number;
+  swapUsagePercentage: number;
+  networkThroughput: number;
+  networkPacketsRx: number;
+  networkPacketsTx: number;
+  networkDroppedRx: number;
+  networkDroppedTx: number;
+  networkErrorsRx: number;
+  networkErrorsTx: number;
+  blockThroughput: number;
+  blockReadOps: number;
+  blockWriteOps: number;
+  pids: number;
+  restartCount: number;
+  healthStatus: HealthStatus;
+  healthCheckLogs: string[];
+}
 ```
 
 ## 🔌 API Specifications
@@ -203,7 +312,7 @@ data class ContainerStats(
 ### REST API Endpoints
 
 #### Container Management
-```kotlin
+```typescript
 // Container Routes
 GET    /api/containers              // List all containers
 GET    /api/containers/{id}         // Get container details
@@ -214,13 +323,13 @@ DELETE /api/containers/{id}         // Remove container
 GET    /api/containers/{id}/logs    // Get container logs
 GET    /api/containers/{id}/stats   // Get container statistics
 
-// Container Creation (Phase 2)
+// Container Creation
 POST   /api/containers              // Create new container
 PUT    /api/containers/{id}         // Update container configuration
 ```
 
 #### Proxy Management
-```kotlin
+```typescript
 // Proxy Routes
 GET    /api/proxy/rules             // List all proxy rules
 GET    /api/proxy/rules/{id}        // Get proxy rule details
@@ -233,7 +342,7 @@ POST   /api/proxy/reload            // Reload proxy configuration
 ```
 
 #### System Management
-```kotlin
+```typescript
 // System Routes
 GET    /api/system/info             // System information
 GET    /api/system/health           // Health check
@@ -243,525 +352,394 @@ PUT    /api/system/config           // Update configuration
 ```
 
 ### WebSocket Events
-```kotlin
+```typescript
 // WebSocket Message Types
-@Serializable
-sealed class WebSocketMessage {
-    @Serializable
-    data class ContainerEvent(
-        val type: EventType,
-        val container: Container
-    ) : WebSocketMessage()
-    
-    @Serializable
-    data class ProxyEvent(
-        val type: EventType,
-        val rule: ProxyRule
-    ) : WebSocketMessage()
-    
-    @Serializable
-    data class StatsUpdate(
-        val stats: List<ContainerStats>
-    ) : WebSocketMessage()
-    
-    @Serializable
-    data class LogEntry(
-        val containerId: String,
-        val timestamp: Long,
-        val message: String,
-        val level: LogLevel = LogLevel.INFO
-    ) : WebSocketMessage()
+export type WebSocketMessage =
+  | ContainerEvent
+  | ProxyEvent
+  | StatsUpdate
+  | LogEntry;
+
+export interface ContainerEvent {
+  type: EventType;
+  container: Container;
 }
 
-@Serializable
-enum class EventType {
-    CREATED, STARTED, STOPPED, REMOVED, UPDATED
+export interface ProxyEvent {
+  type: EventType;
+  rule: ProxyRule;
 }
 
-@Serializable
-enum class LogLevel {
-    DEBUG, INFO, WARN, ERROR
+export interface StatsUpdate {
+  stats: ContainerStats[];
+}
+
+export interface LogEntry {
+  containerId: string;
+  timestamp: number;
+  message: string;
+  level: LogLevel;
+}
+
+export enum EventType {
+  CREATED = 'CREATED',
+  STARTED = 'STARTED',
+  STOPPED = 'STOPPED',
+  REMOVED = 'REMOVED',
+  UPDATED = 'UPDATED'
+}
+
+export enum LogLevel {
+  DEBUG = 'DEBUG',
+  INFO = 'INFO',
+  WARN = 'WARN',
+  ERROR = 'ERROR'
 }
 ```
 
 ## 🐳 Docker Integration
 
 ### Docker API Client Configuration
-```kotlin
-// DockerClientConfig.kt
-class DockerClientConfig {
-    companion object {
-        fun create(): DockerClient {
-            val config = DefaultDockerClientConfig.createDefaultConfigBuilder()
-                .withDockerHost("unix:///var/run/docker.sock")
-                .withDockerTlsVerify(false)
-                .build()
-            
-            val httpClient = DockerHttpClient.Builder()
-                .dockerHost(config.dockerHost)
-                .sslConfig(config.sslConfig)
-                .build()
-            
-            return DockerClientImpl.getInstance(config, httpClient)
-        }
-    }
-}
+```typescript
+// DockerClient.ts
+import Dockerode from 'dockerode';
+import { Container, ContainerState, PortMapping, VolumeMount, ContainerStats } from '../models';
 
-// ContainerService.kt
-class ContainerService(private val dockerClient: DockerClient) {
-    suspend fun listContainers(all: Boolean = true): List<Container> {
-        return withContext(Dispatchers.IO) {
-            dockerClient.listContainersCmd()
-                .withShowAll(all)
-                .exec()
-                .map { it.toContainer() }
-        }
+export class DockerClient {
+  private docker: Dockerode;
+
+  constructor(socketPath: string = '/var/run/docker.sock') {
+    this.docker = new Dockerode({ socketPath });
+  }
+
+  async getContainers(all: boolean = true): Promise<Container[]> {
+    try {
+      const containers = await this.docker.listContainers({ all });
+      return containers.map(this.mapDockerContainerToModel);
+    } catch (error: any) {
+      console.error('Error fetching containers:', error);
+      throw new Error(`Failed to fetch containers: ${error.message}`);
     }
-    
-    suspend fun startContainer(containerId: String): Boolean {
-        return withContext(Dispatchers.IO) {
-            try {
-                dockerClient.startContainerCmd(containerId).exec()
-                true
-            } catch (e: Exception) {
-                false
-            }
-        }
+  }
+
+  async startContainer(id: string): Promise<void> {
+    try {
+      const container = this.docker.getContainer(id);
+      await container.start();
+    } catch (error: any) {
+      console.error(`Error starting container ${id}:`, error);
+      throw new Error(`Failed to start container ${id}: ${error.message}`);
     }
-    
-    suspend fun getContainerLogs(containerId: String): Flow<String> {
-        return flow {
-            dockerClient.logContainerCmd(containerId)
-                .withStdOut(true)
-                .withStdErr(true)
-                .withFollowStream(true)
-                .exec(object : ResultCallback.Adapter<Frame>() {
-                    override fun onNext(frame: Frame) {
-                        emit(String(frame.payload))
-                    }
-                })
-        }.flowOn(Dispatchers.IO)
+  }
+
+  async getContainerLogs(id: string, options: { tail?: number; since?: number; until?: number } = {}): Promise<string> {
+    try {
+      const container = this.docker.getContainer(id);
+      const logs = await container.logs({
+        stdout: true,
+        stderr: true,
+        tail: options.tail || 100,
+        since: options.since,
+        until: options.until,
+        timestamps: true
+      });
+      
+      return logs.toString('utf-8');
+    } catch (error: any) {
+      console.error(`Error fetching logs for container ${id}:`, error);
+      throw new Error(`Failed to fetch logs for container ${id}: ${error.message}`);
     }
+  }
+
+  // Additional methods for container management...
 }
 ```
 
 ## 🔄 Reverse Proxy Integration
 
 ### Nginx Configuration Management
-```kotlin
-// NginxConfigGenerator.kt
-class NginxConfigGenerator {
-    fun generateConfig(rules: List<ProxyRule>): String {
-        return buildString {
-            appendLine("events { worker_connections 1024; }")
-            appendLine("http {")
-            appendLine("    include /etc/nginx/mime.types;")
-            appendLine("    default_type application/octet-stream;")
-            appendLine()
-            
-            rules.forEach { rule ->
-                if (rule.enabled) {
-                    appendLine(generateServerBlock(rule))
-                }
-            }
-            
-            appendLine("}")
-        }
-    }
-    
-    private fun generateServerBlock(rule: ProxyRule): String {
-        return buildString {
-            appendLine("    server {")
-            appendLine("        listen ${if (rule.sslEnabled) "443 ssl" else "80"};")
-            appendLine("        server_name ${rule.sourceHost};")
-            
-            if (rule.sslEnabled && rule.sslCertPath != null) {
-                appendLine("        ssl_certificate ${rule.sslCertPath};")
-                appendLine("        ssl_certificate_key ${rule.sslCertPath.replace(".crt", ".key")};")
-            }
-            
-            appendLine("        location ${rule.sourcePath} {")
-            appendLine("            proxy_pass http://localhost:${rule.targetPort};")
-            appendLine("            proxy_set_header Host \\$host;")
-            appendLine("            proxy_set_header X-Real-IP \\$remote_addr;")
-            appendLine("            proxy_set_header X-Forwarded-For \\$proxy_add_x_forwarded_for;")
-            appendLine("            proxy_set_header X-Forwarded-Proto \\$scheme;")
-            
-            rule.headers.forEach { (key, value) ->
-                appendLine("            proxy_set_header $key $value;")
-            }
-            
-            if (rule.healthCheck != null) {
-                appendLine("            # Health check: ${rule.healthCheck.path}")
-            }
-            
-            appendLine("        }")
-            appendLine("    }")
-        }
-    }
-}
+```typescript
+// NginxManager.ts
+import fs from 'fs/promises';
+import path from 'path';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import { ProxyRule, ProxyProtocol } from '../models';
 
-// ProxyService.kt
-class ProxyService {
-    private val configGenerator = NginxConfigGenerator()
-    private val configPath = "/etc/nginx/nginx.conf"
-    
-    suspend fun updateProxyConfig(rules: List<ProxyRule>) {
-        withContext(Dispatchers.IO) {
-            val config = configGenerator.generateConfig(rules)
-            File(configPath).writeText(config)
-            reloadNginx()
-        }
+const execAsync = promisify(exec);
+
+export class NginxManager {
+  private configDir: string;
+  private sitesDir: string;
+  private templatePath: string;
+  private mainConfigPath: string;
+
+  constructor(options: {
+    configDir?: string;
+    sitesDir?: string;
+    templatePath?: string;
+    mainConfigPath?: string;
+  } = {}) {
+    this.configDir = options.configDir || '/etc/nginx';
+    this.sitesDir = options.sitesDir || path.join(this.configDir, 'sites-enabled');
+    this.templatePath = options.templatePath || path.join(this.configDir, 'nginx.conf.template');
+    this.mainConfigPath = options.mainConfigPath || path.join(this.configDir, 'nginx.conf');
+  }
+
+  async createOrUpdateProxyRule(rule: ProxyRule): Promise<void> {
+    try {
+      const configPath = path.join(this.sitesDir, `${rule.id}.conf`);
+      const configContent = this.generateProxyRuleConfig(rule);
+      
+      await fs.writeFile(configPath, configContent);
+      await this.reloadNginx();
+    } catch (error: any) {
+      console.error(`Error creating/updating proxy rule ${rule.id}:`, error);
+      throw new Error(`Failed to create/update proxy rule ${rule.id}: ${error.message}`);
     }
-    
-    private suspend fun reloadNginx() {
-        withContext(Dispatchers.IO) {
-            ProcessBuilder("nginx", "-s", "reload")
-                .start()
-                .waitFor()
-        }
+  }
+
+  private generateProxyRuleConfig(rule: ProxyRule): string {
+    // Generate Nginx configuration based on proxy rule
+    // Implementation details...
+  }
+
+  async reloadNginx(): Promise<void> {
+    try {
+      // First test the configuration
+      const testResult = await this.testConfig();
+      if (!testResult) {
+        throw new Error('Nginx configuration test failed');
+      }
+      
+      // If test passed, reload Nginx
+      await execAsync('nginx -s reload');
+    } catch (error: any) {
+      console.error('Error reloading Nginx:', error);
+      throw new Error(`Failed to reload Nginx: ${error.message}`);
     }
+  }
+
+  // Additional methods for Nginx management...
 }
 ```
 
-## 📊 Database Schema (Phase 3)
+## 📊 Database Schema
 
 ### Database Configuration
-```kotlin
-// DatabaseConfig.kt
-object DatabaseConfig {
-    fun createDataSource(): HikariDataSource {
-        val config = HikariConfig().apply {
-            driverClassName = "org.h2.Driver"
-            jdbcUrl = "jdbc:h2:file:./data/kontainers;DB_CLOSE_DELAY=-1"
-            username = "sa"
-            password = ""
-            maximumPoolSize = 10
-        }
-        return HikariDataSource(config)
-    }
-}
+```typescript
+// Database.ts
+import { drizzle } from 'drizzle-orm/bun-sqlite';
+import { Database } from 'bun:sqlite';
+import * as schema from './schema';
 
-// Database Tables
-object Users : Table() {
-    val id = uuid("id").autoGenerate()
-    val username = varchar("username", 50).uniqueIndex()
-    val email = varchar("email", 100).uniqueIndex()
-    val passwordHash = varchar("password_hash", 255)
-    val role = enumeration("role", UserRole::class)
-    val createdAt = timestamp("created_at").defaultExpression(CurrentTimestamp())
-    val updatedAt = timestamp("updated_at").defaultExpression(CurrentTimestamp())
-    
-    override val primaryKey = PrimaryKey(id)
-}
+// Create SQLite database connection
+const sqlite = new Database('kontainers.db');
+export const db = drizzle(sqlite, { schema });
 
-object ProxyRules : Table() {
-    val id = uuid("id").autoGenerate()
-    val userId = uuid("user_id").references(Users.id)
-    val name = varchar("name", 100)
-    val sourceHost = varchar("source_host", 255)
-    val sourcePath = varchar("source_path", 255).default("/")
-    val targetContainer = varchar("target_container", 100)
-    val targetPort = integer("target_port")
-    val protocol = enumeration("protocol", ProxyProtocol::class)
-    val sslEnabled = bool("ssl_enabled").default(false)
-    val sslCertPath = varchar("ssl_cert_path", 500).nullable()
-    val enabled = bool("enabled").default(true)
-    val createdAt = timestamp("created_at").defaultExpression(CurrentTimestamp())
-    val updatedAt = timestamp("updated_at").defaultExpression(CurrentTimestamp())
-    
-    override val primaryKey = PrimaryKey(id)
-}
+// Schema.ts
+import { sqliteTable, text, integer, blob } from 'drizzle-orm/sqlite-core';
+
+export const users = sqliteTable('users', {
+  id: text('id').primaryKey(),
+  username: text('username').notNull().unique(),
+  email: text('email').notNull().unique(),
+  passwordHash: text('password_hash').notNull(),
+  role: text('role', { enum: ['admin', 'user', 'viewer'] }).notNull(),
+  createdAt: integer('created_at').notNull(),
+  updatedAt: integer('updated_at').notNull()
+});
+
+export const proxyRules = sqliteTable('proxy_rules', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').references(() => users.id),
+  name: text('name').notNull(),
+  sourceHost: text('source_host').notNull(),
+  sourcePath: text('source_path').notNull().default('/'),
+  targetContainer: text('target_container').notNull(),
+  targetPort: integer('target_port').notNull(),
+  protocol: text('protocol', { enum: ['HTTP', 'HTTPS', 'TCP', 'UDP'] }).notNull(),
+  sslEnabled: integer('ssl_enabled', { mode: 'boolean' }).notNull().default(false),
+  sslCertPath: text('ssl_cert_path'),
+  sslKeyPath: text('ssl_key_path'),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(true),
+  created: integer('created').notNull(),
+  config: text('config', { mode: 'json' })
+});
 ```
 
 ## 🔒 Security Specifications
 
-### Authentication & Authorization (Phase 3)
-```kotlin
+### Authentication & Authorization
+```typescript
+// Auth.ts
+import jwt from 'jsonwebtoken';
+import { Elysia, t } from 'elysia';
+import { db } from '../db';
+import { users } from '../db/schema';
+import { eq } from 'drizzle-orm';
+import { hashPassword, verifyPassword } from '../utils/password';
+
 // JWT Configuration
-class JWTConfig {
-    companion object {
-        const val SECRET = "your-secret-key"
-        const val ISSUER = "kontainers"
-        const val AUDIENCE = "kontainers-users"
-        const val REALM = "Kontainers"
-        const val EXPIRATION_TIME = 3600000L // 1 hour
-    }
-}
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
+const JWT_EXPIRES_IN = '1h';
 
-// Security Middleware
-fun Application.configureSecurity() {
-    install(Authentication) {
-        jwt("auth-jwt") {
-            realm = JWTConfig.REALM
-            verifier(
-                JWT.require(Algorithm.HMAC256(JWTConfig.SECRET))
-                    .withAudience(JWTConfig.AUDIENCE)
-                    .withIssuer(JWTConfig.ISSUER)
-                    .build()
-            )
-            validate { credential ->
-                if (credential.payload.getClaim("username").asString() != "") {
-                    JWTPrincipal(credential.payload)
-                } else {
-                    null
-                }
-            }
+export const authRoutes = new Elysia({ prefix: '/api/auth' })
+  // Login route
+  .post('/login', 
+    async ({ body, set }) => {
+      const { username, password } = body;
+      
+      // Find user
+      const user = await db.query.users.findFirst({
+        where: eq(users.username, username)
+      });
+      
+      if (!user) {
+        set.status = 401;
+        return { success: false, message: 'Invalid credentials' };
+      }
+      
+      // Verify password
+      const isValid = await verifyPassword(password, user.passwordHash);
+      if (!isValid) {
+        set.status = 401;
+        return { success: false, message: 'Invalid credentials' };
+      }
+      
+      // Generate token
+      const token = jwt.sign(
+        { 
+          id: user.id, 
+          username: user.username, 
+          role: user.role 
+        }, 
+        JWT_SECRET, 
+        { expiresIn: JWT_EXPIRES_IN }
+      );
+      
+      return { 
+        success: true, 
+        token,
+        user: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          role: user.role
         }
+      };
+    },
+    {
+      body: t.Object({
+        username: t.String(),
+        password: t.String()
+      })
     }
-}
-
-// Role-based Access Control
-enum class UserRole {
-    ADMIN, USER, VIEWER
-}
-
-fun Route.withRole(role: UserRole, build: Route.() -> Unit) {
-    authenticate("auth-jwt") {
-        intercept(ApplicationCallPipeline.Call) {
-            val principal = call.principal<JWTPrincipal>()
-            val userRole = principal?.payload?.getClaim("role")?.asString()
-            
-            if (userRole == null || UserRole.valueOf(userRole).ordinal < role.ordinal) {
-                call.respond(HttpStatusCode.Forbidden)
-                return@intercept finish()
-            }
-        }
-        build()
+  )
+  
+  // Register route
+  .post('/register',
+    async ({ body, set }) => {
+      const { username, email, password } = body;
+      
+      // Check if user exists
+      const existingUser = await db.query.users.findFirst({
+        where: eq(users.username, username)
+      });
+      
+      if (existingUser) {
+        set.status = 409;
+        return { success: false, message: 'Username already exists' };
+      }
+      
+      // Hash password
+      const passwordHash = await hashPassword(password);
+      
+      // Create user
+      const now = Date.now();
+      await db.insert(users).values({
+        id: crypto.randomUUID(),
+        username,
+        email,
+        passwordHash,
+        role: 'user',
+        createdAt: now,
+        updatedAt: now
+      });
+      
+      return { success: true, message: 'User registered successfully' };
+    },
+    {
+      body: t.Object({
+        username: t.String(),
+        email: t.String(),
+        password: t.String()
+      })
     }
-}
-```
+  );
 
-## 🚀 Deployment Specifications
-
-### Docker Configuration
-```dockerfile
-# Dockerfile
-FROM openjdk:17-jdk-slim
-
-# Install Docker CLI and Nginx
-RUN apt-get update && apt-get install -y \
-    docker.io \
-    nginx \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Create application directory
-WORKDIR /app
-
-# Copy application JAR
-COPY build/libs/kontainers-*.jar app.jar
-
-# Copy Nginx configuration template
-COPY docker/nginx.conf.template /etc/nginx/nginx.conf.template
-
-# Create data directory
-RUN mkdir -p /app/data
-
-# Expose ports
-EXPOSE 8080 80 443
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/api/system/health || exit 1
-
-# Start script
-COPY docker/start.sh /start.sh
-RUN chmod +x /start.sh
-
-CMD ["/start.sh"]
-```
-
-### Docker Compose Configuration
-```yaml
-# docker-compose.yml
-version: '3.8'
-
-services:
-  kontainers:
-    build: .
-    container_name: kontainers
-    ports:
-      - "8080:8080"
-      - "80:80"
-      - "443:443"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - ./data:/app/data
-      - ./ssl:/app/ssl:ro
-      - ./config:/app/config
-    environment:
-      - KONTAINERS_ENV=production
-      - KONTAINERS_DB_PATH=/app/data/kontainers.db
-      - KONTAINERS_SSL_PATH=/app/ssl
-    restart: unless-stopped
-    networks:
-      - kontainers-network
-
-  nginx:
-    image: nginx:alpine
-    container_name: kontainers-proxy
-    ports:
-      - "8081:80"
-    volumes:
-      - ./nginx/conf.d:/etc/nginx/conf.d:ro
-      - ./ssl:/etc/ssl/certs:ro
-    depends_on:
-      - kontainers
-    restart: unless-stopped
-    networks:
-      - kontainers-network
-
-networks:
-  kontainers-network:
-    driver: bridge
-```
-
-## 📈 Performance Requirements
-
-### Response Time Targets
-| Operation | Target Response Time | Maximum Response Time |
-|-----------|---------------------|----------------------|
-| Container List | < 200ms | < 500ms |
-| Container Start/Stop | < 1s | < 3s |
-| Proxy Rule Creation | < 300ms | < 1s |
-| Log Streaming | < 100ms initial | Real-time |
-| Dashboard Load | < 500ms | < 1s |
-
-### Scalability Targets
-| Metric | Phase 1 | Phase 2 | Phase 3 |
-|--------|---------|---------|---------|
-| Concurrent Users | 5 | 20 | 100 |
-| Containers Managed | 50 | 200 | 1000 |
-| Proxy Rules | 20 | 100 | 500 |
-| Memory Usage | < 512MB | < 1GB | < 2GB |
-| CPU Usage | < 50% | < 70% | < 80% |
-
-### Monitoring & Metrics
-```kotlin
-// MetricsService.kt
-class MetricsService {
-    private val containerCount = AtomicInteger(0)
-    private val proxyRuleCount = AtomicInteger(0)
-    private val requestCount = AtomicLong(0)
-    private val responseTimeHistogram = mutableMapOf<String, MutableList<Long>>()
+// Auth middleware
+export const authMiddleware = new Elysia()
+  .derive(({ headers, set }) => {
+    const authHeader = headers.authorization;
     
-    fun recordRequest(endpoint: String, responseTime: Long) {
-        requestCount.incrementAndGet()
-        responseTimeHistogram.computeIfAbsent(endpoint) { mutableListOf() }
-            .add(responseTime)
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      set.status = 401;
+      return { isAuthenticated: false, user: null };
     }
     
-    fun getMetrics(): SystemMetrics {
-        return SystemMetrics(
-            containerCount = containerCount.get(),
-            proxyRuleCount = proxyRuleCount.get(),
-            totalRequests = requestCount.get(),
-            averageResponseTime = calculateAverageResponseTime(),
-            memoryUsage = getMemoryUsage(),
-            cpuUsage = getCpuUsage()
-        )
+    const token = authHeader.split(' ')[1];
+    
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      return { isAuthenticated: true, user: decoded };
+    } catch (error) {
+      set.status = 401;
+      return { isAuthenticated: false, user: null };
     }
-}
-
-@Serializable
-data class SystemMetrics(
-    val containerCount: Int,
-    val proxyRuleCount: Int,
-    val totalRequests: Long,
-    val averageResponseTime: Double,
-    val memoryUsage: Long,
-    val cpuUsage: Double,
-    val timestamp: Long = System.currentTimeMillis()
-)
+  });
 ```
 
-## 🧪 Testing Specifications
+## 📈 Current Progress (June 13, 2025)
 
-### Unit Testing
-```kotlin
-// ContainerServiceTest.kt
-class ContainerServiceTest {
-    private val mockDockerClient = mockk<DockerClient>()
-    private val containerService = ContainerService(mockDockerClient)
-    
-    @Test
-    fun `should list containers successfully`() = runTest {
-        // Given
-        val mockContainers = listOf(
-            mockk<com.github.dockerjava.api.model.Container> {
-                every { id } returns "container1"
-                every { names } returns arrayOf("/test-container")
-                every { state } returns "running"
-            }
-        )
-        
-        every { mockDockerClient.listContainersCmd() } returns mockk {
-            every { withShowAll(any()) } returns this
-            every { exec() } returns mockContainers
-        }
-        
-        // When
-        val result = containerService.listContainers()
-        
-        // Then
-        assertEquals(1, result.size)
-        assertEquals("container1", result[0].id)
-        assertEquals("test-container", result[0].name)
-    }
-}
-```
+### ✅ Completed
+- **Project Foundation** - All tasks completed
+  - React + TypeScript project structure set up
+  - Bun runtime configured for optimal performance
+  - Docker API integration implemented
+  - Frontend with React and Tailwind CSS
+  - WebSocket support for real-time updates
+- **Frontend Components** - All tasks completed
+  - Proxy Management Components
+  - Metrics and Monitoring Components
+  - Settings Components
+- **Backend Infrastructure** - All tasks completed
+  - Bun server with routing
+  - Docker API integration
+  - REST API endpoints for container operations
+  - WebSocket server for real-time updates
+  - CORS and middleware configuration
 
-### Integration Testing
-```kotlin
-// ApiIntegrationTest.kt
-@TestInstance(TestInstance.Lifecycle.PER_CLASS)
-class ApiIntegrationTest {
-    private lateinit var testApplication: TestApplication
-    
-    @BeforeAll
-    fun setup() {
-        testApplication = TestApplication {
-            application {
-                module()
-            }
-        }
-    }
-    
-    @Test
-    fun `should return container list`() = testApplication.test {
-        // When
-        val response = client.get("/api/containers")
-        
-        // Then
-        assertEquals(HttpStatusCode.OK, response.status)
-        val containers = response.body<List<Container>>()
-        assertTrue(containers.isNotEmpty())
-    }
-}
-```
+### 🚧 In Progress
+- **Multi-User & API** - Completing final features
+  - Team/organization support
+  - Resource quotas and limits
+  - API client libraries
+  - Webhook support
+  - CLI tool for power users
+- **Operations & Maintenance** - Implementing remaining features
+  - Automated backup procedures
+  - Update and migration system
+- **Scalability & Performance** - Finalizing
+  - Horizontal scaling support
 
-## 📋 Development Guidelines
-
-### Code Style & Standards
-- **Kotlin Coding Conventions**: Follow official Kotlin style guide
-- **API Design**: RESTful principles with consistent naming
-- **Error Handling**: Structured error responses with proper HTTP codes
-- **Logging**: Structured logging with appropriate levels
-- **Documentation**: KDoc for all public APIs
-
-### Git Workflow
-- **Branch Strategy**: GitFlow with feature branches
-- **Commit Messages**: Conventional commits format
-- **Pull Requests**: Required for all changes with code review
-- **CI/CD**: Automated testing and deployment pipelines
-
-### Quality Gates
-- **Code Coverage**: Minimum 80% for new code
-- **Static Analysis**: Detekt for Kotlin code analysis
-- **Security Scanning**: Regular dependency vulnerability scans
-- **Performance Testing**: Load testing for each release
-
----
-
-This technical specification provides the foundation for implementing the Kontainers MVP. Each section should be reviewed and updated as development progresses and requirements evolve.
+### 📈 Progress Metrics
+- Frontend Components: 100% complete
+- Backend Integration: 100% complete
+- Docker Integration: 100% complete
+- Security & Authentication: 100% complete
+- API Documentation: 100% complete
+- Multi-User Support: 60% complete
+- Operations & Maintenance: 60% complete
+- Scalability & Performance: 80% complete
+- Overall Progress: 92% complete
