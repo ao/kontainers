@@ -36,7 +36,7 @@ jobs:
       - name: Install dependencies
         run: |
           npm install -g @cyclonedx/cyclonedx-npm
-          npm install
+          npm install --legacy-peer-deps
       
       - name: Generate Software Bill of Materials (SBOM)
         working-directory: ./
