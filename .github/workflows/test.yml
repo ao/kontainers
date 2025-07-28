@@ -1,10 +1,17 @@
 name: Test Suite
 
 on:
+  # Run on push to main
   push:
     branches: [ main ]
+  # Run on pull requests
   pull_request:
     branches: [ main ]
+  # Run daily at midnight UTC
+  schedule:
+    - cron: '0 0 * * *'
+  # Allow manual triggering
+  workflow_dispatch:
 
 jobs:
   test:
@@ -14,6 +21,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Fetch all history for proper trend analysis
       
       - name: Setup Bun
         uses: oven-sh/setup-bun@v1
@@ -26,7 +35,18 @@ jobs:
       
       - name: Run tests with coverage
         working-directory: ./
-        run: bun test --coverage
+        run: |
+          mkdir -p test-reports
+          # Run the full test suite
+          echo "Running tests..."
+          bun test
+          
+          # Check test coverage
+          echo "Checking test coverage..."
+          bun test --coverage
+          
+          # Copy coverage report to reports directory
+          cp coverage/coverage-summary.json test-reports/results.json
       
       - name: Check coverage threshold
         working-directory: ./
@@ -43,6 +63,12 @@ jobs:
         with:
           name: coverage-report
           path: coverage/
+      
+      - name: Upload test reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: test-reports/
       
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v3
@@ -75,3 +101,119 @@ jobs:
               repo: context.repo.repo,
               body: summary
             });
+      
+      - name: Generate HTML report
+        working-directory: ./
+        run: |
+          # Create a simple HTML report with test results
+          echo '<!DOCTYPE html>
+          <html>
+          <head>
+            <title>Test Coverage Report</title>
+            <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+            <style>
+              body { font-family: Arial, sans-serif; margin: 20px; }
+              .chart-container { width: 800px; height: 400px; margin-bottom: 30px; }
+              .coverage-summary { margin: 20px 0; }
+              .coverage-summary table { border-collapse: collapse; width: 100%; }
+              .coverage-summary th, .coverage-summary td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+              .coverage-summary th { background-color: #f2f2f2; }
+            </style>
+          </head>
+          <body>
+            <h1>Test Coverage Report</h1>
+            <p>Generated on: '"$(date)"'</p>
+            <div class="coverage-summary">
+              <h2>Coverage Summary</h2>
+              <div id="coverage-data"></div>
+            </div>
+            <div class="chart-container">
+              <canvas id="coverageChart"></canvas>
+            </div>
+            <script>
+              fetch("results.json")
+                .then(response => response.json())
+                .then(data => {
+                  // Display coverage data
+                  const coverageDiv = document.getElementById("coverage-data");
+                  const table = document.createElement("table");
+                  
+                  // Create header row
+                  const headerRow = document.createElement("tr");
+                  ["File", "% Statements", "% Functions", "% Lines", "% Branches"].forEach(header => {
+                    const th = document.createElement("th");
+                    th.textContent = header;
+                    headerRow.appendChild(th);
+                  });
+                  table.appendChild(headerRow);
+                  
+                  // Create data rows
+                  const total = data.total;
+                  const totalRow = document.createElement("tr");
+                  
+                  const fileCell = document.createElement("td");
+                  fileCell.textContent = "Total";
+                  totalRow.appendChild(fileCell);
+                  
+                  ["statements", "functions", "lines", "branches"].forEach(metric => {
+                    const td = document.createElement("td");
+                    td.textContent = total[metric].pct + "%";
+                    totalRow.appendChild(td);
+                  });
+                  
+                  table.appendChild(totalRow);
+                  coverageDiv.appendChild(table);
+                  
+                  // Create chart
+                  const ctx = document.getElementById("coverageChart").getContext("2d");
+                  new Chart(ctx, {
+                    type: "bar",
+                    data: {
+                      labels: ["Statements", "Functions", "Lines", "Branches"],
+                      datasets: [{
+                        label: "Coverage %",
+                        data: [
+                          total.statements.pct,
+                          total.functions.pct,
+                          total.lines.pct,
+                          total.branches.pct
+                        ],
+                        backgroundColor: [
+                          "rgba(75, 192, 192, 0.2)",
+                          "rgba(54, 162, 235, 0.2)",
+                          "rgba(153, 102, 255, 0.2)",
+                          "rgba(255, 159, 64, 0.2)"
+                        ],
+                        borderColor: [
+                          "rgba(75, 192, 192, 1)",
+                          "rgba(54, 162, 235, 1)",
+                          "rgba(153, 102, 255, 1)",
+                          "rgba(255, 159, 64, 1)"
+                        ],
+                        borderWidth: 1
+                      }]
+                    },
+                    options: {
+                      scales: {
+                        y: {
+                          beginAtZero: true,
+                          max: 100
+                        }
+                      }
+                    }
+                  });
+                });
+            </script>
+          </body>
+          </html>' > test-reports/coverage-report.html
+      
+      - name: Store test coverage data
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          name: Test Coverage
+          tool: 'customBiggerIsBetter'
+          output-file-path: test-reports/results.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          # Comment out the following line if you don't want to create GitHub Pages for benchmark results
+          # gh-pages-branch: gh-pages
