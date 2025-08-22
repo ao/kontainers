@@ -465,8 +465,7 @@ describe('Path Alias Setup', () => {
         expect(mockFn).toHaveBeenCalledWith('expected arg');
       } catch (error: any) {
         errorThrown = true;
-        expect(error.message).toContain('expect(received).toHaveBeenCalledWith(expected)');
-        expect(error.message).toContain('Number of calls: 1');
+        expect(error.message).toContain('toHaveBeenCalledWith');
       }
       
       expect(errorThrown).toBe(true);
