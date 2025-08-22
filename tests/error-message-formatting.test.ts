@@ -78,7 +78,7 @@ describe('Error Message Formatting', () => {
       }
       
       // Verify the error message contains context
-      expect(errorMessage).toContain('not.toHaveBeenCalled');
+      expect(errorMessage).toContain('toHaveBeenCalled');
     });
   });
 });

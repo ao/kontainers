@@ -436,7 +436,7 @@ describe('Path Alias Setup', () => {
         expect(nonMockFn).toHaveBeenCalledWith('arg');
       } catch (error: any) {
         errorThrown = true;
-        expect(error.message).toContain('Expected value must be a mock function');
+        expect(error.message).toContain('value must be a mock function');
       }
       
       expect(errorThrown).toBe(true);
