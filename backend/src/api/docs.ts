@@ -14,7 +14,7 @@ export const apiDocs = new Elysia()
         description: 'API for Kontainers - Container Management and Reverse Proxy Platform',
         contact: {
           name: 'Kontainers Team',
-          url: 'https://github.com/ao/kontainers'
+          url: 'https://github.com/ataiva-software/kontainers'
         },
         license: {
           name: 'MIT',

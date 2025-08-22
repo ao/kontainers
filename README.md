@@ -1,6 +1,6 @@
 # Kontainers
 
-![Build Status](https://github.com/ao/kontainers/workflows/Test%20Suite/badge.svg)
+![Build Status](https://github.com/ataiva-software/kontainers/workflows/Test%20Suite/badge.svg)
 ![Coverage](https://codecov.io/gh/kontainers/kontainers/branch/main/graph/badge.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Bun](https://img.shields.io/badge/Bun-1.2.16-black)
@@ -182,7 +182,7 @@ docker-compose up -d
 
 ```bash
 # Clone the repository
-git clone https://github.com/ao/kontainers.git
+git clone https://github.com/ataiva-software/kontainers.git
 cd kontainers
 
 # Install dependencies
@@ -315,7 +315,7 @@ Kontainers provides a comprehensive REST API for integration with other tools:
 
 ```bash
 # Clone the repository
-git clone https://github.com/ao/kontainers.git
+git clone https://github.com/ataiva-software/kontainers.git
 cd kontainers
 
 # Install dependencies
@@ -396,7 +396,7 @@ bun hooks:skip
 
 ## CI/CD Pipeline
 
-![Build Status](https://github.com/ao/kontainers/workflows/Test%20Suite/badge.svg)
+![Build Status](https://github.com/ataiva-software/kontainers/workflows/Test%20Suite/badge.svg)
 ![Coverage](https://codecov.io/gh/ao/kontainers/branch/main/graph/badge.svg)
 
 Kontainers uses GitHub Actions for continuous integration and deployment.
@@ -454,7 +454,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## Documentation
 
-For full documentation, visit [github.com/ao/kontainers](https://github.com/ao/kontainers).
+For full documentation, visit [github.com/ataiva-software/kontainers](https://github.com/ataiva-software/kontainers).
 
 ## Acknowledgements
 
