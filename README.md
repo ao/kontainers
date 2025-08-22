@@ -7,7 +7,7 @@
 
 Kontainers is a modern, high-performance container management and reverse proxy platform built with Bun, React, and TypeScript. It provides an intuitive web interface for managing Docker containers, setting up reverse proxy rules, and monitoring system performance.
 
-## 🚀 Features
+## Features
 
 ### Container Management
 - View and manage Docker containers through an intuitive web interface
@@ -40,7 +40,7 @@ Kontainers is a modern, high-performance container management and reverse proxy 
 - Dark/light theme support
 - Mobile-responsive design
 
-## 🛠️ Technology Stack
+## Technology Stack
 
 - **Frontend**: React, TypeScript, Tailwind CSS, Zustand
 - **Backend**: Bun, Node.js
@@ -49,7 +49,7 @@ Kontainers is a modern, high-performance container management and reverse proxy 
 - **Real-time Updates**: WebSockets
 - **Data Visualization**: Custom SVG charts
 
-## 🏗️ Architecture
+## Architecture
 
 Kontainers follows a modern architecture with a clear separation of concerns:
 
@@ -66,7 +66,7 @@ Kontainers follows a modern architecture with a clear separation of concerns:
    - Domain-specific traffic analytics and monitoring
    - Real-time traffic visualization and alerting
 
-## 🚦 Current Status & Vision
+## Current Status & Vision
 
 ### Current Implementation Status
 - The platform provides comprehensive container management with advanced proxy functionality
@@ -78,9 +78,9 @@ Kontainers follows a modern architecture with a clear separation of concerns:
 - Further enhance the multi-domain proxy platform with additional enterprise features
 - Develop advanced traffic analytics and reporting capabilities
 
-## 📊 Development Progress
+## Development Progress
 
-### ✅ Completed Features
+### Completed Features
 - **Project Foundation** - All tasks completed
   - React + TypeScript project structure set up
   - Bun runtime configured for optimal performance
@@ -104,7 +104,7 @@ Kontainers follows a modern architecture with a clear separation of concerns:
   - Session management and security
   - Password reset functionality
 
-### 🚧 In Progress
+### In Progress
 - **Multi-User & API** - Completing final features
   - Team/organization support
   - Resource quotas and limits
@@ -117,7 +117,7 @@ Kontainers follows a modern architecture with a clear separation of concerns:
 - **Scalability & Performance** - Finalizing
   - Horizontal scaling support
 
-### 📈 Progress Metrics
+### Progress Metrics
 - Frontend Components: 100% complete
 - Backend Integration: 100% complete
 - Docker Integration: 100% complete
@@ -128,7 +128,7 @@ Kontainers follows a modern architecture with a clear separation of concerns:
 - Scalability & Performance: 80% complete
 - **Overall Progress: 92% complete**
 
-## � Getting Started
+## Getting Started
 
 ### Prerequisites
 
@@ -203,7 +203,7 @@ Once running, access the web interface at:
 http://localhost:3000
 ```
 
-## 🧩 Components
+## Components
 
 Kontainers includes the following key components:
 
@@ -221,7 +221,7 @@ Kontainers includes the following key components:
 - **ConfigurationForm**: Configure system settings
 - **BackupRestorePanel**: Backup and restore system configuration
 
-## 🔧 Configuration
+## Configuration
 
 ### Environment Variables
 
@@ -267,7 +267,7 @@ Advanced configuration can be done through the `config.json` file:
 }
 ```
 
-## 📊 API Reference
+## API Reference
 
 Kontainers provides a comprehensive REST API for integration with other tools:
 
@@ -309,7 +309,7 @@ Kontainers provides a comprehensive REST API for integration with other tools:
 - `POST /api/system/backup` - Create a system backup
 - `POST /api/system/restore` - Restore from a backup
 
-## 🧪 Development
+## Development
 
 ### Setting Up Development Environment
 
@@ -394,7 +394,7 @@ SKIP_HOOKS=true git push
 bun hooks:skip
 ```
 
-## 🔄 CI/CD Pipeline
+## CI/CD Pipeline
 
 ![Build Status](https://github.com/ao/kontainers/workflows/Test%20Suite/badge.svg)
 ![Coverage](https://codecov.io/gh/ao/kontainers/branch/main/graph/badge.svg)
@@ -438,11 +438,11 @@ The CI/CD pipeline is integrated with local development through Git hooks:
 
 To view the CI/CD configuration, see the workflow files in `.github/workflows/`.
 
-## 📄 License
+## License
 
 Kontainers is licensed under the MIT License. See the MIT file for details.
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
@@ -452,11 +452,11 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
-## 📚 Documentation
+## Documentation
 
 For full documentation, visit [github.com/ao/kontainers](https://github.com/ao/kontainers).
 
-## 🙏 Acknowledgements
+## Acknowledgements
 
 - [Docker](https://www.docker.com/) for container technology
 - [Bun](https://bun.sh/) for the high-performance JavaScript runtime
@@ -465,6 +465,6 @@ For full documentation, visit [github.com/ao/kontainers](https://github.com/ao/k
 - [Zustand](https://github.com/pmndrs/zustand) for state management
 - [Nginx](https://nginx.org/) for the proxy server
 
-## 📞 Contact
+## Contact
 
 - GitHub: [github.com/ao](https://github.com/ao)

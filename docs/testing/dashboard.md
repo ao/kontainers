@@ -79,9 +79,9 @@ The following areas have lower test coverage and should be prioritized for impro
 
 | Pipeline | Status | Last Run | Duration |
 |----------|--------|----------|----------|
-| **Main Branch** | ✅ Passing | 12 hours ago | 4m 32s |
-| **Development Branch** | ✅ Passing | 3 hours ago | 4m 18s |
-| **PR Checks** | ✅ Passing | 1 hour ago | 3m 56s |
+| **Main Branch** | Passing | 12 hours ago | 4m 32s |
+| **Development Branch** | Passing | 3 hours ago | 4m 18s |
+| **PR Checks** | Passing | 1 hour ago | 3m 56s |
 
 ### Test Execution in CI
 
