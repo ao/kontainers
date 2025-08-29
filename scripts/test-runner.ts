@@ -50,7 +50,7 @@ const testSuites: TestSuite[] = [
   },
   {
     name: 'e2e-headed',
-    command: 'bunx playwright test --headed',
+    command: process.env.CI ? 'bunx playwright test' : 'bunx playwright test --headed',
     description: 'Run UI tests with visible browser',
     timeout: 300000
   },
