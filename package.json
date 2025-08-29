@@ -32,10 +32,7 @@
     "test:all": "bun run scripts/test-runner.ts --all",
     "test:list": "bun run scripts/test-runner.ts --list",
     "lint": "eslint src",
-    "lint:fix": "eslint src tests --fix",
-    "prepare": "bash scripts/install-hooks.sh",
-    "hooks:install": "bash scripts/install-hooks.sh",
-    "hooks:skip": "export SKIP_HOOKS=true"
+    "lint:fix": "eslint src tests --fix"
   },
   "dependencies": {
     "chart.js": "^4.4.0",
