@@ -1,5 +1,7 @@
 [test]
 preload = "./tests/setup-path-aliases.ts"
+# Exclude Playwright tests completely from Bun test runner
+exclude = ["playwright-tests/**/*", "e2e-tests/**/*", ".playwright/**/*"]
 
 [resolve]
 # Define path aliases

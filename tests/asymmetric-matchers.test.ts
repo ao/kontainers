@@ -10,7 +10,7 @@ describe('Asymmetric Matchers with toHaveBeenCalledWith', () => {
     let errorThrown = false;
     try {
       expect(mockFn).toHaveBeenCalledWith(expect.any(String));
-    } catch (error: any) {
+    } catch (_error: any) {
       errorThrown = true;
     }
     expect(errorThrown).toBe(true);
@@ -32,7 +32,7 @@ describe('Asymmetric Matchers with toHaveBeenCalledWith', () => {
     let errorThrown = false;
     try {
       expect(mockFn).toHaveBeenCalledWith(expect.stringContaining('missing'));
-    } catch (error: any) {
+    } catch (_error: any) {
       errorThrown = true;
     }
     expect(errorThrown).toBe(true);
@@ -47,7 +47,7 @@ describe('Asymmetric Matchers with toHaveBeenCalledWith', () => {
     let errorThrown = false;
     try {
       expect(mockFn).toHaveBeenCalledWith(expect.objectContaining({ name: 'Jane' }));
-    } catch (error: any) {
+    } catch (_error: any) {
       errorThrown = true;
     }
     expect(errorThrown).toBe(true);

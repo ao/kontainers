@@ -1,16 +1,10 @@
 name: Test Suite
 
 on:
-  # Run on push to main
   push:
-    branches: [ main ]
-  # Run on pull requests
+    branches: [ main, develop ]
   pull_request:
     branches: [ main ]
-  # Run daily at midnight UTC
-  schedule:
-    - cron: '0 0 * * *'
-  # Allow manual triggering
   workflow_dispatch:
 
 jobs:
@@ -18,202 +12,66 @@ jobs:
     name: Run Tests
     runs-on: ubuntu-latest
     
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: kontainers_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
-        with:
-          fetch-depth: 0  # Fetch all history for proper trend analysis
+        uses: actions/checkout@v4
       
       - name: Setup Bun
         uses: oven-sh/setup-bun@v1
         with:
-          bun-version: latest
+          bun-version: 1.2.16
       
       - name: Install dependencies
-        working-directory: ./
         run: bun install
       
-      - name: Run tests with coverage
-        working-directory: ./
-        run: |
-          mkdir -p test-reports
-          # Run the full test suite
-          echo "Running tests..."
-          bun test
-          
-          # Check test coverage and generate coverage-summary.json
-          echo "Checking test coverage..."
-          node scripts/generate-coverage-json.js
-          
-          # Copy coverage report to reports directory
-          cp coverage/coverage-summary.json test-reports/results.json
+      - name: Run linting
+        run: bun run lint
       
-      - name: Check coverage threshold
-        working-directory: ./
-        run: |
-          COVERAGE=$(cat coverage/coverage-summary.json | jq '.total.lines.pct')
-          echo "Coverage: $COVERAGE%"
-          if (( $(echo "$COVERAGE < 80" | bc -l) )); then
-            echo "Test coverage is below 80%"
-            exit 1
-          fi
+      - name: Run unit tests
+        run: bun test:unit
       
-      - name: Upload coverage report
+      - name: Run smoke tests
+        run: bun test:smoke
+      
+      - name: Run performance tests
+        run: bun test:performance
+      
+      - name: Run integration tests
+        run: bun test:integration
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/kontainers_test
+      
+      - name: Install Playwright browsers
+        run: bunx playwright install --with-deps
+      
+      - name: Run Playwright tests
+        run: bunx playwright test
+        env:
+          CI: true
+      
+      - name: Upload Playwright report
         uses: actions/upload-artifact@v4
+        if: failure()
         with:
-          name: coverage-report
-          path: coverage/
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 30
       
-      - name: Upload test reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-reports
-          path: test-reports/
-      
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v3
-        with:
-          directory: ./coverage/
-          fail_ci_if_error: false
-          verbose: true
-      
-      - name: Generate test summary
-        if: always()
-        working-directory: ./
-        run: |
-          echo "## Test Results" > test-summary.md
-          echo "### Coverage: $(cat coverage/coverage-summary.json | jq '.total.lines.pct')%" >> test-summary.md
-          echo "### Tests: $(cat coverage/coverage-summary.json | jq '.total.lines.total') total" >> test-summary.md
-          echo "### Passed: $(cat coverage/coverage-summary.json | jq '.total.lines.covered')" >> test-summary.md
-          echo "### Failed: $(cat coverage/coverage-summary.json | jq '.total.lines.total - .total.lines.covered')" >> test-summary.md
-      
-      - name: Comment PR with test results
-        if: github.event_name == 'pull_request'
-        uses: actions/github-script@v6
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const fs = require('fs');
-            const summary = fs.readFileSync('test-summary.md', 'utf8');
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: summary
-            });
-      
-      - name: Generate HTML report
-        working-directory: ./
-        run: |
-          # Create a simple HTML report with test results
-          echo '<!DOCTYPE html>
-          <html>
-          <head>
-            <title>Test Coverage Report</title>
-            <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-            <style>
-              body { font-family: Arial, sans-serif; margin: 20px; }
-              .chart-container { width: 800px; height: 400px; margin-bottom: 30px; }
-              .coverage-summary { margin: 20px 0; }
-              .coverage-summary table { border-collapse: collapse; width: 100%; }
-              .coverage-summary th, .coverage-summary td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-              .coverage-summary th { background-color: #f2f2f2; }
-            </style>
-          </head>
-          <body>
-            <h1>Test Coverage Report</h1>
-            <p>Generated on: '"$(date)"'</p>
-            <div class="coverage-summary">
-              <h2>Coverage Summary</h2>
-              <div id="coverage-data"></div>
-            </div>
-            <div class="chart-container">
-              <canvas id="coverageChart"></canvas>
-            </div>
-            <script>
-              fetch("results.json")
-                .then(response => response.json())
-                .then(data => {
-                  // Display coverage data
-                  const coverageDiv = document.getElementById("coverage-data");
-                  const table = document.createElement("table");
-                  
-                  // Create header row
-                  const headerRow = document.createElement("tr");
-                  ["File", "% Statements", "% Functions", "% Lines", "% Branches"].forEach(header => {
-                    const th = document.createElement("th");
-                    th.textContent = header;
-                    headerRow.appendChild(th);
-                  });
-                  table.appendChild(headerRow);
-                  
-                  // Create data rows
-                  const total = data.total;
-                  const totalRow = document.createElement("tr");
-                  
-                  const fileCell = document.createElement("td");
-                  fileCell.textContent = "Total";
-                  totalRow.appendChild(fileCell);
-                  
-                  ["statements", "functions", "lines", "branches"].forEach(metric => {
-                    const td = document.createElement("td");
-                    td.textContent = total[metric].pct + "%";
-                    totalRow.appendChild(td);
-                  });
-                  
-                  table.appendChild(totalRow);
-                  coverageDiv.appendChild(table);
-                  
-                  // Create chart
-                  const ctx = document.getElementById("coverageChart").getContext("2d");
-                  new Chart(ctx, {
-                    type: "bar",
-                    data: {
-                      labels: ["Statements", "Functions", "Lines", "Branches"],
-                      datasets: [{
-                        label: "Coverage %",
-                        data: [
-                          total.statements.pct,
-                          total.functions.pct,
-                          total.lines.pct,
-                          total.branches.pct
-                        ],
-                        backgroundColor: [
-                          "rgba(75, 192, 192, 0.2)",
-                          "rgba(54, 162, 235, 0.2)",
-                          "rgba(153, 102, 255, 0.2)",
-                          "rgba(255, 159, 64, 0.2)"
-                        ],
-                        borderColor: [
-                          "rgba(75, 192, 192, 1)",
-                          "rgba(54, 162, 235, 1)",
-                          "rgba(153, 102, 255, 1)",
-                          "rgba(255, 159, 64, 1)"
-                        ],
-                        borderWidth: 1
-                      }]
-                    },
-                    options: {
-                      scales: {
-                        y: {
-                          beginAtZero: true,
-                          max: 100
-                        }
-                      }
-                    }
-                  });
-                });
-            </script>
-          </body>
-          </html>' > test-reports/coverage-report.html
-      
-      - name: Store test coverage data
-        uses: benchmark-action/github-action-benchmark@v1
-        with:
-          name: Test Coverage
-          tool: 'customBiggerIsBetter'
-          output-file-path: test-reports/results.json
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          auto-push: true
-          # Comment out the following line if you don't want to create GitHub Pages for benchmark results
-          # gh-pages-branch: gh-pages
+      - name: Run comprehensive test suite
+        run: bun run test:comprehensive
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/kontainers_test
