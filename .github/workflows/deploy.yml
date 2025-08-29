@@ -34,6 +34,9 @@ jobs:
     - name: Install dependencies
       run: bun install
     
+    - name: Install Playwright browsers
+      run: bunx playwright install --with-deps
+    
     - name: Run comprehensive tests
       run: bun run test:comprehensive
       env:
