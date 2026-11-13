@@ -49,6 +49,29 @@ document.addEventListener('submit', function (e) {
   if (msg && !window.confirm(msg)) e.preventDefault();
 });
 (function () {
+  var box = document.getElementById('stats');
+  if (!box) return;
+  var url = box.getAttribute('data-stats');
+  function size(b) { return b == null ? '-' : b >= 1e9 ? (b / 1e9).toFixed(2) + ' GB' : b >= 1e6 ? (b / 1e6).toFixed(1) + ' MB' : (b / 1e3).toFixed(0) + ' kB'; }
+  function set(k, v) { var e = box.querySelector('[data-k="' + k + '"]'); if (e) e.textContent = v; }
+  var stopped = false;
+  function load() {
+    fetch(url, { credentials: 'same-origin' }).then(function (r) {
+      if (r.status === 404 || r.status === 401) { stopped = true; throw new Error('unavailable'); }
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (s) {
+      set('cpu', s.cpuPercent == null ? '-' : s.cpuPercent.toFixed(1) + ' %');
+      var lim = s.memLimit && s.memLimit < 1e15 ? ' of ' + size(s.memLimit) : '';
+      set('mem', size(s.memBytes) + lim);
+      set('net', size(s.netRx) + ' / ' + size(s.netTx));
+      set('pids', s.pids == null ? '-' : String(s.pids));
+    }).catch(function (err) { set('cpu', 'could not load: ' + err.message); });
+  }
+  load();
+  setInterval(function () { if (!stopped && !document.hidden) load(); }, 5000);
+})();
+(function () {
   var pre = document.getElementById('logs');
   if (!pre) return;
   var url = pre.getAttribute('data-logs');

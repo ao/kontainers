@@ -73,6 +73,10 @@ test('pull an image, create a container, read its logs, stop and remove it', asy
   await expect(page.locator('#logs')).toContainText('hello-e2e');
   await expect(page.getByText('MODE=…')).toBeVisible();
 
+  // Live usage is filled in by app.js; containers created here can be updated.
+  await expect(page.locator('#stats [data-k="mem"]')).toHaveText(/\d+(\.\d+)? (kB|MB|GB)/, { timeout: 20000 });
+  await expect(page.getByRole('button', { name: 'Update image' })).toBeVisible();
+
   // Running containers offer no Remove; Stop keeps you on the detail page.
   await expect(page.getByRole('button', { name: 'Remove' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Stop' }).click();

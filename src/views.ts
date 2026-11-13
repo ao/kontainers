@@ -136,7 +136,15 @@ export function containerPage(ctx: PageCtx, c: any): string {
   ${c.State?.Status === 'exited' ? html`<dt>Exit code</dt><dd>${c.State.ExitCode}</dd>` : ''}
   <dt>Restart policy</dt><dd>${c.HostConfig?.RestartPolicy?.Name}</dd>
 </dl>
-<div class="actions">${containerActions(ctx, c.Id, name, c.State?.Status || '', true)}</div>
+<div class="actions">${containerActions(ctx, c.Id, name, c.State?.Status || '', true)}
+${c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project']
+    ? post(ctx, `/containers/${c.Id}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?` })
+    : c.Config?.Labels?.['com.docker.compose.project'] ? html`<small class="muted">Part of compose project ${c.Config.Labels['com.docker.compose.project']}: update it with <code>docker compose pull &amp;&amp; docker compose up -d</code>.</small>` : ''}</div>
+${c.State?.Status === 'running' ? html`<h2>Usage</h2>
+<dl class="facts" id="stats" data-stats="/api/containers/${c.Id}/stats">
+  <dt>CPU</dt><dd data-k="cpu">…</dd><dt>Memory</dt><dd data-k="mem">…</dd>
+  <dt>Network in / out</dt><dd data-k="net">…</dd><dt>Processes</dt><dd data-k="pids">…</dd>
+</dl>` : ''}
 <h2>Environment (values hidden)</h2><ul>${env.length ? env : html`<li>none</li>`}</ul>
 <h2>Mounts</h2><ul>${mounts.length ? mounts : html`<li>none</li>`}</ul>
 <h2>Networks</h2><ul>${nets}</ul>
@@ -221,7 +229,7 @@ to route domains to containers with automatic HTTPS. See the README.</p>`);
   }
   const rows = rules.map(r => html`<tr><td>${r.tls ? 'https' : 'http'}://${r.hostname}${r.path === '/' ? '' : r.path}</td>
 <td>${r.target_container}:${r.target_port}</td><td>${ruleState(r, ruleStatus(r))}</td>
-<td class="actions">${post(ctx, `/proxy/${r.id}/toggle`, r.enabled ? 'Disable' : 'Enable')}
+<td class="actions"><a class="button" href="/proxy/${r.id}/edit">Edit</a> ${post(ctx, `/proxy/${r.id}/toggle`, r.enabled ? 'Disable' : 'Enable')}
 ${post(ctx, `/proxy/${r.id}/remove`, 'Remove', { confirm: `Remove the rule for ${r.hostname}?`, cls: 'danger' })}</td></tr>`);
   return layout('Proxy', ctx, html`
 <p>Proxy: ${status.running ? 'running' : 'not running'}${status.lastError ? html` <span class="error">${status.lastError}</span>` : ''}</p>
@@ -235,6 +243,18 @@ ${post(ctx, `/proxy/${r.id}/remove`, 'Remove', { confirm: `Remove the rule for $
 </form>
 <table><thead><tr><th>Address</th><th>Target</th><th>State</th><th></th></tr></thead>
 <tbody>${rows.length ? rows : html`<tr><td colspan="4">No rules.</td></tr>`}</tbody></table>`);
+}
+
+export function editRulePage(ctx: PageCtx, r: Rule): string {
+  return layout(`Edit ${r.hostname}`, ctx, html`
+<form method="post" action="/proxy/${r.id}/edit" class="stack">${csrfField(ctx)}
+  <label>Hostname <input name="hostname" required value="${r.hostname}"></label>
+  <label>Path prefix (sent to the container unchanged) <input name="path" value="${r.path}"></label>
+  <label>Target container <input name="targetContainer" required value="${r.target_container}"></label>
+  <label>Target port <input name="targetPort" type="number" min="1" max="65535" required value="${r.target_port}"></label>
+  <label><input type="checkbox" name="tls"${r.tls ? raw(' checked') : raw('')}> HTTPS with an automatic certificate</label>
+  <button>Save</button> <a href="/proxy">Cancel</a>
+</form>`);
 }
 
 export function settingsPage(ctx: PageCtx, users: { id: number; username: string }[], selfId: number): string {

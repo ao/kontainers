@@ -87,6 +87,9 @@ export class Docker {
     await this.req('DELETE', `/containers/${encodeURIComponent(v.ref(id))}?force=${force ? 1 : 0}&v=0`);
   }
 
+  // One sample. Without one-shot, Docker waits for a second reading so precpu_stats is filled in.
+  stats(id: string) { return this.json<any>('GET', `/containers/${encodeURIComponent(v.ref(id))}/stats?stream=false`, undefined, 15000); }
+
   async logs(id: string, tail = 200): Promise<string> {
     const t = v.intInRange(tail, 1, 10000, 200);
     const res = await this.req('GET', `/containers/${encodeURIComponent(v.ref(id))}/logs?stdout=1&stderr=1&timestamps=1&tail=${t}`);
@@ -94,7 +97,7 @@ export class Docker {
     return demux(buf);
   }
 
-  async create(spec: CreateSpec): Promise<{ Id: string }> {
+  async create(spec: CreateSpec, opts: { keepBindMounts?: boolean } = {}): Promise<{ Id: string }> {
     const image = v.image(spec.image);
     const body: Record<string, unknown> = { Image: image, Env: (spec.env || []).map(v.envVar), Labels: { 'kontainers.managed': 'true' } };
     if (spec.cmd && spec.cmd.length) {
@@ -113,7 +116,7 @@ export class Docker {
       const target = typeof m.target === 'string' && /^\/[^\0:]*$/.test(m.target) ? m.target : null;
       if (!target) throw new v.ValidationError('invalid mount target');
       if (typeof m.source === 'string' && m.source.startsWith('/')) {
-        if (!this.opts.allowBindMounts) throw new v.ValidationError('host bind mounts are disabled (KONTAINERS_ALLOW_BIND_MOUNTS)');
+        if (!this.opts.allowBindMounts && !opts.keepBindMounts) throw new v.ValidationError('host bind mounts are disabled (KONTAINERS_ALLOW_BIND_MOUNTS)');
         if (/[\0:]/.test(m.source)) throw new v.ValidationError('invalid mount source');
         return { Type: 'bind', Source: m.source, Target: target, ReadOnly: !!m.readOnly };
       }
@@ -129,6 +132,10 @@ export class Docker {
 
   // Images
   listImages() { return this.json<any[]>('GET', '/images/json'); }
+  inspectImage(ref: string) { return this.json<any>('GET', `/images/${encodeURIComponent(v.imageRef(ref))}/json`); }
+  async rename(id: string, name: string) {
+    await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/rename?name=${encodeURIComponent(v.name(name))}`);
+  }
   async pull(ref: string): Promise<void> {
     const img = v.image(ref);
     let [repo, tag] = [img, 'latest'];
@@ -160,6 +167,35 @@ export class Docker {
   async listVolumes(): Promise<any[]> { return (await this.json<{ Volumes: any[] | null }>('GET', '/volumes')).Volumes || []; }
   createVolume(name: string) { return this.json<any>('POST', '/volumes/create', { Name: v.name(name, 'volume name'), Labels: { 'kontainers.managed': 'true' } }); }
   async removeVolume(name: string) { await this.req('DELETE', `/volumes/${encodeURIComponent(v.name(name, 'volume name'))}`); }
+}
+
+export interface StatsSummary {
+  cpuPercent: number | null; // of one CPU, so 200 means two CPUs busy, as docker stats shows it
+  memBytes: number | null;
+  memLimit: number | null;
+  netRx: number; netTx: number;
+  pids: number | null;
+}
+
+// The numbers `docker stats` shows, from one Engine API stats response (cgroup v1 or v2).
+export function summarizeStats(s: any): StatsSummary {
+  const cpu = s?.cpu_stats, pre = s?.precpu_stats;
+  let cpuPercent: number | null = null;
+  if (cpu?.cpu_usage && pre?.cpu_usage && cpu.system_cpu_usage && pre.system_cpu_usage) {
+    const d = cpu.cpu_usage.total_usage - pre.cpu_usage.total_usage;
+    const sys = cpu.system_cpu_usage - pre.system_cpu_usage;
+    const n = cpu.online_cpus || cpu.cpu_usage.percpu_usage?.length || 1;
+    if (sys > 0 && d >= 0) cpuPercent = Math.round((d / sys) * n * 1000) / 10;
+  }
+  const m = s?.memory_stats;
+  let memBytes: number | null = null;
+  if (typeof m?.usage === 'number') {
+    const cache = m.stats?.inactive_file ?? m.stats?.total_inactive_file ?? 0; // v2 / v1
+    memBytes = Math.max(0, m.usage - cache);
+  }
+  let netRx = 0, netTx = 0;
+  for (const n of Object.values(s?.networks || {}) as any[]) { netRx += n.rx_bytes || 0; netTx += n.tx_bytes || 0; }
+  return { cpuPercent, memBytes, memLimit: typeof m?.limit === 'number' ? m.limit : null, netRx, netTx, pids: s?.pids_stats?.current ?? null };
 }
 
 // Docker multiplexes stdout/stderr with an 8-byte header per frame when the container has no TTY.

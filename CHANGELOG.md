@@ -15,6 +15,9 @@ let unauthenticated requests control Docker. Stop and remove it.
   default to 127.0.0.1.
 - Proxy rules from hostname and path to a container port, with ACME certificates. Targets that
   compose recreates are reconnected; the Proxy page shows target state and certificate expiry.
+- Update image: pull again and recreate a kontainers-created container with the same settings,
+  restoring the old one if the new one fails. Live CPU, memory, network and process counts on the
+  container page. Proxy rules can be edited in place.
 - Containers are never force-removed; paused containers can be unpaused; a container that fails to
   start is not left behind. Commands use shell quoting without a shell.
 - `compose.yaml` using docker-socket-proxy.

@@ -14,15 +14,20 @@ What works, and is covered by the test suites below:
 
 - containers: list, inspect, create, start, stop, restart, unpause, remove (stopped containers
   only; kontainers never force-removes), logs. Commands are split with shell quoting
-  (`sh -c "echo hi; sleep 60"`) but no shell runs and nothing is expanded.
+  (`sh -c "echo hi; sleep 60"`) but no shell runs and nothing is expanded. The detail page shows
+  CPU, memory, network and process counts, refreshed every 5 seconds.
+- update image, for containers created in kontainers: pull the image again and, if it changed,
+  recreate the container with the same name, command, environment, ports, volumes, restart policy
+  and networks. The old container is stopped and set aside first and is put back if the new one
+  cannot be created or started. Compose containers are left to `docker compose pull && docker compose up -d`.
 - images: list, pull (public images; registry logins are not supported), remove, per tag
 - networks and volumes: list, create, remove
 - proxy rules: hostname and path prefix to a container port, HTTPS with a certificate obtained
-  automatically, or plain HTTP; enable, disable, remove; kept across restarts
+  automatically, or plain HTTP; edit, enable, disable, remove; kept across restarts
 - local accounts, first-run setup, database backup
 
 Not included: exec/terminal, compose stacks, multiple hosts, roles (every account is an
-administrator), editing a proxy rule in place (remove and add it).
+administrator), private registry logins.
 
 ## Security
 

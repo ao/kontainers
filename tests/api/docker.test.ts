@@ -107,6 +107,82 @@ describe.skipIf(!DOCKER)('docker flows', () => {
     await dockerApi(`/containers/${name}?force=1`, { method: 'DELETE' });
   });
 
+  test('usage stats for a running container', async () => {
+    const name = `k-${run}-s`;
+    expect((await c.submit('/containers', { image: IMAGE, name, cmd: 'sleep 300', start: 'on' })).error).toBe('');
+    const r = await c.get(`/api/containers/${name}/stats`);
+    expect(r.status).toBe(200);
+    const s = await r.json() as any;
+    expect(s.memBytes).toBeGreaterThan(0);
+    expect(s.pids).toBeGreaterThanOrEqual(1);
+    expect(typeof s.netRx).toBe('number');
+    expect(await c.page(`/containers/${name}`)).toContain('data-stats=');
+    expect((await new Client(srv.base).get(`/api/containers/${name}/stats`)).status).toBe(401);
+    await dockerApi(`/containers/${name}?force=1`, { method: 'DELETE' });
+  });
+
+  describe('update image', () => {
+    // "busybox:1.36" is pointed at alpine locally, so pulling it again moves the tag back: a changed image.
+    const FAKE_OLD = 'alpine:3.20';
+    const imageId = async (ref: string) => ((await (await dockerApi(`/images/${encodeURIComponent(ref)}/json`)).json()) as any).Id;
+    const fakeOldTag = async () => {
+      expect((await c.submit('/images/pull', { ref: FAKE_OLD })).error).toBe('');
+      expect((await dockerApi(`/images/${FAKE_OLD}/tag?repo=busybox&tag=1.36`, { method: 'POST' })).status).toBe(201);
+      expect(await imageId(IMAGE)).toBe(await imageId(FAKE_OLD));
+    };
+
+    test('recreates with the newer image and the same settings', async () => {
+      await fakeOldTag();
+      const name = `k-${run}-u`;
+      expect((await c.submit('/containers', { image: IMAGE, name, pull: '', cmd: 'sleep 300', env: 'MODE=prod', ports: '18990:80', volumes: `kupd-${run}:/data`, restart: 'unless-stopped', start: 'on' })).error).toBe('');
+      const before = await (await dockerApi(`/containers/${name}/json`)).json() as any;
+      const r = await c.submit(`/containers/${name}/update`, {});
+      expect(r.error).toBe('');
+      expect(r.flash).toContain(`Updated ${name}`);
+      const after = await (await dockerApi(`/containers/${name}/json`)).json() as any;
+      expect(after.Id).not.toBe(before.Id);
+      expect(after.Image).not.toBe(before.Image);
+      expect(after.Image).toBe(await imageId(IMAGE));
+      expect(after.State.Running).toBe(true);
+      expect(after.Config.Env).toContain('MODE=prod');
+      expect(after.Config.Cmd).toEqual(['sleep', '300']);
+      expect(after.HostConfig.PortBindings['80/tcp'][0]).toEqual({ HostIp: '127.0.0.1', HostPort: '18990' });
+      expect(after.HostConfig.RestartPolicy.Name).toBe('unless-stopped');
+      expect(after.Mounts[0]).toMatchObject({ Type: 'volume', Name: `kupd-${run}`, Destination: '/data' });
+      expect((await dockerApi(`/containers/${before.Id}/json`)).status).toBe(404);
+
+      const again = await c.submit(`/containers/${name}/update`, {});
+      expect(again.flash).toContain('already runs the newest');
+      expect(((await (await dockerApi(`/containers/${name}/json`)).json()) as any).Id).toBe(after.Id);
+      await dockerApi(`/containers/${name}?force=1`, { method: 'DELETE' });
+      await dockerApi(`/volumes/kupd-${run}`, { method: 'DELETE' });
+    }, 120000);
+
+    test('when the new container cannot start, the old one is put back', async () => {
+      await fakeOldTag();
+      const name = `k-${run}-rb`;
+      // /usr/bin/tail exists in alpine but not in busybox, so the new container cannot start.
+      expect((await c.submit('/containers', { image: IMAGE, name, pull: '', cmd: '/usr/bin/tail -f /dev/null', start: 'on' })).error).toBe('');
+      const before = await (await dockerApi(`/containers/${name}/json`)).json() as any;
+      const r = await c.submit(`/containers/${name}/update`, {});
+      expect(r.error).toContain('old container was put back');
+      const now = await (await dockerApi(`/containers/${name}/json`)).json() as any;
+      expect(now.Id).toBe(before.Id);
+      expect(now.State.Running).toBe(true);
+      const all = await (await dockerApi('/containers/json?all=1')).json() as any[];
+      expect(all.filter(x => x.Names.some((n: string) => n.startsWith(`/${name}`))).length).toBe(1);
+      await dockerApi(`/containers/${name}?force=1`, { method: 'DELETE' });
+    }, 120000);
+
+    test('containers kontainers did not create are refused', async () => {
+      const name = `k-${run}-ext`;
+      const created = await dockerApi(`/containers/create?name=${name}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ Image: IMAGE, Cmd: ['sleep', '300'], Labels: { 'com.docker.compose.project': 'shop' } }) });
+      expect(created.status).toBe(201);
+      expect((await c.submit(`/containers/${name}/update`, {})).error).toContain('docker compose pull');
+      await dockerApi(`/containers/${name}?force=1`, { method: 'DELETE' });
+    });
+  });
+
   test('removing one tag of a multi-tag image keeps the image', async () => {
     const tag = `kontainers-test/extra:${run}`;
     const [repo, t] = tag.split(':');

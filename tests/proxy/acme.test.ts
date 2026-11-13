@@ -84,6 +84,21 @@ describe.skipIf(!URL_)('proxy with ACME', () => {
     await until('app.test to come back', async () => ((await https('app.test')).status === 200 ? true : null), 30000);
   }, 60000);
 
+  test('a rule can be edited in place', async () => {
+    const id = /http:\/\/plain\.test[\s\S]*?\/proxy\/(\d+)\/edit/.exec(await c.page('/proxy'))![1];
+    const form = await c.page(`/proxy/${id}/edit`);
+    expect(form).toContain('value="plain.test"');
+    expect(form).toContain('value="8000"');
+    const edit = (over: Record<string, string>) => c.submit(`/proxy/${id}/edit`, { hostname: 'plain.test', path: '/', targetContainer: 'web', targetPort: '8000', ...over });
+
+    expect((await edit({ targetPort: '8001' })).flash).toContain('Saved plain.test');
+    await until('plain.test to fail on the wrong port', async () => ((await fetch(`http://plain.test:${HTTP}/`)).status === 502 ? true : null), 15000);
+    expect((await edit({ hostname: 'bad host' })).error).toContain('invalid hostname');
+    expect(await c.page(`/proxy/${id}/edit`)).toContain('value="8001"'); // the refused edit changed nothing
+    expect((await edit({})).flash).toContain('Saved');
+    await until('plain.test to work again', async () => ((await fetch(`http://plain.test:${HTTP}/`)).status === 200 ? true : null), 15000);
+  }, 60000);
+
   test('the Proxy page shows the certificate expiry', async () => {
     const page = await c.page('/proxy');
     expect(page).toMatch(/certificate valid until \d{4}-\d{2}-\d{2}/);

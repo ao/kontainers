@@ -7,9 +7,10 @@ import { join } from 'node:path';
 import type { Config } from './config';
 import { isLoopback } from './config';
 import { Auth, RateLimiter, safeEqual, type Session } from './auth';
-import { Docker, DockerError, type CreateSpec } from './docker';
+import { Docker, DockerError, summarizeStats, type CreateSpec } from './docker';
 import type { ProxyManager, RuleStore } from './proxy';
 import { snapshot } from './db';
+import { updateContainer } from './update';
 import { STATIC } from './static';
 import * as v from './validate';
 import * as views from './views';
@@ -287,6 +288,9 @@ export function createHandler(d: Deps): Handler {
       if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainers()));
       if (p === '/containers/new') return page(views.newContainerPage(ctx(s), cfg.allowBindMounts));
       if ((r = /^\/containers\/([^/]+)$/.exec(p))) return page(views.containerPage(ctx(s), await docker.inspect(r[1])));
+      if ((r = /^\/api\/containers\/([^/]+)\/stats$/.exec(p))) {
+        return new Response(JSON.stringify(summarizeStats(await docker.stats(r[1]))), { headers: { 'content-type': 'application/json' } });
+      }
       if ((r = /^\/api\/containers\/([^/]+)\/logs$/.exec(p))) return text(await docker.logs(r[1], v.intInRange(url.searchParams.get('tail'), 1, 10000, 200)));
       if (p === '/images') {
         for (const [k, j] of pulls) if (j.state === 'failed' && Date.now() - j.at > 30 * 60 * 1000) pulls.delete(k);
@@ -301,6 +305,10 @@ export function createHandler(d: Deps): Handler {
           cert: r.tls ? proxy.certificate(r.hostname) : null,
         });
         return page(views.proxyPage(ctx(s), list, { running: proxy.running, lastError: proxy.lastError }, status));
+      }
+      if ((r = /^\/proxy\/(\d+)\/edit$/.exec(p))) {
+        const rule = rules.get(Number(r[1]));
+        return rule ? page(views.editRulePage(ctx(s), rule)) : text('rule not found\n', 404);
       }
       if (p === '/settings') return page(views.settingsPage(ctx(s), auth.listUsers(), s.user.id));
       if (p === '/api/backup') { audit(s, 'backup', null, ip); return backup(); }
@@ -334,6 +342,11 @@ export function createHandler(d: Deps): Handler {
         }
         return `Created ${spec.name || Id.slice(0, 12)}.`;
       });
+    }
+    if ((r = /^\/containers\/([^/]+)\/update$/.exec(p))) {
+      const id = r[1];
+      // The container gets a new ID, so return to the list.
+      return act(s, ip, '/containers', 'container-update', id, () => updateContainer(docker, id));
     }
     if ((r = /^\/containers\/([^/]+)\/(start|stop|restart|unpause|remove)$/.exec(p))) {
       const [, id, op] = r;
@@ -385,6 +398,27 @@ export function createHandler(d: Deps): Handler {
         try { await proxy.apply(); } catch (e) { rules.remove(rule.id); await proxy.apply().catch(() => {}); throw e; }
         await proxy.reconcile().catch(() => {});
         return `Added ${rule.hostname}${rule.path === '/' ? '' : rule.path}.`;
+      });
+    }
+    if ((r = /^\/proxy\/(\d+)\/edit$/.exec(p))) {
+      const id = Number(r[1]);
+      return act(s, ip, '/proxy', 'proxy-edit', String(id), async () => {
+        const old = rules.get(id);
+        if (!old) throw Object.assign(new v.ValidationError('rule not found'), { status: 404 });
+        const input = { hostname: f.hostname, path: f.path, targetContainer: f.targetContainer, targetPort: f.targetPort, tls: !!f.tls };
+        rules.validate(input);
+        await proxy.attach(String(f.targetContainer));
+        const updated = rules.update(id, input);
+        try {
+          await proxy.apply();
+        } catch (e) {
+          // Put the old rule back so the running proxy and the database agree.
+          rules.update(id, { hostname: old.hostname, path: old.path, targetContainer: old.target_container, targetPort: old.target_port, tls: old.tls });
+          await proxy.apply().catch(() => {});
+          throw e;
+        }
+        await proxy.reconcile().catch(() => {});
+        return `Saved ${updated.hostname}${updated.path === '/' ? '' : updated.path}.`;
       });
     }
     if ((r = /^\/proxy\/(\d+)\/(toggle|remove)$/.exec(p))) {
