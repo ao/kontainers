@@ -135,6 +135,8 @@ describe('with an account', () => {
       expect(r.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
       expect(r.headers.get('x-content-type-options')).toBe('nosniff');
       expect(r.headers.get('x-frame-options')).toBe('DENY');
+      // no-referrer would make browsers send "Origin: null" on our own form posts (see tests/e2e).
+      expect(r.headers.get('referrer-policy')).toBe('same-origin');
     }
     expect((await c.get('/settings')).headers.get('cache-control')).toBe('no-store');
   });

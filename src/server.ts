@@ -86,7 +86,9 @@ function securityHeaders(h: Headers, cfg: Config): void {
   h.set('content-security-policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
   h.set('x-content-type-options', 'nosniff');
   h.set('x-frame-options', 'DENY');
-  h.set('referrer-policy', 'no-referrer');
+  // Not no-referrer: with that, browsers send "Origin: null" on same-origin form posts and the
+  // origin check would refuse them. same-origin still sends nothing to other sites.
+  h.set('referrer-policy', 'same-origin');
   h.set('cross-origin-opener-policy', 'same-origin');
   h.set('cross-origin-resource-policy', 'same-origin');
   if (!h.has('cache-control')) h.set('cache-control', 'no-store');

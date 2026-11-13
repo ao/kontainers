@@ -2,10 +2,11 @@
 # Runs the test suites in containers. Nothing runs on the host and nothing is published:
 # the Docker daemon under test is a throwaway docker:dind on a private network.
 #
-#   scripts/test.sh            unit + API (with dind)
-#   scripts/test.sh unit       unit only
-#   scripts/test.sh api        API only
+#   scripts/test.sh            everything below, in order
+#   scripts/test.sh unit       typecheck and unit tests
+#   scripts/test.sh api        the server process against dind
 #   scripts/test.sh image      build the image and smoke-test it behind the socket proxy
+#   scripts/test.sh e2e        Playwright (Chromium) against the image
 #   scripts/test.sh proxy      proxy rules and certificates against Pebble, all inside dind
 #
 # Env: BUN_IMAGE (default oven/bun:1.3.1), CACHE_VOLUME (default kontainers-test-cache)
@@ -64,24 +65,39 @@ if [ "$SUITE" = all ] || [ "$SUITE" = api ]; then
   bun_run -e KONTAINERS_TEST_DOCKER_HOST=tcp://dind:2375 "$BUN_IMAGE" bun test --timeout 120000 tests/api
 fi
 
-if [ "$SUITE" = all ] || [ "$SUITE" = image ]; then
-  docker build -q -t kontainers:test . >/dev/null
-  # Same settings as compose.yaml. The proxy reads dind's socket from the shared volume.
-  docker run -d --name "$SOCKPROXY" --network "$NET" --network-alias docker-proxy \
-    -v "$SOCKVOL":/var/run -e CONTAINERS=1 -e IMAGES=1 -e NETWORKS=1 -e VOLUMES=1 -e POST=1 \
-    -e ALLOW_START=1 -e ALLOW_STOP=1 -e ALLOW_RESTARTS=1 tecnativa/docker-socket-proxy:0.3.0 >/dev/null
-  # No -p: the test container joins the app's network namespace and uses 127.0.0.1.
+# A fresh app container from the image, Docker API through the socket proxy as in compose.yaml.
+# No -p: test containers join the app's network namespace and use 127.0.0.1. Sets TOKEN.
+start_app() {
+  if ! docker inspect "$SOCKPROXY" >/dev/null 2>&1; then
+    docker build -q -t kontainers:test . >/dev/null
+    # The proxy reads dind's socket from the shared volume.
+    docker run -d --name "$SOCKPROXY" --network "$NET" --network-alias docker-proxy \
+      -v "$SOCKVOL":/var/run -e CONTAINERS=1 -e IMAGES=1 -e NETWORKS=1 -e VOLUMES=1 -e POST=1 \
+      -e ALLOW_START=1 -e ALLOW_STOP=1 -e ALLOW_RESTARTS=1 tecnativa/docker-socket-proxy:0.3.0 >/dev/null
+  fi
+  docker rm -f "$APP" >/dev/null 2>&1 || true
   docker run -d --name "$APP" --network "$NET" -e DOCKER_HOST=tcp://docker-proxy:2375 kontainers:test >/dev/null
   i=0
   until docker logs "$APP" 2>&1 | grep -q 'setup token'; do
     i=$((i + 1)); [ $i -gt 30 ] && { docker logs "$APP"; exit 1; }; sleep 1
   done
   TOKEN=$(docker logs "$APP" 2>&1 | sed -n 's/.*setup token: \([^ ]*\).*/\1/p' | head -1)
+}
+
+if [ "$SUITE" = all ] || [ "$SUITE" = image ]; then
+  start_app
   [ "$(docker exec "$APP" id -u)" != 0 ] || { echo "image runs as root"; exit 1; }
   docker run --rm --network "container:$APP" -v "$CACHE":/cache -v "$PWD":/app -w /app \
     -e KONTAINERS_TEST_URL=http://127.0.0.1:8080 -e KONTAINERS_TEST_SETUP_TOKEN="$TOKEN" \
     -e KONTAINERS_TEST_SOCKET_PROXY=tcp://docker-proxy:2375 \
     "$BUN_IMAGE" bun test --timeout 120000 tests/image
+fi
+
+if [ "$SUITE" = all ] || [ "$SUITE" = e2e ]; then
+  start_app
+  docker run --rm --network "container:$APP" --shm-size=1g -v "$PWD":/app -w /app \
+    -e KONTAINERS_TEST_URL=http://127.0.0.1:8080 -e KONTAINERS_TEST_SETUP_TOKEN="$TOKEN" \
+    mcr.microsoft.com/playwright:v1.56.1-noble ./node_modules/.bin/playwright test
 fi
 
 if [ "$SUITE" = all ] || [ "$SUITE" = proxy ]; then
