@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { loadConfig } from '../../src/config';
-import { clientIp, containerSpec, hostAllowed, normalizeIp, parseCookies, parsePort, parseVolume, sameOrigin } from '../../src/server';
+import { clientIp, containerSpec, splitArgs, hostAllowed, normalizeIp, parseCookies, parsePort, parseVolume, sameOrigin } from '../../src/server';
 import { demux } from '../../src/docker';
 import { esc, html, raw } from '../../src/views';
 
@@ -72,6 +72,15 @@ describe('form parsing', () => {
     expect(parseVolume('data:/var/lib/x')).toEqual({ source: 'data', target: '/var/lib/x', readOnly: false });
     expect(parseVolume('/srv:/srv:ro')).toEqual({ source: '/srv', target: '/srv', readOnly: true });
     expect(() => parseVolume('nocolon')).toThrow();
+  });
+  test('splitArgs quotes like a shell but expands nothing', () => {
+    expect(splitArgs('sh -c "echo hi; sleep 100"')).toEqual(['sh', '-c', 'echo hi; sleep 100']);
+    expect(splitArgs(`echo 'a  b' "c \\"d\\"" e\\ f`)).toEqual(['echo', 'a  b', 'c "d"', 'e f']);
+    expect(splitArgs('echo $HOME `id` "$(id)"')).toEqual(['echo', '$HOME', '`id`', '$(id)']);
+    expect(splitArgs(`a "" ''`)).toEqual(['a', '', '']);
+    expect(splitArgs('  nginx   -g  "daemon off;"  ')).toEqual(['nginx', '-g', 'daemon off;']);
+    expect(splitArgs(`ab"c d"'e'`)).toEqual(['abc de']);
+    for (const bad of [`echo 'x`, 'echo "x', 'echo x\\']) expect(() => splitArgs(bad)).toThrow();
   });
   test('containerSpec', () => {
     const s = containerSpec({ image: ' nginx ', name: '', cmd: 'sh -c  true', env: 'A=1\r\n\nB=2', ports: '8081:80', volumes: '', restart: 'always' });

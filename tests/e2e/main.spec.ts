@@ -61,7 +61,7 @@ test('pull an image, create a container, read its logs, stop and remove it', asy
   await page.getByLabel('Image', { exact: true }).fill('busybox:1.36');
   await page.getByLabel('Pull the image first').uncheck();
   await page.getByLabel('Name', { exact: true }).fill('e2e-web');
-  await page.getByLabel('Command').fill('sh -c echo${IFS}hello-e2e;sleep${IFS}600');
+  await page.getByLabel('Command').fill('sh -c "echo hello-e2e; sleep 600"');
   await page.getByLabel(/^Environment/).fill('MODE=test');
   await page.getByRole('button', { name: 'Create' }).click();
   await expect(page.getByRole('status')).toContainText('Created e2e-web');

@@ -127,11 +127,46 @@ export function parseVolume(line: string): NonNullable<CreateSpec['volumes']>[nu
   return { source: body.slice(0, i), target: body.slice(i + 1), readOnly: ro };
 }
 
+// Splits a command line into arguments the way a POSIX shell quotes them: 'single' quotes are
+// literal, "double" quotes allow \" \\ \$ \` escapes, a backslash outside quotes escapes the next
+// character. Nothing is expanded and no shell runs: the result goes to Docker as an argv array.
+export function splitArgs(s: string): string[] {
+  const out: string[] = [];
+  let cur = '', inArg = false, i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === "'") {
+      const end = s.indexOf("'", i + 1);
+      if (end === -1) throw new v.ValidationError('command has an unterminated single quote');
+      cur += s.slice(i + 1, end); inArg = true; i = end + 1;
+    } else if (c === '"') {
+      i++; inArg = true;
+      for (;;) {
+        if (i >= s.length) throw new v.ValidationError('command has an unterminated double quote');
+        const d = s[i];
+        if (d === '"') { i++; break; }
+        if (d === '\\' && i + 1 < s.length && '"\\$`'.includes(s[i + 1])) { cur += s[i + 1]; i += 2; continue; }
+        cur += d; i++;
+      }
+    } else if (c === '\\') {
+      if (i + 1 >= s.length) throw new v.ValidationError('command ends with a backslash');
+      cur += s[i + 1]; inArg = true; i += 2;
+    } else if (/\s/.test(c)) {
+      if (inArg) { out.push(cur); cur = ''; inArg = false; }
+      i++;
+    } else {
+      cur += c; inArg = true; i++;
+    }
+  }
+  if (inArg) out.push(cur);
+  return out;
+}
+
 export function containerSpec(f: Record<string, string>): CreateSpec {
   return {
     image: f.image?.trim(),
     name: f.name?.trim() || undefined,
-    cmd: f.cmd?.trim() ? f.cmd.trim().split(/\s+/) : undefined,
+    cmd: f.cmd?.trim() ? splitArgs(f.cmd.trim()) : undefined,
     env: lines(f.env),
     ports: lines(f.ports).map(parsePort),
     volumes: lines(f.volumes).map(parseVolume),

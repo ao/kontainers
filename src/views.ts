@@ -124,7 +124,7 @@ export function newContainerPage(ctx: PageCtx, allowBind: boolean): string {
   <label>Image <input name="image" required placeholder="nginx:1.27-alpine"></label>
   <label><input type="checkbox" name="pull" checked> Pull the image first</label>
   <label>Name <input name="name" placeholder="optional"></label>
-  <label>Command <input name="cmd" placeholder="optional, split on spaces"></label>
+  <label>Command <input name="cmd" placeholder='optional, e.g. sh -c "echo hi; sleep 60"'></label>
   <label>Ports, one per line: <code>[host-ip:]host:container[/udp]</code>. Without a host IP the port is published on 127.0.0.1.
     <textarea name="ports" rows="3" placeholder="8081:80"></textarea></label>
   <label>Environment, one <code>KEY=value</code> per line <textarea name="env" rows="3"></textarea></label>
