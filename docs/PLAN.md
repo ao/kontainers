@@ -19,8 +19,13 @@ Differences from the plan as written:
   Caddy's (when a third of the lifetime remains); it is not exercised by the tests.
 - 3.1: logs are polled every 2 s rather than streamed over a WebSocket, so there is no WebSocket
   endpoint to secure.
-- 4.3: there is no earlier release with this schema, so the upgrade test starts with 0.2.1.
-  Migrations refuse a newer schema (tested).
+- 4.3: the only released schema is 0.2.0 (`MIGRATIONS[0]`, user_version 1), so there is no older
+  database to upgrade from. `tests/fixtures/kontainers-0.2.0.db` (made by `make-0.2.0.ts`) is the
+  base for upgrade tests from 0.2.0 onward: `tests/api/upgrade.test.ts` starts the server on a copy
+  and checks login, rules, the expired-session refusal and the schema version. Unit tests migrate
+  from every earlier version and compare with a fresh database. When a migration is added, add a
+  fixture for the release that ships it and point the same checks at it. Migrations refuse a newer
+  schema (tested).
 
 Still open: item 4 below (history rewrite), then the push, PR and release.
 

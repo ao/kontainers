@@ -5,3 +5,4 @@ playwright-report/
 *.db
 *.db-wal
 *.db-shm
+!tests/fixtures/*.db
