@@ -8,6 +8,7 @@
 #   scripts/test.sh image      build the image and smoke-test it behind the socket proxy
 #   scripts/test.sh e2e        Playwright (Chromium) against the image
 #   scripts/test.sh proxy      proxy rules and certificates against Pebble, all inside dind
+#   scripts/test.sh compose    the README compose instructions, verbatim, inside dind
 #
 # Env: BUN_IMAGE (default oven/bun:1.3.1), CACHE_VOLUME (default kontainers-test-cache)
 set -eu
@@ -154,4 +155,29 @@ if [ "$SUITE" = all ] || [ "$SUITE" = proxy ]; then
       const { X509Certificate } = require("crypto"); const ca = require("fs").readFileSync("/w/pebble-ca.pem", "utf8");
       for (const p of ["roots/0", "intermediates/0"]) { const t = await (await fetch("https://pebble:15000/" + p, { tls: { ca } })).text(); const c = new X509Certificate(t); console.log(p, "subject:", c.subject.replace(/\n/g, ", "), "| issuer:", c.issuer.replace(/\n/g, ", ")); }' || true
     echo "--- kontainers log"; D logs kontainers 2>&1 | tail -40 | cut -c1-400; echo "--- pebble log"; D logs pebble 2>&1 | tail -20 | cut -c1-300; exit $rc; fi
+fi
+
+if [ "$SUITE" = all ] || [ "$SUITE" = compose ]; then
+  # The README's compose instructions, verbatim, inside dind (so "127.0.0.1" is dind's loopback).
+  docker image inspect kontainers:test >/dev/null 2>&1 || docker build -q -t kontainers:test . >/dev/null
+  docker save kontainers:test | docker exec -i "$DIND" docker load -q >/dev/null
+  docker exec "$DIND" docker tag kontainers:test ataiva/kontainers:0.2.0
+  docker exec "$DIND" mkdir -p /compose
+  docker cp compose.yaml "$DIND:/compose/compose.yaml"
+  C() { docker exec -w /compose "$DIND" docker compose "$@"; }
+  C up -d --quiet-pull 2>&1 | tail -3
+  i=0
+  until C logs kontainers 2>&1 | grep -q 'setup token'; do
+    i=$((i + 1)); [ $i -gt 30 ] && { C logs; exit 1; }; sleep 1
+  done
+  i=0
+  until docker exec "$DIND" wget -qO- http://127.0.0.1:8080/readyz 2>/dev/null | grep -q ready; do
+    i=$((i + 1)); [ $i -gt 30 ] && { echo "readyz never passed"; C logs; exit 1; }; sleep 1
+  done
+  [ "$(C port kontainers 8080)" = 127.0.0.1:8080 ] || { echo "compose publishes $(C port kontainers 8080), expected 127.0.0.1:8080"; exit 1; }
+  docker exec "$DIND" wget -qO- http://127.0.0.1:8080/setup | grep -q 'First-run setup' || { echo "setup page missing"; exit 1; }
+  # The socket proxy is on an internal network with no published port.
+  [ -z "$(C port docker-proxy 2375 2>/dev/null || true)" ] || { echo "docker-proxy port is published"; exit 1; }
+  echo "compose: setup token printed, /readyz ok through docker-socket-proxy, only 127.0.0.1:8080 published"
+  C down -v >/dev/null 2>&1
 fi

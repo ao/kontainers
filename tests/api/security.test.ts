@@ -274,4 +274,18 @@ describe('restarts', () => {
     expect((await runMain(['backup', out], env)).code).toBe(1);
     expect((await runMain(['backup'], env)).code).toBe(2);
   });
+
+  test('restore: a snapshot copied in as kontainers.db brings the accounts back (README procedure)', async () => {
+    const { srv } = await readyServer();
+    const snap = `${srv.dataDir}/snap.db`;
+    expect((await runMain(['backup', snap], { KONTAINERS_DATA: srv.dataDir })).code).toBe(0);
+    await srv.stop();
+    const fresh = (await import('node:fs')).mkdtempSync('/tmp/kontainers-restore-');
+    (await import('node:fs')).copyFileSync(snap, `${fresh}/kontainers.db`);
+    const restored = await startServer({}, fresh);
+    try {
+      expect(restored.setupToken).toBeNull();
+      expect((await new Client(restored.base).post('/login', { username: 'admin', password: PW }, { csrf: false })).status).toBe(303);
+    } finally { await restored.stop(); }
+  });
 });

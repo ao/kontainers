@@ -1,0 +1,52 @@
+name: release
+
+# Runs when a version tag (v0.2.0, ...) is pushed. Needs the repository secrets
+# DOCKERHUB_USERNAME and DOCKERHUB_TOKEN (a Docker Hub access token with write access to ataiva/kontainers).
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        suite: [unit, api, image, e2e, proxy, compose]
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/test.sh ${{ matrix.suite }}
+
+  publish:
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag matches package.json
+        run: test "v$(jq -r .version package.json)" = "$GITHUB_REF_NAME"
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: true
+          tags: |
+            ataiva/kontainers:${{ github.ref_name }}
+            ataiva/kontainers:latest
+      - name: GitHub release with the changelog section for this version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '$0 ~ "^## " v { on = 1; next } /^## / && on { exit } on' CHANGELOG.md > notes.md
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md
