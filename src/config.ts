@@ -13,6 +13,7 @@ export interface Config {
     acmeEmail: string | null;
     acmeCa: string | null; // ACME directory URL; Caddy's default (Let's Encrypt) when null
     acmeCaRoot: string | null; // PEM file trusted for the ACME directory (tests with Pebble)
+    acmeRenewCheck: number | null; // seconds between Caddy's renewal checks; Caddy's default (10 minutes) when null
     caddyBin: string;
     httpPort: number;
     httpsPort: number;
@@ -48,6 +49,13 @@ function int(name: string, v: string | undefined, dflt: number): number {
   return n;
 }
 
+function optionalInt(name: string, v: string | undefined, min: number, max: number): number | null {
+  if (v === undefined || v === '') return null;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < min || n > max) throw new Error(`${name} must be a whole number from ${min} to ${max}, got "${v}"`);
+  return n;
+}
+
 export function loadConfig(env: Record<string, string | undefined> = process.env): Config {
   const listen = env.KONTAINERS_LISTEN || '127.0.0.1:8080';
   const i = listen.lastIndexOf(':');
@@ -75,6 +83,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       acmeEmail: env.KONTAINERS_ACME_EMAIL || null,
       acmeCa: env.KONTAINERS_ACME_CA || null,
       acmeCaRoot: env.KONTAINERS_ACME_CA_ROOT || null,
+      acmeRenewCheck: optionalInt('KONTAINERS_ACME_RENEW_CHECK', env.KONTAINERS_ACME_RENEW_CHECK, 1, 86400),
       caddyBin: env.KONTAINERS_CADDY_BIN || 'caddy',
       httpPort: int('KONTAINERS_HTTP_PORT', env.KONTAINERS_HTTP_PORT, 80),
       httpsPort: int('KONTAINERS_HTTPS_PORT', env.KONTAINERS_HTTPS_PORT, 443),

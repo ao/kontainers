@@ -8,6 +8,7 @@
 #   scripts/test.sh image      build the image and smoke-test it behind the socket proxy
 #   scripts/test.sh e2e        Playwright (Chromium) against the image
 #   scripts/test.sh proxy      proxy rules and certificates against Pebble, all inside dind
+#   scripts/test.sh renewal    Pebble issues 90-second certificates; Caddy must renew them on its own
 #   scripts/test.sh compose    the README compose instructions, verbatim, inside dind
 #
 # Env: BUN_IMAGE (default oven/bun:1.3.1), CACHE_VOLUME (default kontainers-test-cache)
@@ -101,25 +102,42 @@ if [ "$SUITE" = all ] || [ "$SUITE" = e2e ]; then
     mcr.microsoft.com/playwright:v1.56.1-noble ./node_modules/.bin/playwright test
 fi
 
-if [ "$SUITE" = all ] || [ "$SUITE" = proxy ]; then
-  # Everything below runs inside dind, so kontainers manages the same daemon its targets run on,
-  # as on a real host. D runs a docker command against the dind daemon.
-  D() { docker exec -i "$DIND" docker "$@"; }
-  PEBBLE=ghcr.io/letsencrypt/pebble:latest
-  CHALL=ghcr.io/letsencrypt/pebble-challtestsrv:latest
+# Pebble (a test ACME server) and the kontainers it issues certificates for, inside dind. Everything
+# below runs inside dind, so kontainers manages the same daemon its targets run on, as on a real
+# host. D runs a docker command against the dind daemon.
+D() { docker exec -i "$DIND" docker "$@"; }
+PEBBLE=ghcr.io/letsencrypt/pebble:latest
+CHALL=ghcr.io/letsencrypt/pebble-challtestsrv:latest
+
+# Starts Pebble, a DNS stub that points every name at kontainers, and kontainers with the proxy on.
+# Sets KIP (kontainers' address on the test network) and TOKEN.
+#   ACME_VALIDITY  lifetime in seconds of Pebble's default-profile certificates (default: its own, 90 days)
+#   ACME_ENV       extra "-e NAME=value" options for kontainers
+acme_stack() {
   docker build -q -t kontainers:test . >/dev/null
   docker pull -q "$PEBBLE" >/dev/null && docker pull -q "$CHALL" >/dev/null
   docker save kontainers:test "$PEBBLE" "$CHALL" | D load -q >/dev/null
 
   D network create kt >/dev/null
-  t=$(D create "$PEBBLE"); D cp "$t:/test/certs/pebble.minica.pem" - | docker exec -i "$DIND" tar -x -C /tmp; D rm "$t" >/dev/null
+  docker exec "$DIND" mkdir -p /work
+  t=$(D create "$PEBBLE")
+  D cp "$t:/test/certs/pebble.minica.pem" - | docker exec -i "$DIND" tar -x -C /tmp
+  D cp "$t:/test/config/pebble-config.json" - | docker exec -i "$DIND" tar -x -C /work
+  D rm "$t" >/dev/null
+  if [ -n "${ACME_VALIDITY:-}" ]; then
+    # Every profile, not only "default": Pebble issued the "shortlived" profile's lifetime when an
+    # order named no profile, so setting one profile is not enough.
+    docker exec "$DIND" sed -i "s/\"validityPeriod\": [0-9]*/\"validityPeriod\": $ACME_VALIDITY/g" /work/pebble-config.json
+    [ "$(docker exec "$DIND" grep -c "\"validityPeriod\": $ACME_VALIDITY\$" /work/pebble-config.json)" = "$(docker exec "$DIND" grep -c validityPeriod /work/pebble-config.json)" ] \
+      || { echo "could not set Pebble validity"; exit 1; }
+  fi
   GID=$(docker exec "$DIND" stat -c %g /var/run/docker.sock)
   D create --name kontainers --network kt --group-add "$GID" \
     -v /var/run/docker.sock:/var/run/docker.sock -v kdata:/data \
     -e DOCKER_HOST=unix:///var/run/docker.sock -e KONTAINERS_PROXY=1 \
     -e KONTAINERS_HTTP_PORT=5002 -e KONTAINERS_HTTPS_PORT=5001 \
     -e KONTAINERS_ACME_CA=https://pebble:14000/dir -e KONTAINERS_ACME_CA_ROOT=/etc/pebble-ca.pem \
-    -e KONTAINERS_ACME_EMAIL=test@example.com kontainers:test >/dev/null
+    -e KONTAINERS_ACME_EMAIL=test@example.com ${ACME_ENV:-} kontainers:test >/dev/null
   docker exec "$DIND" chmod 644 /tmp/pebble.minica.pem
   D cp /tmp/pebble.minica.pem kontainers:/etc/pebble-ca.pem
   D start kontainers >/dev/null
@@ -127,7 +145,8 @@ if [ "$SUITE" = all ] || [ "$SUITE" = proxy ]; then
   # Every DNS name resolves to kontainers, so Pebble's HTTP-01 / TLS-ALPN checks reach Caddy.
   D run -d --name challtestsrv --network kt "$CHALL" -defaultIPv4 "$KIP" -defaultIPv6 "" \
     -http01 "" -https01 "" -tlsalpn01 "" -doh "" -dnsserver :8053 -management :8055 >/dev/null
-  D run -d --name pebble --network kt -e PEBBLE_VA_NOSLEEP=1 "$PEBBLE" \
+  D run -d --name pebble --network kt -e PEBBLE_VA_NOSLEEP=1 \
+    -v /work/pebble-config.json:/test/config/pebble-config.json:ro "$PEBBLE" \
     -config test/config/pebble-config.json -dnsserver challtestsrv:8053 >/dev/null
   i=0
   until D logs kontainers 2>&1 | grep -q 'setup token'; do
@@ -135,16 +154,21 @@ if [ "$SUITE" = all ] || [ "$SUITE" = proxy ]; then
   done
   TOKEN=$(D logs kontainers 2>&1 | sed -n 's/.*setup token: \([^ ]*\).*/\1/p' | head -1)
 
-  docker exec "$DIND" mkdir -p /work
   docker cp tests "$DIND:/work/tests"
   docker exec "$DIND" cp /tmp/pebble.minica.pem /work/pebble-ca.pem
+}
+
+# Runs one suite's tests against the stack from acme_stack.
+#   $1  test directory   $2  --add-host options for the names the suite uses
+acme_driver() {
   # The driver runs as root with the dind socket so it can restart kontainers mid-test.
   set +e
   D run --rm --name driver --network kt --user root -v /var/run/docker.sock:/var/run/docker.sock -v /work:/app -w /app \
-    --add-host "app.test:$KIP" --add-host "plain.test:$KIP" --add-host "nothing.test:$KIP" \
+    $2 \
     -e KONTAINERS_TEST_URL="http://$KIP:8080" -e KONTAINERS_TEST_SETUP_TOKEN="$TOKEN" \
     -e KONTAINERS_TEST_PEBBLE_MGMT=https://pebble:15000 -e KONTAINERS_TEST_PEBBLE_CA=/app/pebble-ca.pem \
-    --entrypoint bun kontainers:test test --timeout 180000 tests/proxy
+    -e KONTAINERS_TEST_CERT_VALIDITY="${ACME_VALIDITY:-7776000}" \
+    --entrypoint bun kontainers:test test --timeout 180000 "$1"
   rc=$?
   set -e
   if [ $rc -ne 0 ]; then
@@ -154,7 +178,29 @@ if [ "$SUITE" = all ] || [ "$SUITE" = proxy ]; then
     D run --rm --network kt -v /work:/w --entrypoint bun kontainers:test -e '
       const { X509Certificate } = require("crypto"); const ca = require("fs").readFileSync("/w/pebble-ca.pem", "utf8");
       for (const p of ["roots/0", "intermediates/0"]) { const t = await (await fetch("https://pebble:15000/" + p, { tls: { ca } })).text(); const c = new X509Certificate(t); console.log(p, "subject:", c.subject.replace(/\n/g, ", "), "| issuer:", c.issuer.replace(/\n/g, ", ")); }' || true
-    echo "--- kontainers log"; D logs kontainers 2>&1 | tail -40 | cut -c1-400; echo "--- pebble log"; D logs pebble 2>&1 | tail -20 | cut -c1-300; exit $rc; fi
+    echo "--- kontainers log"; D logs kontainers 2>&1 | tail -60 | cut -c1-400; echo "--- pebble log"; D logs pebble 2>&1 | tail -20 | cut -c1-300; exit $rc; fi
+}
+
+# Removes the kontainers, Pebble and DNS stub containers, the volume and the network, so the next
+# suite starts clean.
+acme_teardown() {
+  D rm -f kontainers pebble challtestsrv >/dev/null 2>&1 || true
+  D volume rm kdata >/dev/null 2>&1 || true
+  D network rm kt >/dev/null 2>&1 || true
+}
+
+if [ "$SUITE" = all ] || [ "$SUITE" = proxy ]; then
+  acme_stack
+  acme_driver tests/proxy "--add-host app.test:$KIP --add-host plain.test:$KIP --add-host nothing.test:$KIP"
+  acme_teardown
+fi
+
+# Certificates last 90 seconds and Caddy checks every 10 seconds. Caddy renews when a third of the
+# lifetime is left, so a renewal is due about every 60 seconds.
+if [ "$SUITE" = all ] || [ "$SUITE" = renewal ]; then
+  ACME_VALIDITY=90 ACME_ENV="-e KONTAINERS_ACME_RENEW_CHECK=10" acme_stack
+  acme_driver tests/renewal "--add-host renew.test:$KIP"
+  acme_teardown
 fi
 
 if [ "$SUITE" = all ] || [ "$SUITE" = compose ]; then

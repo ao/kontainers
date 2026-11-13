@@ -121,7 +121,9 @@ export function buildCaddyConfig(rules: Rule[], cfg: Config, adminSocket: string
     if (cfg.proxy.acmeCa) issuer.ca = cfg.proxy.acmeCa;
     if (cfg.proxy.acmeEmail) issuer.email = cfg.proxy.acmeEmail;
     if (cfg.proxy.acmeCaRoot) issuer.trusted_roots_pem_files = [cfg.proxy.acmeCaRoot];
-    apps.tls = { automation: { policies: [{ subjects: tlsHosts, issuers: [issuer] }] } };
+    const automation: Record<string, unknown> = { policies: [{ subjects: tlsHosts, issuers: [issuer] }] };
+    if (cfg.proxy.acmeRenewCheck) automation.renew_interval = `${cfg.proxy.acmeRenewCheck}s`;
+    apps.tls = { automation };
   }
   return {
     admin: { listen: `unix/${adminSocket}`, config: { persist: false } },
@@ -135,6 +137,7 @@ export class ProxyManager {
   private proc: ReturnType<typeof Bun.spawn> | null = null;
   private stopping = false;
   private restarts = 0;
+  private hasTls = false; // the running Caddy was started with a TLS app (see replaceProcess)
   readonly adminSocket: string;
   private configFile: string;
   lastError: string | null = null;
@@ -154,20 +157,47 @@ export class ProxyManager {
     this.spawn();
   }
 
+  private caddyEnv(): Record<string, string> {
+    const home = join(this.cfg.dataDir, 'caddy');
+    return { ...process.env, HOME: home, XDG_DATA_HOME: home, XDG_CONFIG_HOME: home } as Record<string, string>;
+  }
+
   private spawn(): void {
-    writeFileSync(this.configFile, JSON.stringify(buildCaddyConfig(this.store.list(), this.cfg, this.adminSocket)), { mode: 0o600 });
-    this.proc = Bun.spawn([this.cfg.proxy.caddyBin, 'run', '--config', this.configFile], {
+    const conf = buildCaddyConfig(this.store.list(), this.cfg, this.adminSocket);
+    writeFileSync(this.configFile, JSON.stringify(conf), { mode: 0o600 });
+    this.hasTls = 'tls' in (conf.apps as Record<string, unknown>);
+    const proc = Bun.spawn([this.cfg.proxy.caddyBin, 'run', '--config', this.configFile], {
       stdout: 'inherit', stderr: 'inherit',
-      env: { ...process.env, HOME: join(this.cfg.dataDir, 'caddy'), XDG_DATA_HOME: join(this.cfg.dataDir, 'caddy'), XDG_CONFIG_HOME: join(this.cfg.dataDir, 'caddy') },
+      env: this.caddyEnv(),
       onExit: (_p, code) => {
+        if (this.proc !== proc) return; // replaced on purpose by replaceProcess()
         this.proc = null;
         if (this.stopping) return;
         this.lastError = `proxy exited with code ${code}`;
         const delay = Math.min(30000, 1000 * 2 ** Math.min(this.restarts++, 5));
         console.error(`kontainers: caddy exited (${code}); restarting in ${delay} ms`);
-        setTimeout(() => { if (!this.stopping) this.spawn(); }, delay);
+        setTimeout(() => { if (!this.stopping && this.proc === null) this.spawn(); }, delay);
       },
     });
+    this.proc = proc;
+  }
+
+  // Caddy did not renew certificates for a TLS policy that was added to a process started without
+  // one (tests/renewal reproduces this). Such a process is replaced instead of reloaded. The new
+  // configuration is checked with `caddy validate` first, so a bad one is refused and the old process keeps running.
+  private async replaceProcess(): Promise<void> {
+    const check = Bun.spawn([this.cfg.proxy.caddyBin, 'validate', '--config', this.configFile], {
+      stdout: 'pipe', stderr: 'pipe', env: this.caddyEnv(),
+    });
+    const [out, err, code] = await Promise.all([new Response(check.stdout).text(), new Response(check.stderr).text(), check.exited]);
+    if (code !== 0) {
+      this.lastError = (err || out).slice(0, 2000);
+      throw Object.assign(new Error(`proxy rejected the configuration: ${this.lastError}`), { status: 502 });
+    }
+    const old = this.proc;
+    this.proc = null;
+    if (old) { old.kill('SIGTERM'); await old.exited; }
+    this.spawn();
   }
 
   async stop(): Promise<void> {
@@ -181,6 +211,12 @@ export class ProxyManager {
     const conf = buildCaddyConfig(this.store.list(), this.cfg, this.adminSocket);
     writeFileSync(this.configFile, JSON.stringify(conf), { mode: 0o600 });
     if (!existsSync(this.adminSocket)) return; // picked up from the file when Caddy (re)starts
+    if (this.proc && !this.hasTls && 'tls' in (conf.apps as Record<string, unknown>)) {
+      await this.replaceProcess();
+      this.lastError = null;
+      this.restarts = 0;
+      return;
+    }
     const res = await fetch('http://caddy/load', {
       method: 'POST', unix: this.adminSocket, headers: { 'content-type': 'application/json' }, body: JSON.stringify(conf),
       signal: AbortSignal.timeout(30000),

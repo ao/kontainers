@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [unit, api, image, e2e, proxy, compose]
+        suite: [unit, api, image, e2e, proxy, renewal, compose]
     steps:
       - uses: actions/checkout@v4
       - name: scripts/test.sh ${{ matrix.suite }}

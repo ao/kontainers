@@ -101,8 +101,10 @@ Point the domain's DNS at the host, then add a rule on the Proxy page: hostname,
 prefix, target container name and port. kontainers connects the target container to the
 `kontainers-proxy` network and Caddy reaches it by name; the target does not need to publish a
 port. With HTTPS on, Caddy obtains a certificate from Let's Encrypt over HTTP-01 or TLS-ALPN-01,
-redirects HTTP to HTTPS, and renews the certificate when a third of its lifetime is left.
-Certificates are stored in the data volume.
+redirects HTTP to HTTPS, and renews the certificate before it expires: Caddy follows the renewal
+window the CA suggests, or renews when a third of the lifetime is left. Certificates are stored in
+the data volume. Adding the first HTTPS rule to a running kontainers restarts Caddy, which is
+briefly unavailable; Caddy did not renew certificates in a process that started without HTTPS rules.
 
 ## Configuration
 
@@ -120,6 +122,7 @@ Certificates are stored in the data volume.
 | `KONTAINERS_ACME_EMAIL` | unset | Contact address for the ACME account |
 | `KONTAINERS_ACME_CA` | Let's Encrypt | ACME directory URL |
 | `KONTAINERS_ACME_CA_ROOT` | unset | PEM file to trust for the ACME directory (for a private CA) |
+| `KONTAINERS_ACME_RENEW_CHECK` | unset (Caddy's default) | Seconds between Caddy's checks for certificates due for renewal, 1 to 86400; HTTPS rules only |
 | `KONTAINERS_HTTP_PORT` / `KONTAINERS_HTTPS_PORT` | `80` / `443` | Proxy ports |
 
 `/healthz` returns 200 while the process runs. `/readyz` returns 200 when the database and the
@@ -151,6 +154,7 @@ the host.
     scripts/test.sh image      # the built image, behind docker-socket-proxy
     scripts/test.sh e2e        # Playwright (Chromium) against the image
     scripts/test.sh proxy      # proxy rules and certificates against Pebble, inside dind
+    scripts/test.sh renewal    # Pebble issues 90-second certificates; Caddy must renew them itself
 
 `KEEP=1` leaves the test environment running for inspection.
 

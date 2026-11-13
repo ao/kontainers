@@ -3,64 +3,15 @@
 // name at kontainers, all inside a throwaway dind. scripts/test.sh proxy sets the variables.
 
 import { describe, expect, test } from 'bun:test';
-import { connect } from 'node:tls';
-import { request as httpsRequest } from 'node:https';
 import { Client, PW } from '../api/helpers';
+import { HTTP, peerCert, https, until } from './pebble';
 
 const URL_ = process.env.KONTAINERS_TEST_URL || '';
 const TOKEN = process.env.KONTAINERS_TEST_SETUP_TOKEN || '';
-const PEBBLE_MGMT = process.env.KONTAINERS_TEST_PEBBLE_MGMT || '';
-const HTTP = 5002, HTTPS = 5001;
 
-// Pebble's API and management endpoints use a fixed test certificate signed by its "minica" CA.
-const MINICA = process.env.KONTAINERS_TEST_PEBBLE_CA ? await Bun.file(process.env.KONTAINERS_TEST_PEBBLE_CA).text() : '';
-
-// The roots Pebble generated at startup sign the certificates it issues.
-// Returned as one PEM per array entry: Bun reads only the first certificate of a concatenated string.
-let roots: string[] = [];
-async function pebbleRoots(): Promise<string[]> {
-  if (roots.length) return roots;
-  const opt = { tls: { ca: MINICA } } as RequestInit;
-  const pem = (await (await fetch(`${PEBBLE_MGMT}/roots/0`, opt)).text()) + '\n' + (await (await fetch(`${PEBBLE_MGMT}/intermediates/0`, opt)).text());
-  roots = pem.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) || [];
-  return roots;
-}
-
-// node:https rather than fetch: Bun 1.3.1's fetch rejects a chain that ends in a server-sent
-// intermediate even when the root is in tls.ca; node:tls verifies the same chain correctly.
-async function https(host: string, path = '/'): Promise<{ status: number; text: () => Promise<string> }> {
-  const ca = await pebbleRoots();
-  return new Promise((resolve, reject) => {
-    const req = httpsRequest({ host, port: HTTPS, path, servername: host, ca, timeout: 5000 }, res => {
-      let body = '';
-      res.on('data', d => (body += d));
-      res.on('end', () => resolve({ status: res.statusCode || 0, text: async () => body }));
-    });
-    req.on('timeout', () => req.destroy(new Error('timeout')));
-    req.on('error', reject);
-    req.end();
-  });
-}
-
-function peerIssuer(host: string): Promise<string> {
-  return new Promise(async (resolve, reject) => {
-    const s = connect({ host, port: HTTPS, servername: host, ca: await pebbleRoots() }, () => {
-      const c = s.getPeerCertificate();
-      s.end();
-      resolve(`${c.issuer.CN} / ${c.subjectaltname}`);
-    });
-    s.on('error', reject);
-  });
-}
-
-async function until<T>(what: string, fn: () => Promise<T | null>, timeoutMs = 90000): Promise<T> {
-  const end = Date.now() + timeoutMs;
-  let last: unknown;
-  while (Date.now() < end) {
-    try { const v = await fn(); if (v !== null) return v; } catch (e) { last = e; }
-    await Bun.sleep(1000);
-  }
-  throw new Error(`timed out waiting for ${what}: ${last}`);
+async function peerIssuer(host: string): Promise<string> {
+  const c = await peerCert(host);
+  return `${c.issuerCN} / ${c.san}`;
 }
 
 async function dockerSock(method: string, path: string): Promise<Response> {

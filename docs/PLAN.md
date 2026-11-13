@@ -4,9 +4,9 @@ Based on `docs/ASSESSMENT.md`.
 
 ## Status (2026-11-13)
 
-Done, with tests, on the rewrite branch: 1.1, 1.2, 2.1-2.7, 3.1-3.4, 4.1, 4.2, 4.4, 5 (README,
-licence, CI). Run `scripts/test.sh`: 114 unit, 47 API, 4 image, 8 browser, 9 proxy/ACME tests and
-the compose check pass in containers.
+Done, with tests, on the rewrite branch: 1.1, 1.2, 2.1-2.7, 3.1-3.4, 4.1-4.4, 5 (README, licence,
+CI). Latest runs in containers: 119 unit, 52 API, 9 proxy/ACME, 3 renewal. Before the renewal and
+upgrade changes: 4 image, 8 browser and the compose check pass; those suites were not rerun.
 
 Differences from the plan as written:
 
@@ -16,7 +16,12 @@ Differences from the plan as written:
   docker-socket-proxy does not filter `/containers/{id}/exec` creation, only `/exec/*/start`;
   documented in `compose.yaml`.
 - 2.7: Caddy (embedded, admin API on a unix socket) instead of `acme-client` + nginx. Renewal is
-  Caddy's (when a third of the lifetime remains); it is not exercised by the tests.
+  Caddy's and is exercised by `scripts/test.sh renewal`: Pebble issues 90-second certificates and
+  kontainers must serve a renewed one with no request failing. That suite found a bug: a certificate
+  was never renewed when the first HTTPS rule was added to a kontainers started without one. The
+  proxy process is now replaced in that case, after `caddy validate`. Pebble's renewal information
+  puts the renewal anywhere in the lifetime, so the test checks renewal before expiry, not a time.
+  `KONTAINERS_ACME_RENEW_CHECK` sets how often Caddy checks (the test uses 10 seconds).
 - 3.1: logs are polled every 2 s rather than streamed over a WebSocket, so there is no WebSocket
   endpoint to secure.
 - 4.3: the only released schema is 0.2.0 (`MIGRATIONS[0]`, user_version 1), so there is no older

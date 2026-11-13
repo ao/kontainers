@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        suite: [unit, api, image, e2e, proxy, compose]
+        suite: [unit, api, image, e2e, proxy, renewal, compose]
     steps:
       - uses: actions/checkout@v4
       - run: scripts/test.sh ${{ matrix.suite }}

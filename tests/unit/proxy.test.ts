@@ -86,6 +86,21 @@ describe('buildCaddyConfig', () => {
     expect(issuer).toEqual({ module: 'acme', ca: 'https://pebble:14000/dir', email: 'ops@example.com', trusted_roots_pem_files: ['/pebble.pem'] });
   });
 
+  test('the renewal check interval is optional and passed to Caddy in seconds', () => {
+    const none = (buildCaddyConfig([rule({})], cfg, '/s') as any).apps.tls.automation;
+    expect(none.renew_interval).toBeUndefined();
+    const c3 = loadConfig({ KONTAINERS_PROXY: '1', KONTAINERS_ACME_RENEW_CHECK: '10' });
+    expect((buildCaddyConfig([rule({})], c3, '/s') as any).apps.tls.automation.renew_interval).toBe('10s');
+  });
+
+  test('the renewal check interval must be a whole number of seconds from 1 to 86400', () => {
+    for (const bad of ['0', '-5', '1.5', '10s', 'soon', '86401']) {
+      expect(() => loadConfig({ KONTAINERS_ACME_RENEW_CHECK: bad })).toThrow('KONTAINERS_ACME_RENEW_CHECK');
+    }
+    expect(loadConfig({ KONTAINERS_ACME_RENEW_CHECK: '86400' }).proxy.acmeRenewCheck).toBe(86400);
+    expect(loadConfig({}).proxy.acmeRenewCheck).toBeNull();
+  });
+
   test('every hostname in the output passed validation', () => {
     const s = store();
     s.create({ hostname: 'ok.example.com', targetContainer: 'web', targetPort: 80 });
