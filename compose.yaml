@@ -1,0 +1,49 @@
+# kontainers with the Docker API behind a socket proxy.
+#   docker compose up -d
+#   docker compose logs kontainers     (the first-run setup token is printed here)
+#   open http://127.0.0.1:8080
+#
+# Only 127.0.0.1:8080 is published. To reach it from another machine use an SSH tunnel
+# (ssh -L 8080:127.0.0.1:8080 host) or put it behind HTTPS and set KONTAINERS_PUBLIC_URL.
+
+services:
+  kontainers:
+    image: ataiva/kontainers:0.2.0
+    build: .
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      DOCKER_HOST: tcp://docker-proxy:2375
+    volumes:
+      - kontainers-data:/data
+    networks: [default, docker-api] # default carries the published port; docker-api reaches the proxy
+    depends_on: [docker-proxy]
+
+  # Exposes only the Docker endpoints kontainers uses (containers, images, networks, volumes)
+  # and refuses build, swarm, plugins, secrets and system calls. An exec can be created
+  # (it is under /containers) but not started (/exec/*/start is refused). It does not inspect
+  # request bodies, so anyone who controls kontainers can still create a privileged container:
+  # treat a kontainers login as root on this host.
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      NETWORKS: 1
+      VOLUMES: 1
+      POST: 1
+      ALLOW_START: 1
+      ALLOW_STOP: 1
+      ALLOW_RESTARTS: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks: [docker-api]
+
+networks:
+  docker-api:
+    internal: true
+
+volumes:
+  kontainers-data:

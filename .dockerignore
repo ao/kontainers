@@ -1,0 +1,10 @@
+.git
+.scratch
+.claude
+node_modules
+data
+tests
+docs
+test-results
+playwright-report
+*.db

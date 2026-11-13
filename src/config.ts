@@ -18,6 +18,22 @@ export interface Config {
     httpsPort: number;
   };
   allowBindMounts: boolean;
+  // Set in the official image: the port publish (-p 127.0.0.1:8080:8080) is the network boundary there.
+  inContainer: boolean;
+  allowInsecure: boolean;
+}
+
+export function isLoopback(host: string): boolean {
+  return host === 'localhost' || host === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
+
+// Returns a reason to refuse starting, or null. A non-loopback listener over plain HTTP
+// sends passwords and session cookies in clear text, so it needs an explicit opt-in.
+export function bindProblem(cfg: Config): string | null {
+  if (isLoopback(cfg.host) || cfg.inContainer || cfg.allowInsecure) return null;
+  if (cfg.publicUrl?.startsWith('https:')) return null; // TLS is terminated in front of kontainers
+  return `refusing to listen on ${cfg.host}:${cfg.port} over plain HTTP. Bind 127.0.0.1, put kontainers behind HTTPS ` +
+    `and set KONTAINERS_PUBLIC_URL=https://..., or set KONTAINERS_ALLOW_INSECURE=1 if you accept the risk.`;
 }
 
 function bool(v: string | undefined, dflt = false): boolean {
@@ -64,5 +80,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       httpsPort: int('KONTAINERS_HTTPS_PORT', env.KONTAINERS_HTTPS_PORT, 443),
     },
     allowBindMounts: bool(env.KONTAINERS_ALLOW_BIND_MOUNTS),
+    inContainer: bool(env.KONTAINERS_IN_CONTAINER),
+    allowInsecure: bool(env.KONTAINERS_ALLOW_INSECURE),
   };
 }
