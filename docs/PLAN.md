@@ -5,8 +5,8 @@ Based on `docs/ASSESSMENT.md`.
 ## Status (2026-11-13)
 
 Done, with tests, on the rewrite branch: 1.1, 1.2, 2.1-2.7, 3.1-3.4, 4.1-4.4, 5 (README, licence,
-CI). Latest runs in containers: 119 unit, 52 API, 9 proxy/ACME, 3 renewal. Before the renewal and
-upgrade changes: 4 image, 8 browser and the compose check pass; those suites were not rerun.
+CI). Latest runs in containers: 119 unit, 52 API, 4 image, 9 proxy/ACME, 3 renewal (two runs). The 8
+browser tests and the compose check were last run before the renewal change and were not rerun.
 
 Differences from the plan as written:
 
