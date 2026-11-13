@@ -6,6 +6,7 @@
 #   scripts/test.sh unit       unit only
 #   scripts/test.sh api        API only
 #   scripts/test.sh image      build the image and smoke-test it behind the socket proxy
+#   scripts/test.sh proxy      proxy rules and certificates against Pebble, all inside dind
 #
 # Env: BUN_IMAGE (default oven/bun:1.3.1), CACHE_VOLUME (default kontainers-test-cache)
 set -eu
@@ -23,6 +24,7 @@ SOCKPROXY=kontainers-sockproxy-$ID
 SOCKVOL=kontainers-dindsock-$ID
 
 cleanup() {
+  if [ -n "${KEEP:-}" ]; then echo "KEEP set: left $DIND, $NET and $SOCKVOL running; remove them with docker rm -f / network rm / volume rm"; return; fi
   docker rm -f "$APP" "$SOCKPROXY" "$DIND" >/dev/null 2>&1 || true
   docker volume rm "$SOCKVOL" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
@@ -54,7 +56,7 @@ if [ "$SUITE" = all ] || [ "$SUITE" = unit ]; then
   bun_run "$BUN_IMAGE" bun test tests/unit
 fi
 
-if [ "$SUITE" = all ] || [ "$SUITE" = api ] || [ "$SUITE" = image ]; then
+if [ "$SUITE" != unit ]; then
   start_dind
 fi
 
@@ -80,4 +82,60 @@ if [ "$SUITE" = all ] || [ "$SUITE" = image ]; then
     -e KONTAINERS_TEST_URL=http://127.0.0.1:8080 -e KONTAINERS_TEST_SETUP_TOKEN="$TOKEN" \
     -e KONTAINERS_TEST_SOCKET_PROXY=tcp://docker-proxy:2375 \
     "$BUN_IMAGE" bun test --timeout 120000 tests/image
+fi
+
+if [ "$SUITE" = all ] || [ "$SUITE" = proxy ]; then
+  # Everything below runs inside dind, so kontainers manages the same daemon its targets run on,
+  # as on a real host. D runs a docker command against the dind daemon.
+  D() { docker exec -i "$DIND" docker "$@"; }
+  PEBBLE=ghcr.io/letsencrypt/pebble:latest
+  CHALL=ghcr.io/letsencrypt/pebble-challtestsrv:latest
+  docker build -q -t kontainers:test . >/dev/null
+  docker pull -q "$PEBBLE" >/dev/null && docker pull -q "$CHALL" >/dev/null
+  docker save kontainers:test "$PEBBLE" "$CHALL" | D load -q >/dev/null
+
+  D network create kt >/dev/null
+  t=$(D create "$PEBBLE"); D cp "$t:/test/certs/pebble.minica.pem" - | docker exec -i "$DIND" tar -x -C /tmp; D rm "$t" >/dev/null
+  GID=$(docker exec "$DIND" stat -c %g /var/run/docker.sock)
+  D create --name kontainers --network kt --group-add "$GID" \
+    -v /var/run/docker.sock:/var/run/docker.sock -v kdata:/data \
+    -e DOCKER_HOST=unix:///var/run/docker.sock -e KONTAINERS_PROXY=1 \
+    -e KONTAINERS_HTTP_PORT=5002 -e KONTAINERS_HTTPS_PORT=5001 \
+    -e KONTAINERS_ACME_CA=https://pebble:14000/dir -e KONTAINERS_ACME_CA_ROOT=/etc/pebble-ca.pem \
+    -e KONTAINERS_ACME_EMAIL=test@example.com kontainers:test >/dev/null
+  docker exec "$DIND" chmod 644 /tmp/pebble.minica.pem
+  D cp /tmp/pebble.minica.pem kontainers:/etc/pebble-ca.pem
+  D start kontainers >/dev/null
+  KIP=$(D inspect -f '{{(index .NetworkSettings.Networks "kt").IPAddress}}' kontainers)
+  # Every DNS name resolves to kontainers, so Pebble's HTTP-01 / TLS-ALPN checks reach Caddy.
+  D run -d --name challtestsrv --network kt "$CHALL" -defaultIPv4 "$KIP" -defaultIPv6 "" \
+    -http01 "" -https01 "" -tlsalpn01 "" -doh "" -dnsserver :8053 -management :8055 >/dev/null
+  D run -d --name pebble --network kt -e PEBBLE_VA_NOSLEEP=1 "$PEBBLE" \
+    -config test/config/pebble-config.json -dnsserver challtestsrv:8053 >/dev/null
+  i=0
+  until D logs kontainers 2>&1 | grep -q 'setup token'; do
+    i=$((i + 1)); [ $i -gt 30 ] && { D logs kontainers; exit 1; }; sleep 1
+  done
+  TOKEN=$(D logs kontainers 2>&1 | sed -n 's/.*setup token: \([^ ]*\).*/\1/p' | head -1)
+
+  docker exec "$DIND" mkdir -p /work
+  docker cp tests "$DIND:/work/tests"
+  docker exec "$DIND" cp /tmp/pebble.minica.pem /work/pebble-ca.pem
+  # The driver runs as root with the dind socket so it can restart kontainers mid-test.
+  set +e
+  D run --rm --name driver --network kt --user root -v /var/run/docker.sock:/var/run/docker.sock -v /work:/app -w /app \
+    --add-host "app.test:$KIP" --add-host "plain.test:$KIP" --add-host "nothing.test:$KIP" \
+    -e KONTAINERS_TEST_URL="http://$KIP:8080" -e KONTAINERS_TEST_SETUP_TOKEN="$TOKEN" \
+    -e KONTAINERS_TEST_PEBBLE_MGMT=https://pebble:15000 -e KONTAINERS_TEST_PEBBLE_CA=/app/pebble-ca.pem \
+    --entrypoint bun kontainers:test test --timeout 180000 tests/proxy
+  rc=$?
+  set -e
+  if [ $rc -ne 0 ]; then
+    echo "--- certificates in kontainers storage"
+    D exec kontainers sh -c 'for f in $(find /data/caddy -name "*.crt"); do echo "$f: $(grep -c BEGIN "$f") certificate(s)"; done' || true
+    echo "--- pebble roots"
+    D run --rm --network kt -v /work:/w --entrypoint bun kontainers:test -e '
+      const { X509Certificate } = require("crypto"); const ca = require("fs").readFileSync("/w/pebble-ca.pem", "utf8");
+      for (const p of ["roots/0", "intermediates/0"]) { const t = await (await fetch("https://pebble:15000/" + p, { tls: { ca } })).text(); const c = new X509Certificate(t); console.log(p, "subject:", c.subject.replace(/\n/g, ", "), "| issuer:", c.issuer.replace(/\n/g, ", ")); }' || true
+    echo "--- kontainers log"; D logs kontainers 2>&1 | tail -40 | cut -c1-400; echo "--- pebble log"; D logs pebble 2>&1 | tail -20 | cut -c1-300; exit $rc; fi
 fi
