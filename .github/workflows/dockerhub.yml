@@ -1,0 +1,24 @@
+name: dockerhub-description
+
+# Sets the Docker Hub page of ataiva/kontainers from README.md. Runs after a release and on demand.
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  description:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ataiva/kontainers
+          short-description: Web UI for one Docker host, with domain proxy rules and automatic HTTPS. Use 0.2.0 or later.
+          readme-filepath: README.md

@@ -1,526 +1,182 @@
-# Kontainers
+# kontainers
 
-![Build Status](https://github.com/ataiva-software/kontainers/workflows/Test%20Suite/badge.svg)
-![Coverage](https://codecov.io/gh/kontainers/kontainers/branch/main/graph/badge.svg)
-![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
-![Bun](https://img.shields.io/badge/Bun-1.2.16-black)
+A web UI for one Docker host: containers, images, networks and volumes, plus domain-to-container
+proxy rules with automatic HTTPS certificates (ACME / Let's Encrypt, served by an embedded Caddy).
 
-Kontainers is a modern, high-performance container management and reverse proxy platform built with Bun, React, and TypeScript. It provides an intuitive web interface for managing Docker containers, setting up reverse proxy rules, and monitoring system performance.
+It is a small Bun program with server-rendered pages and a SQLite file for its own state.
 
-## Features
+## Status
 
-### Container Management
-- View and manage Docker containers through an intuitive web interface
-- Start, stop, restart, and remove containers with a single click
-- View container logs in real-time
-- Create new containers with a user-friendly wizard
-- Configure volumes, networks, environment variables, and port mappings
+Version 0.2.0 is a rewrite. Earlier releases (0.1.x, and `ataiva/kontainers:latest` before 0.2.0)
+accepted any login and must not be used.
 
-### Proxy Management
-- Create and manage reverse proxy rules for your containers
-- Configure domain-based routing to direct traffic based on domain names
-- Configure advanced routing options including path-based routing
-- Set up load balancing between multiple containers
-- Manage SSL certificates for secure connections
-- Automatic Let's Encrypt certificate management with auto-renewal
-- Monitor proxy traffic and performance metrics with real-time analytics
-- Configure custom headers, health checks, rate limiting, and WAF protection
+What works, and is covered by the test suites below:
 
-### Monitoring & Analytics
-- Real-time system health monitoring
-- Resource usage graphs for CPU, memory, disk, and network
-- Container-specific performance metrics
-- Proxy traffic analytics and error tracking
-- Historical data visualization for trend analysis
+- containers: list, inspect, create, start, stop, restart, unpause, remove (stopped containers
+  only; kontainers never force-removes), logs. Commands are split with shell quoting
+  (`sh -c "echo hi; sleep 60"`) but no shell runs and nothing is expanded. The detail page shows
+  CPU, memory, network and process counts, refreshed every 5 seconds.
+- update image, for containers created in kontainers: pull the image again and, if it changed,
+  recreate the container with the same name, command, environment, ports, volumes, restart policy
+  and networks. The old container is stopped and set aside first and is put back if the new one
+  cannot be created or started. Compose containers are left to `docker compose pull && docker compose up -d`.
+- images: list, pull (public images; registry logins are not supported), remove, per tag
+- networks and volumes: list, create, remove
+- proxy rules: hostname and path prefix to a container port, HTTPS with a certificate obtained
+  automatically, or plain HTTP; edit, enable, disable, remove; kept across restarts
+- local accounts, first-run setup, database backup
 
-### Configuration & Settings
-- Comprehensive system configuration options
-- Backup and restore functionality
-- Import/export proxy rules
-- Dark/light theme support
-- Mobile-responsive design
+Not included: exec/terminal, compose stacks, multiple hosts, roles (every account is an
+administrator), private registry logins.
 
-## Technology Stack
+## Security
 
-- **Frontend**: React, TypeScript, Tailwind CSS, Zustand
-- **Backend**: Bun, Node.js
-- **Container Management**: Docker API
-- **Proxy Server**: Nginx
-- **Real-time Updates**: WebSockets
-- **Data Visualization**: Custom SVG charts
+Access to the Docker API is root on the host. Anyone who can log in to kontainers can start a
+privileged container that mounts the host's filesystem, so treat every kontainers account as root.
 
-## Architecture
+What kontainers does about it:
 
-Kontainers follows a modern architecture with a clear separation of concerns:
+- It listens on `127.0.0.1` by default. Outside a container it refuses to start on any other
+  address over plain HTTP unless `KONTAINERS_PUBLIC_URL` is an `https://` URL or
+  `KONTAINERS_ALLOW_INSECURE=1` is set. The image listens on all interfaces inside the container,
+  so publish its port as `127.0.0.1:8080:8080`.
+- There is no default password. On first start it prints a one-time setup token to its log; the
+  first account is created with that token, and setup then closes.
+- Sessions are server-side, in an `HttpOnly`, `SameSite=Strict` cookie (`Secure` and `__Host-`
+  prefixed behind HTTPS), and expire after 12 hours idle or 7 days. Logging out, or changing a
+  password, ends them. Passwords are hashed with argon2id.
+- Every state change is a POST that needs a per-session CSRF token and a same-origin `Origin` /
+  `Sec-Fetch-Site`. Requests with an unknown `Host` are refused, to stop DNS rebinding.
+- Login is limited, per 15 minutes, to 5 failures per username and 20 per client address (the
+  higher address limit is because everyone behind one SSH tunnel or proxy shares an address).
+  Setup is limited to 5 wrong tokens per address.
+  `X-Forwarded-For` is only read from addresses listed in `KONTAINERS_TRUSTED_PROXIES`.
+- Container creation only sends image, name, command, environment, port bindings, named volumes
+  and restart policy to Docker. Host paths as volumes are refused unless
+  `KONTAINERS_ALLOW_BIND_MOUNTS=1`. Ports without a host address are published on `127.0.0.1`.
+  There is no way to set privileged mode, capabilities, devices or host namespaces from the UI.
+- The proxy configuration is generated from validated hostnames, path prefixes, container names
+  and ports. Caddy's admin API is a unix socket in the data directory, not a TCP port.
 
-1. **Frontend Layer**: React-based single-page application with TypeScript for type safety
-2. **Backend API**: RESTful API built with Bun for high performance
-3. **WebSocket Server**: Real-time updates for container status and metrics
-4. **Docker Integration**: Direct communication with Docker API
-5. **Proxy Management**: Dynamic Nginx configuration generation and management
-   - Domain-based routing with automatic configuration generation
-   - SSL/TLS certificate management and secure connections
-   - Automated Let's Encrypt certificate provisioning and renewal
-   - Advanced traffic management with load balancing, rate limiting, and WAF
-6. **Metrics Collection**: System and container metrics collection and storage
-   - Domain-specific traffic analytics and monitoring
-   - Real-time traffic visualization and alerting
+Use `compose.yaml`, which gives kontainers the Docker API through
+[docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) rather than the socket
+itself. The proxy refuses build, swarm, plugin, secret and system endpoints, and refuses starting an
+exec. It does not inspect request bodies, so it narrows what a compromised kontainers can reach
+but does not stop it from creating a privileged container.
 
-## Current Status & Vision
+To reach kontainers from another machine, use an SSH tunnel:
 
-### Current Implementation Status
-- The platform provides comprehensive container management with advanced proxy functionality
-- Multi-domain reverse proxy capabilities allow routing traffic to different containers based on domain names
-- The Kontainers management UI can be accessed via a dedicated subdomain (e.g., admin.yourdomain.com)
-- Dynamic domain-to-container mapping with real-time configuration updates
+    ssh -L 8080:127.0.0.1:8080 your-docker-host
 
-### Vision for the Project
-- Further enhance the multi-domain proxy platform with additional enterprise features
-- Develop advanced traffic analytics and reporting capabilities
+or put it behind a reverse proxy that terminates HTTPS, and set `KONTAINERS_PUBLIC_URL`.
 
-## Development Progress
+## Running
 
-### Completed Features
-- **Project Foundation** - All tasks completed
-  - React + TypeScript project structure set up
-  - Bun runtime configured for optimal performance
-  - Docker API integration implemented
-  - Frontend with React and Tailwind CSS
-  - WebSocket support for real-time updates
-- **Frontend Components** - All tasks completed
-  - Proxy Management Components (ProxyRuleDetail, ProxyRuleForm, ProxyTrafficMonitor)
-  - Metrics and Monitoring Components (SystemHealthMonitor, ResourceUsageGraphs, MetricsDashboard)
-  - Settings Components (ConfigurationForm, BackupRestorePanel)
-- **Backend Infrastructure** - All tasks completed
-  - Bun server with routing
-  - Docker API integration
-  - REST API endpoints for container operations
-  - WebSocket server for real-time updates
-  - CORS and middleware configuration
-- **Security & Authentication** - 100% complete
-  - User registration and login system
-  - JWT-based authentication
-  - Role-based access control (Admin, User, Viewer)
-  - Session management and security
-  - Password reset functionality
+With compose (recommended):
 
-## Testing Infrastructure
+    curl -O https://raw.githubusercontent.com/ao/kontainers/main/compose.yaml
+    docker compose up -d
+    docker compose logs kontainers | grep 'setup token'
 
-### Comprehensive Test Suite
+Then open http://127.0.0.1:8080, enter the token, and create the first account.
 
-Kontainers includes a robust testing infrastructure with 100% coverage of implemented functionality:
+With `docker run`, mounting the socket directly:
 
-#### Test Categories
-- **Unit Tests**: 85 tests covering shared utilities, authentication service, Docker integration, and proxy management
-- **Integration Tests**: 22 tests for real Docker operations, API endpoints, and database connections
-- **Smoke Tests**: 19 tests covering all major API endpoints and error handling
-- **Performance Tests**: 13 tests for load testing, memory usage, and stress scenarios
-- **End-to-End Tests**: 36 Playwright tests for complete UI workflows across Chrome and Firefox
+    docker run -d --name kontainers --restart unless-stopped \
+      -p 127.0.0.1:8080:8080 \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      --group-add "$(stat -c %g /var/run/docker.sock)" \
+      -v kontainers-data:/data \
+      ataiva/kontainers:0.2.0
+    docker logs kontainers | grep 'setup token'
 
-#### Test Execution
-```bash
-# Run all tests (280+ tests total)
-bun run test
+The image runs as an unprivileged user, so it needs the socket's group (`--group-add`). On
+Docker Desktop the socket is owned by root; use the compose file there.
 
-# Run specific test categories
-bun test:unit              # Unit tests only
-bun test:integration       # Integration tests
-bun test:smoke             # Smoke tests
-bun test:performance       # Performance tests
-bun test:e2e              # Playwright E2E tests
+## Proxy rules and certificates
 
-# Advanced test runner
-bun run test:comprehensive # Full test suite with reporting
-```
+Turn the proxy on with `KONTAINERS_PROXY=1` and publish ports 80 and 443. These two ports are meant
+to be public: they serve the sites you route, not the kontainers UI.
 
-#### Real-World Testing
-All tests run against actual implementations:
-- **Real Docker containers**: Tests create, start, stop, and destroy actual containers
-- **Real databases**: PostgreSQL integration with actual database operations
-- **Real browsers**: Playwright tests run in Chrome and Firefox
-- **Real APIs**: Live server testing with HTTP requests
-- **No mocks**: All external dependencies use real implementations
+    docker run -d --name kontainers --restart unless-stopped \
+      -p 127.0.0.1:8080:8080 -p 80:80 -p 443:443 \
+      -e KONTAINERS_PROXY=1 -e KONTAINERS_ACME_EMAIL=REPLACE-WITH-YOUR-EMAIL \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      --group-add "$(stat -c %g /var/run/docker.sock)" \
+      -v kontainers-data:/data \
+      ataiva/kontainers:0.2.0
 
-#### Test Results
-- **Total Tests**: 280+ tests across all categories
-- **Success Rate**: 100% passing
-- **Coverage**: Complete coverage of implemented features
-- **Performance**: Full test suite completes in under 60 seconds
-- **Cross-Platform**: Tests run on macOS, Linux, and Windows
+Use your own email address: Let's Encrypt rejects reserved domains such as example.com, and
+kontainers refuses to start with one.
 
-### Test Infrastructure Features
-- **Parallel Execution**: Tests run concurrently for faster feedback
-- **Real-time Reporting**: Live test progress and detailed results
-- **Error Debugging**: Comprehensive error messages and stack traces
-- **Performance Monitoring**: Built-in performance benchmarking
-- **CI/CD Ready**: GitHub Actions integration for automated testing
-  - User registration and login system
-  - JWT-based authentication
-  - Role-based access control (Admin, User, Viewer)
-  - Session management and security
-  - Password reset functionality
+Point the domain's DNS at the host, then add a rule on the Proxy page: hostname, optional path
+prefix, target container name and port. kontainers connects the target container to the
+`kontainers-proxy` network and Caddy reaches it by name; the target does not need to publish a
+port. Every 10 seconds kontainers reconnects targets that left the network, which is what
+`docker compose up` does when it recreates a container. The path prefix is matched but not
+removed: a rule for `/api` sends `/api/users` to the container as `/api/users`.
 
-### In Progress
-- **Multi-User & API** - Completing final features
-  - Team/organization support
-  - Resource quotas and limits
-  - API client libraries
-  - Webhook support
-  - CLI tool for power users
-- **Operations & Maintenance** - Implementing remaining features
-  - Automated backup procedures
-  - Update and migration system
-- **Scalability & Performance** - Finalizing
-  - Horizontal scaling support
-
-### Progress Metrics
-- Frontend Components: 100% complete
-- Backend Integration: 100% complete
-- Docker Integration: 100% complete
-- Security & Authentication: 100% complete
-- API Documentation: 100% complete
-- Multi-User Support: 60% complete
-- Operations & Maintenance: 60% complete
-- Scalability & Performance: 80% complete
-- **Overall Progress: 92% complete**
-
-## Getting Started
-
-### Prerequisites
-
-- Docker 20.10.0 or higher
-- Bun 1.2.16 or higher
-- Node.js 18.0.0 or higher (optional, for development)
-
-### Installation
-
-#### Using Docker (Recommended)
-
-```bash
-# Pull the Kontainers image
-docker pull ataiva/kontainers:latest
-
-# Run the container
-docker run -d \
-  --name kontainers \
-  -p 3000:3000 \
-  -v /var/run/docker.sock:/var/run/docker.sock \
-  -v kontainers-data:/app/data \
-  ataiva/kontainers:latest
-```
-
-#### Using Docker Compose
-
-```yaml
-# docker-compose.yml
-version: '3'
-services:
-  kontainers:
-    image: ataiva/kontainers:latest
-    ports:
-      - "3000:3000"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - kontainers-data:/app/data
-    restart: unless-stopped
-
-volumes:
-  kontainers-data:
-```
-
-Run with:
-
-```bash
-docker-compose up -d
-```
-
-#### Manual Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/ataiva-software/kontainers.git
-cd kontainers
-
-# Install dependencies
-bun install
-
-# Build the frontend
-bun run build
-
-# Start the application
-bun run start
-```
-
-### Accessing the Application
-
-Once running, access the web interface at:
-
-```
-http://localhost:3000
-```
-
-## Components
-
-Kontainers includes the following key components:
-
-### Proxy Management Components
-- **ProxyRuleDetail**: View detailed information about proxy rules
-- **ProxyRuleForm**: Create and edit proxy rules
-- **ProxyTrafficMonitor**: Monitor proxy traffic metrics
-
-### Metrics and Monitoring Components
-- **SystemHealthMonitor**: Monitor overall system health
-- **ResourceUsageGraphs**: View resource usage over time
-- **MetricsDashboard**: Comprehensive metrics dashboard
-
-### Settings Components
-- **ConfigurationForm**: Configure system settings
-- **BackupRestorePanel**: Backup and restore system configuration
+The Proxy page shows, for each rule, whether its target container exists and is running and,
+for HTTPS rules, when its certificate expires or that there is none yet. A missing certificate
+usually means DNS does not point at this host or ports 80 and 443 are not reachable; the
+kontainers log has Caddy's error. With HTTPS on, Caddy obtains a certificate from Let's Encrypt over HTTP-01 or TLS-ALPN-01,
+redirects HTTP to HTTPS, and renews the certificate before it expires: Caddy follows the renewal
+window the CA suggests, or renews when a third of the lifetime is left. Certificates are stored in
+the data volume. Adding the first HTTPS rule to a running kontainers restarts Caddy, which is
+briefly unavailable; Caddy did not renew certificates in a process that started without HTTPS rules.
 
 ## Configuration
 
-### Environment Variables
+| Variable | Default | Meaning |
+|---|---|---|
+| `KONTAINERS_LISTEN` | `127.0.0.1:8080` (`0.0.0.0:8080` in the image) | Address for the UI |
+| `KONTAINERS_PUBLIC_URL` | unset | Public `https://` URL when behind a TLS reverse proxy; enables `Secure` cookies and HSTS, and is the accepted `Host` |
+| `KONTAINERS_TRUSTED_PROXIES` | unset | Comma-separated proxy addresses whose `X-Forwarded-For` is used for rate limiting |
+| `KONTAINERS_ALLOW_INSECURE` | `0` | Allow a non-loopback listen address over plain HTTP |
+| `KONTAINERS_DATA` | `./data` (`/data` in the image) | Database and certificates |
+| `DOCKER_HOST` | `unix:///var/run/docker.sock` | `unix://`, `tcp://` or `http://` address of the Docker API |
+| `KONTAINERS_ALLOW_BIND_MOUNTS` | `0` | Allow host paths as container volumes |
+| `KONTAINERS_PROXY` | `0` | Run the proxy (Caddy) |
+| `KONTAINERS_PROXY_NETWORK` | `kontainers-proxy` | Docker network shared by the proxy and its targets |
+| `KONTAINERS_ACME_EMAIL` | unset | Contact address for the ACME account |
+| `KONTAINERS_ACME_CA` | Let's Encrypt | ACME directory URL |
+| `KONTAINERS_ACME_CA_ROOT` | unset | PEM file to trust for the ACME directory (for a private CA) |
+| `KONTAINERS_ACME_RENEW_CHECK` | unset (Caddy's default) | Seconds between Caddy's checks for certificates due for renewal, 1 to 86400; HTTPS rules only |
+| `KONTAINERS_HTTP_PORT` / `KONTAINERS_HTTPS_PORT` | `80` / `443` | Proxy ports |
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `PORT` | Port to run the application on | `3000` |
-| `DATA_DIR` | Directory to store application data | `/app/data` |
-| `LOG_LEVEL` | Logging level (debug, info, warn, error) | `info` |
-| `DOCKER_HOST` | Docker host to connect to | `unix:///var/run/docker.sock` |
-| `NGINX_CONFIG_PATH` | Path to Nginx configuration | `/etc/nginx` |
-| `METRICS_RETENTION_DAYS` | Days to retain metrics data | `30` |
+`/healthz` returns 200 while the process runs. `/readyz` returns 200 when the database and the
+Docker API are reachable, 503 otherwise. Neither needs a login.
 
-### Configuration File
+## Backup and restore
 
-Advanced configuration can be done through the `config.json` file:
+The data volume holds `kontainers.db` (accounts, sessions, proxy rules) and `caddy/` (ACME account
+and certificates). A consistent copy of the database, while kontainers runs:
 
-```json
-{
-  "system": {
-    "name": "Kontainers",
-    "adminEmail": "admin@example.com",
-    "logLevel": "info",
-    "dataRetentionDays": 30,
-    "enableTelemetry": true
-  },
-  "proxy": {
-    "defaultTimeout": 30000,
-    "maxConnections": 1000,
-    "enableCompression": true,
-    "tlsVersion": "TLS 1.3",
-    "cipherSuites": ["TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384"]
-  },
-  "security": {
-    "enableFirewall": true,
-    "allowedIPs": [],
-    "blockedIPs": [],
-    "rateLimiting": {
-      "enabled": true,
-      "requestsPerMinute": 60,
-      "burstSize": 10
-    }
-  }
-}
-```
+    docker exec kontainers bun src/main.ts backup /data/backup.db
+    docker cp kontainers:/data/backup.db .
 
-## API Reference
+or download one from Settings. To restore, stop kontainers, replace `kontainers.db` in the volume
+with the backup (and delete any `kontainers.db-wal` and `kontainers.db-shm`), then start it.
+Certificates that are not restored are obtained again.
 
-Kontainers provides a comprehensive REST API for integration with other tools:
-
-### Container Endpoints
-
-- `GET /api/containers` - List all containers
-- `GET /api/containers/:id` - Get container details
-- `POST /api/containers` - Create a new container
-- `PUT /api/containers/:id/start` - Start a container
-- `PUT /api/containers/:id/stop` - Stop a container
-- `PUT /api/containers/:id/restart` - Restart a container
-- `DELETE /api/containers/:id` - Remove a container
-- `GET /api/containers/:id/logs` - Get container logs
-
-### Proxy Endpoints
-
-- `GET /api/proxy/rules` - List all proxy rules
-- `GET /api/proxy/rules/:id` - Get proxy rule details
-- `POST /api/proxy/rules` - Create a new proxy rule
-- `PUT /api/proxy/rules/:id` - Update a proxy rule
-- `DELETE /api/proxy/rules/:id` - Delete a proxy rule
-- `GET /api/proxy/traffic` - Get proxy traffic metrics
-- `GET /api/proxy/domains` - List all domain-based proxy rules
-- `GET /api/proxy/domains/:domain` - Get domain-specific proxy rule details
-- `GET /api/proxy/traffic/:ruleId/summary` - Get traffic summary for a specific rule
-- `GET /api/proxy/traffic/:ruleId/timeseries` - Get time series traffic data for a specific rule
-- `GET /api/proxy/certificates` - List all SSL/TLS certificates
-- `POST /api/proxy/certificates` - Upload a new SSL/TLS certificate
-- `DELETE /api/proxy/certificates/:id` - Delete an SSL/TLS certificate
-- `POST /api/proxy/certificates/letsencrypt` - Request a new Let's Encrypt certificate
-- `GET /api/proxy/certificates/letsencrypt/status/:domain` - Check Let's Encrypt certificate status
-- `POST /api/proxy/certificates/letsencrypt/renew/:id` - Manually renew a Let's Encrypt certificate
-
-### System Endpoints
-
-- `GET /api/system/health` - Get system health information
-- `GET /api/system/metrics` - Get system metrics
-- `GET /api/system/resources` - Get resource usage
-- `POST /api/system/backup` - Create a system backup
-- `POST /api/system/restore` - Restore from a backup
+Upgrades run database migrations at start. A database written by a newer version is refused
+rather than modified.
 
 ## Development
 
-### Setting Up Development Environment
+All tests run in containers against a throwaway Docker-in-Docker daemon; nothing is published on
+the host.
 
-```bash
-# Clone the repository
-git clone https://github.com/ataiva-software/kontainers.git
-cd kontainers
+    scripts/test.sh            # all suites
+    scripts/test.sh unit       # typecheck and unit tests
+    scripts/test.sh api        # the server process against dind
+    scripts/test.sh image      # the built image, behind docker-socket-proxy
+    scripts/test.sh e2e        # Playwright (Chromium) against the image
+    scripts/test.sh proxy      # proxy rules and certificates against Pebble, inside dind
+    scripts/test.sh renewal    # Pebble issues 90-second certificates; Caddy must renew them itself
 
-# Install dependencies
-bun install
+`KEEP=1` leaves the test environment running for inspection.
 
-# Install git hooks for development
-bun hooks:install
+## Licence
 
-# Start development server
-bun run dev
-```
-
-### Project Structure
-
-```
-kontainers/
-├── src/
-│   ├── backend/         # Backend API code
-│   ├── frontend/        # Frontend React application
-│   │   ├── components/  # React components
-│   │   │   ├── proxy/   # Proxy management components
-│   │   │   ├── metrics/ # Metrics and monitoring components
-│   │   │   └── settings/# Settings components
-│   │   ├── stores/      # Zustand state stores
-│   │   ├── models/      # TypeScript interfaces
-│   │   └── utils/       # Utility functions
-│   └── shared/          # Shared code between frontend and backend
-├── public/              # Static assets
-├── config/              # Configuration files
-├── scripts/             # Build and deployment scripts
-│   └── git-hooks/       # Git hooks for development workflow
-└── tests/               # Test files
-    ├── frontend/        # Frontend component tests
-    ├── backend/         # Backend API tests
-    ├── integration/     # Integration tests
-    └── performance/     # Performance tests
-```
-
-### Running Tests
-
-```bash
-# Run all tests
-bun test
-
-# Run tests with coverage report
-bun test:coverage
-
-# Run frontend tests
-bun test:frontend
-
-# Run backend tests
-bun test:backend
-
-# Run integration tests
-bun test:integration
-
-# Run performance tests
-bun test:performance
-```
-
-### Git Hooks
-
-The project includes Git hooks to ensure code quality:
-
-- **Pre-commit hook**: Runs tests on changed files
-- **Pre-push hook**: Runs the full test suite and checks coverage
-
-You can temporarily disable hooks using:
-
-```bash
-# For a single commit/push
-SKIP_HOOKS=true git commit
-SKIP_HOOKS=true git push
-
-# For the current terminal session
-bun hooks:skip
-```
-
-## CI/CD Pipeline
-
-![Build Status](https://github.com/ataiva-software/kontainers/workflows/Test%20Suite/badge.svg)
-![Coverage](https://codecov.io/gh/ao/kontainers/branch/main/graph/badge.svg)
-
-Kontainers uses GitHub Actions for continuous integration and deployment.
-
-### Test Workflow
-
-The test workflow runs on every push to the main branch and on pull requests:
-
-- Sets up the Bun environment
-- Installs dependencies
-- Runs the test suite with coverage reporting
-- Fails the build if test coverage falls below 80%
-- Uploads coverage reports as artifacts
-- Integrates with Codecov for coverage visualization
-
-### Performance Testing
-
-A separate workflow runs performance tests on a nightly schedule:
-
-- Measures API response times and throughput
-- Generates performance trend reports
-- Tracks performance metrics over time
-
-### Pull Request Integration
-
-The CI pipeline integrates with pull requests to provide:
-
-- Automated test results as PR comments
-- Status checks that prevent merging if tests fail
-- Coverage reports to ensure code quality
-
-### Local Development Integration
-
-The CI/CD pipeline is integrated with local development through Git hooks:
-
-- Pre-commit hook runs tests on changed files
-- Pre-push hook runs the full test suite
-- Coverage checks ensure code quality
-
-To view the CI/CD configuration, see the workflow files in `.github/workflows/`.
-
-## License
-
-Kontainers is licensed under the MIT License. See the MIT file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## Documentation
-
-For full documentation, visit [github.com/ataiva-software/kontainers](https://github.com/ataiva-software/kontainers).
-
-## Acknowledgements
-
-- [Docker](https://www.docker.com/) for container technology
-- [Bun](https://bun.sh/) for the high-performance JavaScript runtime
-- [React](https://reactjs.org/) for the frontend framework
-- [Tailwind CSS](https://tailwindcss.com/) for styling
-- [Zustand](https://github.com/pmndrs/zustand) for state management
-- [Nginx](https://nginx.org/) for the proxy server
-
-## Contact
-
-- GitHub: [github.com/ao](https://github.com/ao)
+MIT, see [LICENSE](LICENSE).
