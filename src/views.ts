@@ -18,12 +18,42 @@ export function html(strings: TemplateStringsArray, ...values: unknown[]): Html 
   return raw(out);
 }
 
-export interface PageCtx { user?: string; csrf?: string; flash?: string; error?: string; proxyEnabled?: boolean }
+export interface PageCtx {
+  user?: string; csrf?: string; flash?: string; error?: string; proxyEnabled?: boolean;
+  username?: string; token?: string; // re-filled after a failed login or setup (never the password)
+}
 
 const csrfField = (ctx: PageCtx) => html`<input type="hidden" name="_csrf" value="${ctx.csrf}">`;
 
-function post(ctx: PageCtx, action: string, label: string, opts: { confirm?: string; cls?: string } = {}): Html {
-  return html`<form method="post" action="${action}" class="inline"${opts.confirm ? raw(` data-confirm="${esc(opts.confirm)}"`) : raw('')}>${csrfField(ctx)}<button class="${opts.cls || ''}">${label}</button></form>`;
+function post(ctx: PageCtx, action: string, label: string, opts: { confirm?: string; cls?: string; fields?: Record<string, string> } = {}): Html {
+  const extra = Object.entries(opts.fields || {}).map(([k, v]) => html`<input type="hidden" name="${k}" value="${v}">`);
+  return html`<form method="post" action="${action}" class="inline"${opts.confirm ? raw(` data-confirm="${esc(opts.confirm)}"`) : raw('')}>${csrfField(ctx)}${extra}<button class="${opts.cls || ''}">${label}</button></form>`;
+}
+
+// The actions that make sense in each Docker state. Remove is offered only for stopped containers:
+// Docker refuses to remove a running one without force, and kontainers never forces.
+function containerActions(ctx: PageCtx, id: string, name: string, state: string, fromDetail = false): Html {
+  const fields = fromDetail ? { back: 'detail' } : undefined;
+  const a = (op: string, label: string, extra: { confirm?: string; cls?: string } = {}) => post(ctx, `/containers/${id}/${op}`, label, { ...extra, fields: op === 'remove' ? undefined : fields });
+  if (state === 'running') return html`${a('stop', 'Stop')} ${a('restart', 'Restart')}`;
+  if (state === 'paused') return html`${a('unpause', 'Unpause')}`;
+  if (state === 'restarting') return html`${a('stop', 'Stop')}`;
+  return html`${a('start', 'Start')} ${a('remove', 'Remove', { confirm: `Remove container ${name}?`, cls: 'danger' })}`;
+}
+
+// Docker lists a port published on all interfaces twice (0.0.0.0 and ::); show it once as "*".
+export function formatPorts(ports: any[]): string {
+  const groups = new Map<string, Set<string>>();
+  for (const p of ports || []) {
+    if (!p.PublicPort) continue;
+    const k = `${p.PublicPort}->${p.PrivatePort}/${p.Type}`;
+    (groups.get(k) || groups.set(k, new Set()).get(k)!).add(p.IP || '');
+  }
+  return [...groups].map(([k, ips]) => {
+    const all = ips.has('0.0.0.0') && ips.has('::');
+    const list = all ? ['*'] : [...ips].map(ip => (ip.includes(':') ? `[${ip}]` : ip || '*'));
+    return list.map(ip => `${ip}:${k}`).join(', ');
+  }).join(', ');
 }
 
 export function layout(title: string, ctx: PageCtx, body: Html): string {
@@ -54,10 +84,10 @@ ${body}
 export function setupPage(ctx: PageCtx): string {
   return layout('First-run setup', ctx, html`
 <p>Create the first account. The setup token is printed in the kontainers log
-(<code>docker logs kontainers</code>). Every account has full control of the Docker host.</p>
+(<code>docker compose logs kontainers</code>, or <code>docker logs kontainers</code>). Every account has full control of the Docker host.</p>
 <form method="post" action="/setup" class="stack">
-  <label>Setup token <input name="token" required autocomplete="off"></label>
-  <label>Username <input name="username" required autocomplete="username"></label>
+  <label>Setup token <input name="token" required autocomplete="off" value="${ctx.token || ''}"></label>
+  <label>Username <input name="username" required autocomplete="username" value="${ctx.username || ''}"></label>
   <label>Password (12 characters or more) <input name="password" type="password" required minlength="12" autocomplete="new-password"></label>
   <button>Create account</button>
 </form>`);
@@ -66,8 +96,8 @@ export function setupPage(ctx: PageCtx): string {
 export function loginPage(ctx: PageCtx): string {
   return layout('Log in', ctx, html`
 <form method="post" action="/login" class="stack">
-  <label>Username <input name="username" required autocomplete="username" autofocus></label>
-  <label>Password <input name="password" type="password" required autocomplete="current-password"></label>
+  <label>Username <input name="username" required autocomplete="username" value="${ctx.username || ''}"${ctx.username ? raw('') : raw(' autofocus')}></label>
+  <label>Password <input name="password" type="password" required autocomplete="current-password"${ctx.username ? raw(' autofocus') : raw('')}></label>
   <button>Log in</button>
 </form>`);
 }
@@ -79,14 +109,11 @@ const fmtSize = (b: number) => b > 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${(b / 
 export function containersPage(ctx: PageCtx, list: any[]): string {
   const rows = list.map(c => {
     const name = (c.Names?.[0] || '').replace(/^\//, '');
-    const ports = (c.Ports || []).filter((p: any) => p.PublicPort).map((p: any) => `${p.IP}:${p.PublicPort}->${p.PrivatePort}/${p.Type}`).join(', ');
-    const running = c.State === 'running';
+    const project = c.Labels?.['com.docker.compose.project'];
     return html`<tr data-name="${name}">
-  <td><a href="/containers/${c.Id}">${name}</a></td><td>${c.Image}</td>
-  <td><span class="state ${c.State}">${c.State}</span> <small>${c.Status}</small></td><td>${ports}</td>
-  <td class="actions">${running ? post(ctx, `/containers/${c.Id}/stop`, 'Stop') : post(ctx, `/containers/${c.Id}/start`, 'Start')}
-  ${post(ctx, `/containers/${c.Id}/restart`, 'Restart')}
-  ${post(ctx, `/containers/${c.Id}/remove`, 'Remove', { confirm: `Remove container ${name}?`, cls: 'danger' })}</td></tr>`;
+  <td><a href="/containers/${c.Id}">${name}</a>${project ? html` <small class="muted">compose: ${project}</small>` : ''}</td><td>${c.Image}</td>
+  <td><span class="state ${c.State}">${c.State}</span> <small>${c.Status}</small></td><td>${formatPorts(c.Ports)}</td>
+  <td class="actions">${containerActions(ctx, c.Id, name, c.State)}</td></tr>`;
   });
   return layout('Containers', ctx, html`
 <p><a class="button" href="/containers/new">New container</a></p>
@@ -104,12 +131,12 @@ export function containerPage(ctx: PageCtx, c: any): string {
   <dt>ID</dt><dd><code>${shortId(c.Id)}</code></dd>
   <dt>Image</dt><dd>${c.Config?.Image}</dd>
   <dt>State</dt><dd><span class="state ${c.State?.Status}">${c.State?.Status}</span></dd>
-  <dt>Started</dt><dd>${c.State?.StartedAt}</dd>
+  <dt>Started</dt><dd>${!c.State?.StartedAt || c.State.StartedAt.startsWith('0001-') ? 'never' : c.State.StartedAt}</dd>
+  ${c.State?.Health ? html`<dt>Health</dt><dd>${c.State.Health.Status}</dd>` : ''}
+  ${c.State?.Status === 'exited' ? html`<dt>Exit code</dt><dd>${c.State.ExitCode}</dd>` : ''}
   <dt>Restart policy</dt><dd>${c.HostConfig?.RestartPolicy?.Name}</dd>
 </dl>
-<p class="actions">${c.State?.Running ? post(ctx, `/containers/${c.Id}/stop`, 'Stop') : post(ctx, `/containers/${c.Id}/start`, 'Start')}
-${post(ctx, `/containers/${c.Id}/restart`, 'Restart')}
-${post(ctx, `/containers/${c.Id}/remove`, 'Remove', { confirm: `Remove container ${name}?`, cls: 'danger' })}</p>
+<div class="actions">${containerActions(ctx, c.Id, name, c.State?.Status || '', true)}</div>
 <h2>Environment (values hidden)</h2><ul>${env.length ? env : html`<li>none</li>`}</ul>
 <h2>Mounts</h2><ul>${mounts.length ? mounts : html`<li>none</li>`}</ul>
 <h2>Networks</h2><ul>${nets}</ul>
@@ -136,17 +163,23 @@ export function newContainerPage(ctx: PageCtx, allowBind: boolean): string {
 </form>`);
 }
 
-export function imagesPage(ctx: PageCtx, list: any[]): string {
+export function imagesPage(ctx: PageCtx, list: any[], pulls: { ref: string; state: string; error?: string }[] = []): string {
+  // One Remove per tag: removing a tag leaves the image while other tags point at it.
+  const remove = (ref: string, label: string, what: string) => post(ctx, '/images/remove', label, { confirm: `Remove ${what}?`, cls: 'danger', fields: { ref } });
   const rows = list.map(i => {
     const tags: string[] = i.RepoTags?.filter((t: string) => t !== '<none>:<none>') || [];
-    const ref = tags[0] || i.Id;
-    return html`<tr><td>${tags.length ? tags.join(', ') : html`<em>untagged</em>`}</td><td><code>${shortId(i.Id)}</code></td>
-<td>${fmtSize(i.Size)}</td><td>${fmtTime(i.Created)}</td>
-<td><form method="post" action="/images/remove" class="inline" data-confirm="Remove image ${ref}?">${csrfField(ctx)}<input type="hidden" name="ref" value="${ref}"><button class="danger">Remove</button></form></td></tr>`;
+    const tagCells = tags.length
+      ? tags.map(t => html`<div>${t} ${remove(t, 'Remove', tags.length > 1 ? `the tag ${t}` : `image ${t}`)}</div>`)
+      : html`<em>untagged</em> ${remove(i.Id, 'Remove', `untagged image ${shortId(i.Id)}`)}`;
+    return html`<tr><td>${tagCells}</td><td><code>${shortId(i.Id)}</code></td>
+<td>${fmtSize(i.Size)}</td><td>${fmtTime(i.Created)}</td></tr>`;
   });
+  const pending = pulls.map(p => html`<li>${p.ref}: ${p.state === 'pulling' ? 'pulling…' : html`<span class="error">failed: ${p.error}</span>`}</li>`);
   return layout('Images', ctx, html`
 <form method="post" action="/images/pull" class="row">${csrfField(ctx)}<input name="ref" required placeholder="alpine:3.20" aria-label="Image to pull"><button>Pull</button></form>
-<table><thead><tr><th>Tags</th><th>ID</th><th>Size</th><th>Created (UTC)</th><th></th></tr></thead><tbody>${rows}</tbody></table>`);
+<p class="muted">Public images only: registry logins are not supported.</p>
+${pending.length ? html`<ul class="pulls">${pending}</ul>` : ''}
+<table><thead><tr><th>Tags</th><th>ID</th><th>Size</th><th>Created (UTC)</th></tr></thead><tbody>${rows}</tbody></table>`);
 }
 
 export function networksPage(ctx: PageCtx, list: any[]): string {
@@ -166,20 +199,35 @@ export function volumesPage(ctx: PageCtx, list: any[]): string {
 <table><thead><tr><th>Name</th><th>Driver</th><th>Created</th><th></th></tr></thead><tbody>${rows}</tbody></table>`);
 }
 
-export function proxyPage(ctx: PageCtx, rules: Rule[], status: { running: boolean; lastError: string | null }): string {
+export interface RuleStatus { target: string | null; cert: { notAfter: Date } | null }
+
+function ruleState(r: Rule, st: RuleStatus): Html {
+  if (!r.enabled) return html`off`;
+  const problems: Html[] = [];
+  if (st.target === 'missing') problems.push(html`<span class="error">no container named ${r.target_container}</span>`);
+  else if (st.target && st.target !== 'running') problems.push(html`<span class="error">target is ${st.target}</span>`);
+  if (r.tls) {
+    if (!st.cert) problems.push(html`<span class="warn">no certificate yet: DNS for ${r.hostname} must point at this host and ports 80 and 443 must be reachable from the internet; the kontainers log has the details</span>`);
+    else if (st.cert.notAfter.getTime() < Date.now()) problems.push(html`<span class="error">certificate expired ${st.cert.notAfter.toISOString().slice(0, 10)}</span>`);
+    else problems.push(html`certificate valid until ${st.cert.notAfter.toISOString().slice(0, 10)}`);
+  }
+  return html`on${problems.length ? html`<br><small>${problems.map((p, i) => html`${i ? html`; ` : ''}${p}`)}</small>` : ''}`;
+}
+
+export function proxyPage(ctx: PageCtx, rules: Rule[], status: { running: boolean; lastError: string | null }, ruleStatus: (r: Rule) => RuleStatus = () => ({ target: null, cert: null })): string {
   if (!ctx.proxyEnabled) {
     return layout('Proxy', ctx, html`<p>The proxy is off. Start kontainers with <code>KONTAINERS_PROXY=1</code> and publish ports 80 and 443
 to route domains to containers with automatic HTTPS. See the README.</p>`);
   }
   const rows = rules.map(r => html`<tr><td>${r.tls ? 'https' : 'http'}://${r.hostname}${r.path === '/' ? '' : r.path}</td>
-<td>${r.target_container}:${r.target_port}</td><td>${r.enabled ? 'on' : 'off'}</td>
+<td>${r.target_container}:${r.target_port}</td><td>${ruleState(r, ruleStatus(r))}</td>
 <td class="actions">${post(ctx, `/proxy/${r.id}/toggle`, r.enabled ? 'Disable' : 'Enable')}
 ${post(ctx, `/proxy/${r.id}/remove`, 'Remove', { confirm: `Remove the rule for ${r.hostname}?`, cls: 'danger' })}</td></tr>`);
   return layout('Proxy', ctx, html`
 <p>Proxy: ${status.running ? 'running' : 'not running'}${status.lastError ? html` <span class="error">${status.lastError}</span>` : ''}</p>
 <form method="post" action="/proxy" class="stack">${csrfField(ctx)}
   <label>Hostname <input name="hostname" required placeholder="app.example.com"></label>
-  <label>Path prefix <input name="path" value="/"></label>
+  <label>Path prefix (sent to the container unchanged) <input name="path" value="/"></label>
   <label>Target container <input name="targetContainer" required placeholder="container name"></label>
   <label>Target port <input name="targetPort" type="number" min="1" max="65535" required></label>
   <label><input type="checkbox" name="tls" checked> HTTPS with an automatic certificate</label>

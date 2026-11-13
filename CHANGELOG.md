@@ -13,7 +13,10 @@ let unauthenticated requests control Docker. Stop and remove it.
 - Listens on 127.0.0.1 by default; refuses plain-HTTP non-loopback binds outside the image.
 - Containers, images, networks and volumes. Host bind mounts off by default; published ports
   default to 127.0.0.1.
-- Proxy rules from hostname and path to a container port, with ACME certificates.
+- Proxy rules from hostname and path to a container port, with ACME certificates. Targets that
+  compose recreates are reconnected; the Proxy page shows target state and certificate expiry.
+- Containers are never force-removed; paused containers can be unpaused; a container that fails to
+  start is not left behind. Commands use shell quoting without a shell.
 - `compose.yaml` using docker-socket-proxy.
 - `kontainers backup FILE`, `/healthz`, `/readyz`.
 - Test suites: unit, API against dind, image, Playwright, and proxy against Pebble.

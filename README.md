@@ -12,8 +12,10 @@ accepted any login and must not be used.
 
 What works, and is covered by the test suites below:
 
-- containers: list, inspect, create, start, stop, restart, remove, logs
-- images: list, pull, remove
+- containers: list, inspect, create, start, stop, restart, unpause, remove (stopped containers
+  only; kontainers never force-removes), logs. Commands are split with shell quoting
+  (`sh -c "echo hi; sleep 60"`) but no shell runs and nothing is expanded.
+- images: list, pull (public images; registry logins are not supported), remove, per tag
 - networks and volumes: list, create, remove
 - proxy rules: hostname and path prefix to a container port, HTTPS with a certificate obtained
   automatically, or plain HTTP; enable, disable, remove; kept across restarts
@@ -40,7 +42,9 @@ What kontainers does about it:
   password, ends them. Passwords are hashed with argon2id.
 - Every state change is a POST that needs a per-session CSRF token and a same-origin `Origin` /
   `Sec-Fetch-Site`. Requests with an unknown `Host` are refused, to stop DNS rebinding.
-- Login and setup are limited to 5 failures per 15 minutes per client address and per username.
+- Login is limited, per 15 minutes, to 5 failures per username and 20 per client address (the
+  higher address limit is because everyone behind one SSH tunnel or proxy shares an address).
+  Setup is limited to 5 wrong tokens per address.
   `X-Forwarded-For` is only read from addresses listed in `KONTAINERS_TRUSTED_PROXIES`.
 - Container creation only sends image, name, command, environment, port bindings, named volumes
   and restart policy to Docker. Host paths as volumes are refused unless
@@ -91,16 +95,26 @@ to be public: they serve the sites you route, not the kontainers UI.
 
     docker run -d --name kontainers --restart unless-stopped \
       -p 127.0.0.1:8080:8080 -p 80:80 -p 443:443 \
-      -e KONTAINERS_PROXY=1 -e KONTAINERS_ACME_EMAIL=you@example.com \
+      -e KONTAINERS_PROXY=1 -e KONTAINERS_ACME_EMAIL=REPLACE-WITH-YOUR-EMAIL \
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
       ataiva/kontainers:0.2.0
 
+Use your own email address: Let's Encrypt rejects reserved domains such as example.com, and
+kontainers refuses to start with one.
+
 Point the domain's DNS at the host, then add a rule on the Proxy page: hostname, optional path
 prefix, target container name and port. kontainers connects the target container to the
 `kontainers-proxy` network and Caddy reaches it by name; the target does not need to publish a
-port. With HTTPS on, Caddy obtains a certificate from Let's Encrypt over HTTP-01 or TLS-ALPN-01,
+port. Every 10 seconds kontainers reconnects targets that left the network, which is what
+`docker compose up` does when it recreates a container. The path prefix is matched but not
+removed: a rule for `/api` sends `/api/users` to the container as `/api/users`.
+
+The Proxy page shows, for each rule, whether its target container exists and is running and,
+for HTTPS rules, when its certificate expires or that there is none yet. A missing certificate
+usually means DNS does not point at this host or ports 80 and 443 are not reachable; the
+kontainers log has Caddy's error. With HTTPS on, Caddy obtains a certificate from Let's Encrypt over HTTP-01 or TLS-ALPN-01,
 redirects HTTP to HTTPS, and renews the certificate before it expires: Caddy follows the renewal
 window the CA suggests, or renews when a third of the lifetime is left. Certificates are stored in
 the data volume. Adding the first HTTPS rule to a running kontainers restarts Caddy, which is

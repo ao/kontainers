@@ -30,6 +30,10 @@ button.danger { color: var(--danger); }
 button.link { border: 0; padding: 0; color: var(--accent); }
 .actions form { margin-right: .3rem; }
 .flash { color: var(--ok); }
+.muted { color: var(--muted); }
+.warn { color: #b45309; }
+div.actions { margin: .8rem 0; }
+ul.pulls { margin: 0 0 1rem; }
 .error { color: var(--danger); }
 .state.running { color: var(--ok); }
 .state.exited, .state.dead { color: var(--muted); }
@@ -49,18 +53,23 @@ document.addEventListener('submit', function (e) {
   if (!pre) return;
   var url = pre.getAttribute('data-logs');
   var follow = document.getElementById('follow');
+  var gone = false;
+  // Terminal colour and cursor codes are removed; the text is shown as plain text.
+  var ansi = /\\u001b\\[[0-9;?]*[A-Za-z]|\\u001b\\][^\\u0007]*\\u0007/g;
   function load() {
     fetch(url, { credentials: 'same-origin' }).then(function (r) {
+      if (r.status === 404) { gone = true; throw new Error('the container no longer exists'); }
+      if (r.status === 401) { gone = true; throw new Error('your session has ended; reload the page to log in'); }
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.text();
     }).then(function (t) {
       var atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
-      pre.textContent = t || '(no output)';
+      pre.textContent = t.replace(ansi, '') || '(no output)';
       if (atEnd) pre.scrollTop = pre.scrollHeight;
     }).catch(function (err) { pre.textContent = 'could not load logs: ' + err.message; });
   }
   load();
-  setInterval(function () { if (follow && follow.checked && !document.hidden) load(); }, 2000);
+  setInterval(function () { if (!gone && follow && follow.checked && !document.hidden) load(); }, 2000);
 })();
 `;
 

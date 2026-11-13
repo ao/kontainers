@@ -2,7 +2,8 @@ import { describe, expect, test } from 'bun:test';
 import { loadConfig } from '../../src/config';
 import { clientIp, containerSpec, splitArgs, hostAllowed, normalizeIp, parseCookies, parsePort, parseVolume, sameOrigin } from '../../src/server';
 import { demux } from '../../src/docker';
-import { esc, html, raw } from '../../src/views';
+import { esc, html, raw, formatPorts, containersPage, containerPage, imagesPage, proxyPage, loginPage, setupPage } from '../../src/views';
+import type { Rule } from '../../src/proxy';
 
 const local = loadConfig({});
 const pub = loadConfig({ KONTAINERS_PUBLIC_URL: 'https://k.example.com', KONTAINERS_LISTEN: '0.0.0.0:8080' });
@@ -85,6 +86,67 @@ describe('form parsing', () => {
   test('containerSpec', () => {
     const s = containerSpec({ image: ' nginx ', name: '', cmd: 'sh -c  true', env: 'A=1\r\n\nB=2', ports: '8081:80', volumes: '', restart: 'always' });
     expect(s).toEqual({ image: 'nginx', name: undefined, cmd: ['sh', '-c', 'true'], env: ['A=1', 'B=2'], ports: [{ hostIp: undefined, host: 8081, container: 80, protocol: 'tcp' }], volumes: [], restart: 'always' });
+  });
+});
+
+describe('pages', () => {
+  const ctx = { user: 'admin', csrf: 'tok', proxyEnabled: true };
+  const row = (State: string) => ({ Id: 'a'.repeat(64), Names: ['/web'], Image: 'nginx', State, Status: '', Ports: [] });
+  const buttons = (htmlText: string) => [...htmlText.matchAll(/<button[^>]*>([^<]+)<\/button>/g)].map(m => m[1]).filter(b => b !== 'Log out');
+
+  test('container actions follow the state; Remove only when stopped', () => {
+    expect(buttons(containersPage(ctx, [row('running')]))).toEqual(['Stop', 'Restart']);
+    expect(buttons(containersPage(ctx, [row('paused')]))).toEqual(['Unpause']);
+    expect(buttons(containersPage(ctx, [row('restarting')]))).toEqual(['Stop']);
+    for (const s of ['exited', 'created', 'dead']) expect(buttons(containersPage(ctx, [row(s)]))).toEqual(['Start', 'Remove']);
+  });
+
+  test('detail page actions return to the detail page, except remove', () => {
+    const page = containerPage(ctx, { Id: 'b'.repeat(64), Name: '/web', State: { Status: 'exited', StartedAt: '0001-01-01T00:00:00Z', ExitCode: 42 }, Config: {}, HostConfig: {} });
+    expect(page).toContain('<dd>never</dd>');
+    expect(page).toContain('<dt>Exit code</dt><dd>42</dd>');
+    expect(page).toMatch(/action="\/containers\/b+\/start"[^>]*>.*name="back" value="detail"/s);
+    expect(page).not.toMatch(/\/remove"[^>]*>(?:(?!<\/form>).)*name="back"/s);
+  });
+
+  test('ports published on all interfaces are listed once', () => {
+    expect(formatPorts([
+      { IP: '0.0.0.0', PublicPort: 9001, PrivatePort: 81, Type: 'udp' }, { IP: '::', PublicPort: 9001, PrivatePort: 81, Type: 'udp' },
+      { IP: '127.0.0.1', PublicPort: 8080, PrivatePort: 80, Type: 'tcp' }, { IP: '::1', PublicPort: 9100, PrivatePort: 80, Type: 'tcp' },
+      { PrivatePort: 5432, Type: 'tcp' },
+    ])).toBe('*:9001->81/udp, 127.0.0.1:8080->80/tcp, [::1]:9100->80/tcp');
+  });
+
+  test('each tag of a multi-tag image has its own Remove', () => {
+    const page = imagesPage(ctx, [{ Id: 'sha256:' + 'c'.repeat(64), RepoTags: ['alpine:3.20', 'me/tool:1.0'], Size: 1e7, Created: 0 }]);
+    expect([...page.matchAll(/name="ref" value="([^"]+)"/g)].map(m => m[1])).toEqual(['alpine:3.20', 'me/tool:1.0']);
+    expect(page).toContain('Remove the tag me/tool:1.0?');
+  });
+
+  test('images page lists pulls still running and failed ones', () => {
+    const page = imagesPage(ctx, [], [{ ref: 'postgres:17', state: 'pulling' }, { ref: 'x:1', state: 'failed', error: 'denied' }]);
+    expect(page).toContain('postgres:17: pulling');
+    expect(page).toContain('failed: denied');
+  });
+
+  test('proxy page reports targets and certificates', () => {
+    const r = (o: Partial<Rule>): Rule => ({ id: 1, hostname: 'a.test', path: '/', target_container: 'web', target_port: 80, tls: true, enabled: true, created_at: 0, ...o });
+    const page = proxyPage(ctx, [r({ id: 1 }), r({ id: 2, hostname: 'b.test', target_container: 'gone', tls: false }), r({ id: 3, hostname: 'c.test', target_container: 'db' })], { running: true, lastError: null },
+      rule => rule.id === 1 ? { target: 'running', cert: { notAfter: new Date('2099-01-02') } }
+        : rule.id === 2 ? { target: 'missing', cert: null } : { target: 'exited', cert: null });
+    expect(page).toContain('certificate valid until 2099-01-02');
+    expect(page).toContain('no container named gone');
+    expect(page).toContain('target is exited');
+    expect(page).toContain('no certificate yet');
+    expect(page).toContain('sent to the container unchanged');
+  });
+
+  test('failed login and setup keep what was typed, never the password', () => {
+    expect(loginPage({ username: 'adm"in', error: 'x' })).toContain('value="adm&quot;in"');
+    const s = setupPage({ token: 'tok123', username: 'admin' });
+    expect(s).toContain('value="tok123"');
+    expect(s).toContain('value="admin"');
+    expect(s).not.toMatch(/type="password"[^>]*value=/);
   });
 });
 

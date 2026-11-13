@@ -68,5 +68,8 @@ export function migrate(db: Database): void {
 
 // Consistent online snapshot of the database.
 export function snapshot(db: Database, dest: string): void {
-  db.query('VACUUM INTO ?').run(dest);
+  // The copy holds password hashes and live session data: create it private, not with the umask.
+  const old = process.umask(0o077);
+  try { db.query('VACUUM INTO ?').run(dest); } finally { process.umask(old); }
+  chmodSync(dest, 0o600);
 }

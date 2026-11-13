@@ -84,6 +84,28 @@ describe.skipIf(!URL_)('proxy with ACME', () => {
     await until('app.test to come back', async () => ((await https('app.test')).status === 200 ? true : null), 30000);
   }, 60000);
 
+  test('the Proxy page shows the certificate expiry', async () => {
+    const page = await c.page('/proxy');
+    expect(page).toMatch(/certificate valid until \d{4}-\d{2}-\d{2}/);
+  });
+
+  test('a target recreated under the same name (as docker compose up does) is reconnected', async () => {
+    expect((await dockerSock('DELETE', '/containers/web?force=1')).status).toBe(204);
+    await until('the page to report the missing target', async () => ((await c.page('/proxy')).includes('no container named web') ? true : null), 20000);
+    const r = await c.submit('/containers', {
+      image: 'busybox:1.36', name: 'web', start: 'on',
+      cmd: 'sh -c "mkdir /w && echo hello-again > /w/index.html && exec httpd -f -p 8000 -h /w"',
+    });
+    expect(r.error).toBe('');
+    // Nothing re-adds the rule: the reconcile loop puts the new container on the proxy network.
+    const body = await until('plain.test to route to the new container', async () => {
+      const x = await fetch(`http://plain.test:${HTTP}/`);
+      return x.status === 200 ? x.text() : null;
+    }, 30000);
+    expect(body).toContain('hello-again');
+    expect(await c.page('/proxy')).not.toContain('no container named web');
+  }, 60000);
+
   test('a rule for a container that does not exist is refused and not saved', async () => {
     const r = await c.submit('/proxy', { hostname: 'ghost.test', path: '/', targetContainer: 'ghost', targetPort: '80' });
     expect(r.error.toLowerCase()).toContain('no such container');
@@ -94,7 +116,7 @@ describe.skipIf(!URL_)('proxy with ACME', () => {
     expect((await dockerSock('POST', '/containers/kontainers/restart?t=10')).status).toBe(204);
     await until('kontainers to come back', async () => ((await fetch(URL_ + '/healthz')).ok ? true : null), 30000);
     const body = await until('app.test after restart', async () => { const r = await https('app.test'); return r.status === 200 ? r.text() : null; }, 30000);
-    expect(body).toContain('hello-proxy');
+    expect(body).toMatch(/hello-(proxy|again)/);
     expect(await c.page('/proxy')).toContain('app.test'); // the session survived too
   }, 90000);
 });

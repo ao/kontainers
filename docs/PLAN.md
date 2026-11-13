@@ -5,8 +5,15 @@ Based on `docs/ASSESSMENT.md`.
 ## Status (2026-11-13)
 
 Done, with tests, on the rewrite branch: 1.1, 1.2, 2.1-2.7, 3.1-3.4, 4.1-4.4, 5 (README, licence,
-CI). Latest runs in containers: 119 unit, 52 API, 4 image, 9 proxy/ACME, 3 renewal (two runs). The 8
-browser tests and the compose check were last run before the renewal change and were not rerun.
+CI). Latest run, every suite in containers: 128 unit, 57 API, 4 image, 8 browser, 11 proxy/ACME,
+3 renewal, and the compose check pass.
+
+An exploratory run against a busy Docker 29 host (compose stacks, paused and crash-looping
+containers, TTY and ANSI output, multi-tag images) found problems the suites did not; fixed with
+tests: routes lost when compose recreated a target, an unstartable container left behind, no way to
+unpause, forced removal of running containers, proxy status stuck on an old crash, no target or
+certificate status, a world-readable backup file, one address-wide login lockout for everyone behind
+a tunnel, quoted commands split on spaces, example.com ACME contacts, and several display issues.
 
 Differences from the plan as written:
 

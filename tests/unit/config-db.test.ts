@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import { mkdtempSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { bindProblem, loadConfig } from '../../src/config';
+import { acmeEmail, bindProblem, loadConfig } from '../../src/config';
 import { MIGRATIONS, migrate, openDb, schemaVersion, snapshot } from '../../src/db';
 
 describe('config', () => {
@@ -36,6 +36,13 @@ describe('config', () => {
     expect(() => loadConfig({ KONTAINERS_LISTEN: '127.0.0.1:99999' })).toThrow();
     expect(() => loadConfig({ KONTAINERS_PUBLIC_URL: 'ftp://x' })).toThrow();
     expect(() => loadConfig({ KONTAINERS_HTTP_PORT: 'abc' })).toThrow();
+  });
+  test('ACME contact: reserved domains are refused at start', () => {
+    expect(acmeEmail(undefined)).toBeNull();
+    expect(acmeEmail('ops@ataiva.com')).toBe('ops@ataiva.com');
+    for (const bad of ['you@example.com', 'a@EXAMPLE.org', 'a@sub.example.net', 'a@x.test', 'a@b.invalid']) expect(() => acmeEmail(bad)).toThrow('reserved');
+    for (const bad of ['REPLACE-WITH-YOUR-EMAIL', 'a@b', 'a@localhost', 'a b@c.com']) expect(() => acmeEmail(bad)).toThrow('email address');
+    expect(() => loadConfig({ KONTAINERS_ACME_EMAIL: 'you@example.com' })).toThrow();
   });
   test('public URL is reduced to its origin', () => {
     expect(loadConfig({ KONTAINERS_PUBLIC_URL: 'https://k.example.com/some/path' }).publicUrl).toBe('https://k.example.com');
@@ -75,6 +82,7 @@ describe('db', () => {
     const out = join(d, 'snap.db');
     snapshot(db, out);
     expect(existsSync(out)).toBe(true);
+    expect(statSync(out).mode & 0o777).toBe(0o600); // it holds password hashes and sessions
     const copy = new Database(out, { readonly: true });
     expect((copy.query('SELECT username FROM users').get() as { username: string }).username).toBe('x');
     expect(schemaVersion(copy)).toBe(MIGRATIONS.length);

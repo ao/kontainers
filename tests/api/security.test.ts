@@ -124,7 +124,8 @@ describe('with an account', () => {
     const a = await new Client(srv.base).post('/login', { username: 'admin', password: 'definitely wrong' }, { csrf: false });
     const b = await new Client(srv.base).post('/login', { username: 'nosuchuser', password: 'definitely wrong' }, { csrf: false });
     expect(a.status).toBe(b.status);
-    const [ta, tb] = [await a.text(), await b.text()];
+    // Identical apart from the username the form is re-filled with.
+    const [ta, tb] = [(await a.text()).replace('value="admin"', 'value=""'), (await b.text()).replace('value="nosuchuser"', 'value=""')];
     expect(ta).toBe(tb);
   });
 
@@ -208,22 +209,31 @@ describe('login rate limiting', () => {
       const r = await bad('10.9.9.200');
       expect(r.status).toBe(429);
       expect(Number(r.headers.get('retry-after'))).toBeGreaterThan(0);
-      // The limit is on the socket address too, so the correct password for another account is also held off.
-      const right = await new Client(srv.base).post('/login', { username: 'admin', password: PW }, { csrf: false, headers: { 'x-forwarded-for': '1.2.3.4' } });
-      expect(right.status).toBe(429);
+      // Another user behind the same address (one SSH tunnel) can still log in...
+      expect((await new Client(srv.base).post('/login', { username: 'admin', password: PW }, { csrf: false })).status).toBe(303);
       expect(srv.output()).not.toContain('wrong password!!');
     } finally { await srv.stop(); }
   });
+
+  test('20 failures from one address block that address for every username', async () => {
+    const { srv } = await readyServer();
+    try {
+      const x = new Client(srv.base);
+      for (let i = 0; i < 20; i++) expect((await x.post('/login', { username: `spray${i}`, password: 'wrong password!!' }, { csrf: false })).status).toBe(401);
+      expect((await x.post('/login', { username: 'spray99', password: 'wrong password!!' }, { csrf: false })).status).toBe(429);
+      expect((await new Client(srv.base).post('/login', { username: 'admin', password: PW }, { csrf: false })).status).toBe(429);
+    } finally { await srv.stop(); }
+  }, 60000);
 
   test('with a trusted proxy, limits are per forwarded client', async () => {
     const { srv } = await readyServer({ KONTAINERS_TRUSTED_PROXIES: '127.0.0.1' });
     try {
       const x = new Client(srv.base);
-      for (let i = 0; i < 5; i++) await x.post('/login', { username: `u${i}`, password: 'wrong password!!' }, { csrf: false, headers: { 'x-forwarded-for': '203.0.113.7' } });
-      expect((await x.post('/login', { username: 'u9', password: 'wrong password!!' }, { csrf: false, headers: { 'x-forwarded-for': '203.0.113.7' } })).status).toBe(429);
+      for (let i = 0; i < 20; i++) await x.post('/login', { username: `u${i}`, password: 'wrong password!!' }, { csrf: false, headers: { 'x-forwarded-for': '203.0.113.7' } });
+      expect((await x.post('/login', { username: 'u99', password: 'wrong password!!' }, { csrf: false, headers: { 'x-forwarded-for': '203.0.113.7' } })).status).toBe(429);
       expect((await x.post('/login', { username: 'admin', password: PW }, { csrf: false, headers: { 'x-forwarded-for': '203.0.113.8' } })).status).toBe(303);
     } finally { await srv.stop(); }
-  });
+  }, 60000);
 });
 
 describe('HTTPS deployment', () => {

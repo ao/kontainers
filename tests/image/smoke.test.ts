@@ -31,6 +31,7 @@ describe.skipIf(!URL_)('image', () => {
     let logs = '';
     for (let i = 0; i < 20 && !logs.includes('smoke-ok'); i++) { logs = await (await c.get('/api/containers/smoke/logs')).text(); await Bun.sleep(200); }
     expect(logs).toContain('smoke-ok');
+    expect((await c.submit('/containers/smoke/stop', {})).error).toBe('');
     expect((await c.submit('/containers/smoke/remove', {})).error).toBe('');
   });
 

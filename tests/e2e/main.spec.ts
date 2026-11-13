@@ -73,8 +73,13 @@ test('pull an image, create a container, read its logs, stop and remove it', asy
   await expect(page.locator('#logs')).toContainText('hello-e2e');
   await expect(page.getByText('MODE=…')).toBeVisible();
 
+  // Running containers offer no Remove; Stop keeps you on the detail page.
+  await expect(page.getByRole('button', { name: 'Remove' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Stop' }).click();
   await expect(page.getByRole('status')).toContainText('Done');
+  await expect(page.getByRole('heading', { name: 'e2e-web' })).toBeVisible();
+  await expect(page.locator('dl.facts')).toContainText('exited');
+  await page.getByRole('link', { name: 'Containers' }).click();
   await expect(page.locator('tr[data-name="e2e-web"]')).toContainText('exited');
 
   // Cancelling the confirm prompt keeps the container.

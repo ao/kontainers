@@ -38,6 +38,9 @@ const server = Bun.serve({
   hostname: cfg.host,
   port: cfg.port,
   maxRequestBodySize: 1024 * 1024,
+  // Bun's default of 10 s drops the connection while a Docker call is still waiting (an unreachable
+  // daemon, a 20 s image pull); the longest, 255 s, lets those finish with a page instead.
+  idleTimeout: 255,
   fetch(req, srv) {
     return handler(req, srv.requestIP(req)?.address ?? '');
   },

@@ -3,13 +3,17 @@
 // The config is generated from validated, structured fields; there is no free-form proxy config.
 
 import type { Database } from 'bun:sqlite';
-import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { hostname as osHostname } from 'node:os';
+import { X509Certificate } from 'node:crypto';
 import type { Config } from './config';
 import type { Docker } from './docker';
 import { DockerError } from './docker';
 import * as v from './validate';
+
+// How often targets are re-checked. KONTAINERS_PROXY_RECONCILE_MS exists for the tests only.
+const RECONCILE_MS = Number(process.env.KONTAINERS_PROXY_RECONCILE_MS) || 10000;
 
 export interface Rule {
   id: number;
@@ -151,10 +155,54 @@ export class ProxyManager {
 
   get running(): boolean { return this.proc !== null && this.proc.exitCode === null; }
 
+  // Target container name -> Docker state ("running", "exited", ..., or "missing"), from the last reconcile.
+  targetState = new Map<string, string>();
+  private timer: ReturnType<typeof setInterval> | null = null;
+
   async start(): Promise<void> {
     if (!this.cfg.proxy.enabled) return;
     await this.ensureNetwork();
     this.spawn();
+    const tick = () => void this.reconcile().catch(e => console.error(`kontainers: proxy check failed: ${(e as Error).message}`));
+    tick();
+    this.timer = setInterval(tick, RECONCILE_MS);
+  }
+
+  // docker compose up recreates a container under the same name with a new ID, which is not on the
+  // proxy network, so its route would fail. Every RECONCILE_MS, reconnect running targets that are
+  // missing from the network, and record each target's state for the Proxy page.
+  async reconcile(): Promise<void> {
+    if (!this.cfg.proxy.enabled) return;
+    const rules = this.store.list().filter(r => r.enabled);
+    const [containers, net] = await Promise.all([this.docker.listContainers(), this.docker.inspectNetwork(this.cfg.proxy.network)]);
+    const byName = new Map<string, string>();
+    for (const c of containers) for (const n of c.Names || []) byName.set(String(n).replace(/^\//, ''), c.State);
+    const attached = new Set(Object.values(net?.Containers || {}).map((x: any) => x.Name));
+    const state = new Map<string, string>();
+    for (const r of rules) {
+      const s = byName.get(r.target_container) ?? 'missing';
+      state.set(r.target_container, s);
+      if (s === 'running' && !attached.has(r.target_container)) {
+        try {
+          await this.attach(r.target_container);
+          console.log(`kontainers: reconnected ${r.target_container} to ${this.cfg.proxy.network}`);
+        } catch (e) { console.error(`kontainers: cannot connect ${r.target_container} to ${this.cfg.proxy.network}: ${(e as Error).message}`); }
+      }
+    }
+    this.targetState = state;
+  }
+
+  // The certificate Caddy holds for a hostname, if any. Caddy stores <issuer>/<host>/<host>.crt.
+  certificate(host: string): { notAfter: Date } | null {
+    const root = join(this.cfg.dataDir, 'caddy', 'certificates');
+    const name = host.replace(/^\*/, 'wildcard_');
+    try {
+      for (const issuer of readdirSync(root)) {
+        const f = join(root, issuer, name, `${name}.crt`);
+        if (existsSync(f)) return { notAfter: new Date(new X509Certificate(readFileSync(f, 'utf8')).validTo) };
+      }
+    } catch { /* no certificates yet */ }
+    return null;
   }
 
   private caddyEnv(): Record<string, string> {
@@ -180,6 +228,10 @@ export class ProxyManager {
       },
     });
     this.proc = proc;
+    // A crash is reported until the restarted process has stayed up for a few seconds.
+    setTimeout(() => {
+      if (this.proc === proc && proc.exitCode === null && this.lastError?.startsWith('proxy exited')) { this.lastError = null; this.restarts = 0; }
+    }, 5000);
   }
 
   // Caddy did not renew certificates for a TLS policy that was added to a process started without
@@ -202,6 +254,7 @@ export class ProxyManager {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    if (this.timer) clearInterval(this.timer);
     if (this.proc) { this.proc.kill('SIGTERM'); await this.proc.exited; }
   }
 

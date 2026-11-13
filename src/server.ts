@@ -191,7 +191,12 @@ function errorMessage(e: unknown): string {
 
 export function createHandler(d: Deps): Handler {
   const { cfg, db, auth, docker, rules, proxy } = d;
-  const limiter = d.limiter ?? new RateLimiter();
+  // 5 failures per username, 20 per client address, per 15 minutes. The address limit is higher
+  // because everyone behind one SSH tunnel or proxy shares an address.
+  const limiter = d.limiter ?? new RateLimiter(5);
+  const ipLimiter = new RateLimiter(20);
+  // Pulls that outlived the request (see /images/pull), shown on the Images page.
+  const pulls = new Map<string, { state: 'pulling' | 'failed'; error?: string; at: number }>();
   const secure = !!cfg.publicUrl?.startsWith('https:');
   const cookieName = secure ? COOKIE_SECURE : COOKIE_PLAIN;
   const flashes = new Map<string, { flash?: string; error?: string }>();
@@ -224,16 +229,18 @@ export function createHandler(d: Deps): Handler {
   async function login(req: Request, ip: string, cookieId: string | undefined): Promise<Response> {
     const f = await readForm(req);
     const user = String(f.username || '').toLowerCase().slice(0, 64);
-    const keys = [`ip:${ip}`, `user:${user}`];
-    const wait = limiter.blocked(...keys);
-    if (wait > 0) return page(views.loginPage({ error: `Too many failed attempts. Try again in ${Math.ceil(wait / 60)} minutes.` }), 429, { 'retry-after': String(wait) });
+    const typed = typeof f.username === 'string' ? f.username.slice(0, 64) : '';
+    const wait = Math.max(limiter.blocked(`user:${user}`), ipLimiter.blocked(`ip:${ip}`));
+    if (wait > 0) return page(views.loginPage({ username: typed, error: `Too many failed attempts. Try again in ${Math.ceil(wait / 60)} minutes.` }), 429, { 'retry-after': String(wait) });
     const u = await auth.verifyLogin(f.username, f.password);
     if (!u) {
-      limiter.fail(...keys);
+      limiter.fail(`user:${user}`);
+      ipLimiter.fail(`ip:${ip}`);
       audit(null, 'login-failed', user, ip);
-      return page(views.loginPage({ error: 'Wrong username or password.' }), 401);
+      return page(views.loginPage({ username: typed, error: 'Wrong username or password.' }), 401);
     }
-    limiter.reset(...keys);
+    limiter.reset(`user:${user}`);
+    ipLimiter.reset(`ip:${ip}`);
     const old = cookieId ? auth.getSession(cookieId) : null;
     if (old) auth.destroySession(old.idHash); // never reuse a session id across a login
     const { id } = auth.createSession(u);
@@ -254,7 +261,8 @@ export function createHandler(d: Deps): Handler {
     } catch (e) {
       if (errorStatus(e) === 403) limiter.fail(`setup:${ip}`);
       if (!auth.needsSetup()) return redirect('/login');
-      return page(views.setupPage({ error: errorMessage(e) }), errorStatus(e));
+      const keep = { token: typeof f.token === 'string' ? f.token.slice(0, 100) : '', username: typeof f.username === 'string' ? f.username.slice(0, 64) : '' };
+      return page(views.setupPage({ error: errorMessage(e), ...keep }), errorStatus(e));
     }
   }
 
@@ -280,10 +288,20 @@ export function createHandler(d: Deps): Handler {
       if (p === '/containers/new') return page(views.newContainerPage(ctx(s), cfg.allowBindMounts));
       if ((r = /^\/containers\/([^/]+)$/.exec(p))) return page(views.containerPage(ctx(s), await docker.inspect(r[1])));
       if ((r = /^\/api\/containers\/([^/]+)\/logs$/.exec(p))) return text(await docker.logs(r[1], v.intInRange(url.searchParams.get('tail'), 1, 10000, 200)));
-      if (p === '/images') return page(views.imagesPage(ctx(s), await docker.listImages()));
+      if (p === '/images') {
+        for (const [k, j] of pulls) if (j.state === 'failed' && Date.now() - j.at > 30 * 60 * 1000) pulls.delete(k);
+        return page(views.imagesPage(ctx(s), await docker.listImages(), [...pulls].map(([ref, j]) => ({ ref, ...j }))));
+      }
       if (p === '/networks') return page(views.networksPage(ctx(s), await docker.listNetworks()));
       if (p === '/volumes') return page(views.volumesPage(ctx(s), await docker.listVolumes()));
-      if (p === '/proxy') return page(views.proxyPage(ctx(s), rules.list(), { running: proxy.running, lastError: proxy.lastError }));
+      if (p === '/proxy') {
+        const list = rules.list();
+        const status = (r: (typeof list)[number]) => ({
+          target: proxy.targetState.get(r.target_container) ?? null,
+          cert: r.tls ? proxy.certificate(r.hostname) : null,
+        });
+        return page(views.proxyPage(ctx(s), list, { running: proxy.running, lastError: proxy.lastError }, status));
+      }
       if (p === '/settings') return page(views.settingsPage(ctx(s), auth.listUsers(), s.user.id));
       if (p === '/api/backup') { audit(s, 'backup', null, ip); return backup(); }
       return text('not found\n', 404);
@@ -305,22 +323,50 @@ export function createHandler(d: Deps): Handler {
         const spec = containerSpec(f);
         if (f.pull) await docker.pull(spec.image);
         const { Id } = await docker.create(spec);
-        if (f.start) await docker.start(Id);
+        if (f.start) {
+          try {
+            await docker.start(Id);
+          } catch (e) {
+            // Do not leave a created-but-unstartable container behind holding the name.
+            await docker.remove(Id, true).catch(() => {});
+            throw new v.ValidationError(`could not start the container, so it was not kept: ${errorMessage(e)}`);
+          }
+        }
         return `Created ${spec.name || Id.slice(0, 12)}.`;
       });
     }
-    if ((r = /^\/containers\/([^/]+)\/(start|stop|restart|remove)$/.exec(p))) {
+    if ((r = /^\/containers\/([^/]+)\/(start|stop|restart|unpause|remove)$/.exec(p))) {
       const [, id, op] = r;
       const back = op === 'remove' ? '/containers' : (f.back === 'detail' ? `/containers/${encodeURIComponent(id)}` : '/containers');
       return act(s, ip, back, `container-${op}`, id, async () => {
         if (op === 'start') await docker.start(id);
         else if (op === 'stop') await docker.stop(id);
         else if (op === 'restart') await docker.restart(id);
-        else await docker.remove(id, true);
+        else if (op === 'unpause') await docker.unpause(id);
+        else await docker.remove(id, false); // not forced: Docker refuses a running container
       });
     }
 
-    if (p === '/images/pull') return act(s, ip, '/images', 'image-pull', f.ref ?? null, async () => { await docker.pull(f.ref); return `Pulled ${f.ref}.`; });
+    if (p === '/images/pull') {
+      return act(s, ip, '/images', 'image-pull', f.ref ?? null, async () => {
+        const ref = v.image(f.ref);
+        if (pulls.get(ref)?.state === 'pulling') return `${ref} is already being pulled.`;
+        pulls.delete(ref);
+        // Wait up to 20 s; a longer pull carries on in the background and the Images page shows it.
+        let background = false;
+        const job = docker.pull(ref).then(() => { pulls.delete(ref); }, e => {
+          if (background) pulls.set(ref, { state: 'failed', error: errorMessage(e), at: Date.now() });
+          else pulls.delete(ref);
+          throw e;
+        });
+        pulls.set(ref, { state: 'pulling', at: Date.now() });
+        const done = await Promise.race([job.then(() => true), Bun.sleep(20000).then(() => false)]);
+        if (done) return `Pulled ${ref}.`;
+        background = true;
+        job.catch(() => { /* recorded in pulls */ });
+        return `Still pulling ${ref}. It is listed below while it runs; reload to see the result.`;
+      });
+    }
     if (p === '/images/remove') return act(s, ip, '/images', 'image-remove', f.ref ?? null, async () => { await docker.removeImage(f.ref); return `Removed ${f.ref}.`; });
 
     if (p === '/networks') return act(s, ip, '/networks', 'network-create', f.name ?? null, async () => { await docker.createNetwork(f.name); return `Created network ${f.name}.`; });
@@ -337,6 +383,7 @@ export function createHandler(d: Deps): Handler {
         await proxy.attach(String(f.targetContainer));
         const rule = rules.create(input);
         try { await proxy.apply(); } catch (e) { rules.remove(rule.id); await proxy.apply().catch(() => {}); throw e; }
+        await proxy.reconcile().catch(() => {});
         return `Added ${rule.hostname}${rule.path === '/' ? '' : rule.path}.`;
       });
     }
@@ -347,6 +394,7 @@ export function createHandler(d: Deps): Handler {
         if (!rule) throw Object.assign(new v.ValidationError('rule not found'), { status: 404 });
         if (op === 'toggle') rules.setEnabled(id, !rule.enabled); else rules.remove(id);
         await proxy.apply();
+        await proxy.reconcile().catch(() => {});
       });
     }
 

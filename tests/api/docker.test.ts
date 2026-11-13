@@ -65,9 +65,57 @@ describe.skipIf(!DOCKER)('docker flows', () => {
     expect((await c.submit(`/containers/${name}/start`, {})).error).toBe('');
     expect((await c.submit(`/containers/${name}/restart`, {})).error).toBe('');
     expect(((await (await dockerApi(`/containers/${name}/json`)).json()) as any).State.Running).toBe(true);
+    // A running container is not removed (no force); stopped, it is.
+    expect((await c.submit(`/containers/${name}/remove`, {})).error.toLowerCase()).toMatch(/running|stop/);
+    expect((await dockerApi(`/containers/${name}/json`)).status).toBe(200);
+    expect((await c.submit(`/containers/${name}/stop`, {})).error).toBe('');
     expect((await c.submit(`/containers/${name}/remove`, {})).error).toBe('');
     expect((await dockerApi(`/containers/${name}/json`)).status).toBe(404);
   }, 120000);
+
+  test('quoted commands run as typed', async () => {
+    const name = `k-${run}-q`;
+    expect((await c.submit('/containers', { image: IMAGE, name, cmd: `sh -c "echo 'quoted ok'; sleep 300"`, start: 'on' })).error).toBe('');
+    const insp = await (await dockerApi(`/containers/${name}/json`)).json() as any;
+    expect(insp.Config.Cmd).toEqual(['sh', '-c', "echo 'quoted ok'; sleep 300"]);
+    let logs = '';
+    for (let i = 0; i < 20 && !logs.includes('quoted ok'); i++) { logs = await (await c.get(`/api/containers/${name}/logs`)).text(); await Bun.sleep(200); }
+    expect(logs).toContain('quoted ok');
+    await dockerApi(`/containers/${name}?force=1`, { method: 'DELETE' });
+  });
+
+  test('a container that cannot start is not left behind', async () => {
+    const holder = `k-${run}-port1`, second = `k-${run}-port2`;
+    expect((await c.submit('/containers', { image: IMAGE, name: holder, cmd: 'sleep 300', ports: '18998:80', start: 'on' })).error).toBe('');
+    const r = await c.submit('/containers', { image: IMAGE, name: second, cmd: 'sleep 300', ports: '18998:80', start: 'on' });
+    expect(r.error).toContain('not kept');
+    expect(r.error.toLowerCase()).toContain('allocated');
+    expect((await dockerApi(`/containers/${second}/json`)).status).toBe(404);
+    // The name is free again: retrying with another port works.
+    expect((await c.submit('/containers', { image: IMAGE, name: second, cmd: 'sleep 300', ports: '18997:80', start: 'on' })).error).toBe('');
+    for (const n of [holder, second]) await dockerApi(`/containers/${n}?force=1`, { method: 'DELETE' });
+  });
+
+  test('a paused container can be unpaused', async () => {
+    const name = `k-${run}-p`;
+    expect((await c.submit('/containers', { image: IMAGE, name, cmd: 'sleep 300', start: 'on' })).error).toBe('');
+    expect((await dockerApi(`/containers/${name}/pause`, { method: 'POST' })).status).toBe(204);
+    const list = await c.page('/containers');
+    expect(list).toMatch(new RegExp(`data-name="${name}"[\\s\\S]*?/unpause`));
+    expect((await c.submit(`/containers/${name}/unpause`, {})).error).toBe('');
+    expect(((await (await dockerApi(`/containers/${name}/json`)).json()) as any).State.Status).toBe('running');
+    await dockerApi(`/containers/${name}?force=1`, { method: 'DELETE' });
+  });
+
+  test('removing one tag of a multi-tag image keeps the image', async () => {
+    const tag = `kontainers-test/extra:${run}`;
+    const [repo, t] = tag.split(':');
+    expect((await dockerApi(`/images/${IMAGE}/tag?repo=${encodeURIComponent(repo)}&tag=${t}`, { method: 'POST' })).status).toBe(201);
+    const r = await c.submit('/images/remove', { ref: tag });
+    expect(r.error).toBe('');
+    expect((await dockerApi(`/images/${encodeURIComponent(tag)}/json`)).status).toBe(404);
+    expect((await dockerApi(`/images/${IMAGE}/json`)).status).toBe(200);
+  });
 
   test('a container that is gone mid-flow gives 404 or a message, not a crash', async () => {
     expect((await c.get('/containers/doesnotexist')).status).toBe(404);

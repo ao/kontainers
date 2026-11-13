@@ -81,6 +81,7 @@ export class Docker {
   inspect(id: string) { return this.json<any>('GET', `/containers/${encodeURIComponent(v.ref(id))}/json`); }
   async start(id: string) { await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/start`); }
   async stop(id: string) { await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/stop?t=10`, undefined, 60000); }
+  async unpause(id: string) { await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/unpause`); }
   async restart(id: string) { await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/restart?t=10`, undefined, 60000); }
   async remove(id: string, force = false) {
     await this.req('DELETE', `/containers/${encodeURIComponent(v.ref(id))}?force=${force ? 1 : 0}&v=0`);

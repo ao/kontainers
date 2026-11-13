@@ -28,7 +28,7 @@ SOCKVOL=kontainers-dindsock-$ID
 
 cleanup() {
   if [ -n "${KEEP:-}" ]; then echo "KEEP set: left $DIND, $NET and $SOCKVOL running; remove them with docker rm -f / network rm / volume rm"; return; fi
-  docker rm -f "$APP" "$SOCKPROXY" "$DIND" >/dev/null 2>&1 || true
+  docker rm -f -v "$APP" "$SOCKPROXY" "$DIND" >/dev/null 2>&1 || true
   docker volume rm "$SOCKVOL" >/dev/null 2>&1 || true
   docker network rm "$NET" >/dev/null 2>&1 || true
 }
@@ -137,7 +137,7 @@ acme_stack() {
     -e DOCKER_HOST=unix:///var/run/docker.sock -e KONTAINERS_PROXY=1 \
     -e KONTAINERS_HTTP_PORT=5002 -e KONTAINERS_HTTPS_PORT=5001 \
     -e KONTAINERS_ACME_CA=https://pebble:14000/dir -e KONTAINERS_ACME_CA_ROOT=/etc/pebble-ca.pem \
-    -e KONTAINERS_ACME_EMAIL=test@example.com ${ACME_ENV:-} kontainers:test >/dev/null
+    -e KONTAINERS_ACME_EMAIL=ci@kontainers-ci.dev -e KONTAINERS_PROXY_RECONCILE_MS=2000 ${ACME_ENV:-} kontainers:test >/dev/null
   docker exec "$DIND" chmod 644 /tmp/pebble.minica.pem
   D cp /tmp/pebble.minica.pem kontainers:/etc/pebble-ca.pem
   D start kontainers >/dev/null

@@ -81,9 +81,9 @@ describe('buildCaddyConfig', () => {
   });
 
   test('ACME directory, email and trusted root come from config', () => {
-    const c2 = loadConfig({ KONTAINERS_PROXY: '1', KONTAINERS_ACME_CA: 'https://pebble:14000/dir', KONTAINERS_ACME_EMAIL: 'ops@example.com', KONTAINERS_ACME_CA_ROOT: '/pebble.pem' });
+    const c2 = loadConfig({ KONTAINERS_PROXY: '1', KONTAINERS_ACME_CA: 'https://pebble:14000/dir', KONTAINERS_ACME_EMAIL: 'ops@kontainers-ci.dev', KONTAINERS_ACME_CA_ROOT: '/pebble.pem' });
     const issuer = (buildCaddyConfig([rule({})], c2, '/s') as any).apps.tls.automation.policies[0].issuers[0];
-    expect(issuer).toEqual({ module: 'acme', ca: 'https://pebble:14000/dir', email: 'ops@example.com', trusted_roots_pem_files: ['/pebble.pem'] });
+    expect(issuer).toEqual({ module: 'acme', ca: 'https://pebble:14000/dir', email: 'ops@kontainers-ci.dev', trusted_roots_pem_files: ['/pebble.pem'] });
   });
 
   test('the renewal check interval is optional and passed to Caddy in seconds', () => {

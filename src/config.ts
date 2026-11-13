@@ -49,6 +49,18 @@ function int(name: string, v: string | undefined, dflt: number): number {
   return n;
 }
 
+// Let's Encrypt refuses reserved example domains as contacts and then never issues anything, so
+// catch a copied placeholder at start instead of in a retry loop in the log.
+export function acmeEmail(v: string | undefined): string | null {
+  if (!v) return null;
+  const m = /^[^@\s]+@([^@\s]+\.[^@\s]+)$/.exec(v);
+  if (!m) throw new Error(`KONTAINERS_ACME_EMAIL must be an email address, got "${v}"`);
+  if (/(^|\.)(example\.(com|net|org)|localhost|invalid|test|example)$/i.test(m[1])) {
+    throw new Error(`KONTAINERS_ACME_EMAIL uses the reserved domain ${m[1]}, which Let's Encrypt rejects; use your own address`);
+  }
+  return v;
+}
+
 function optionalInt(name: string, v: string | undefined, min: number, max: number): number | null {
   if (v === undefined || v === '') return null;
   const n = Number(v);
@@ -80,7 +92,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     proxy: {
       enabled: bool(env.KONTAINERS_PROXY),
       network: env.KONTAINERS_PROXY_NETWORK || 'kontainers-proxy',
-      acmeEmail: env.KONTAINERS_ACME_EMAIL || null,
+      acmeEmail: acmeEmail(env.KONTAINERS_ACME_EMAIL),
       acmeCa: env.KONTAINERS_ACME_CA || null,
       acmeCaRoot: env.KONTAINERS_ACME_CA_ROOT || null,
       acmeRenewCheck: optionalInt('KONTAINERS_ACME_RENEW_CHECK', env.KONTAINERS_ACME_RENEW_CHECK, 1, 86400),
