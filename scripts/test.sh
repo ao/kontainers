@@ -13,12 +13,12 @@
 #   scripts/test.sh screenshots  not a test: regenerates docs/screenshots/ and prints measured
 #                              image size, startup time and idle memory (not part of "all")
 #
-# Env: BUN_IMAGE (default oven/bun:1.3.1), CACHE_VOLUME (default kontainers-test-cache)
+# Env: BUN_IMAGE (default oven/bun:1.4.4, the image's Bun), CACHE_VOLUME (default kontainers-test-cache)
 set -eu
 
 cd "$(dirname "$0")/.."
 SUITE=${1:-all}
-BUN_IMAGE=${BUN_IMAGE:-oven/bun:1.3.1}
+BUN_IMAGE=${BUN_IMAGE:-oven/bun:1.4.4}
 CACHE=${CACHE_VOLUME:-kontainers-test-cache}
 ID=$$
 NET=kontainers-test-$ID
