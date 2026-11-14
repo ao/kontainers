@@ -10,6 +10,8 @@
 #   scripts/test.sh proxy      proxy rules and certificates against Pebble, all inside dind
 #   scripts/test.sh renewal    Pebble issues 90-second certificates; Caddy must renew them on its own
 #   scripts/test.sh compose    the README compose instructions, verbatim, inside dind
+#   scripts/test.sh screenshots  not a test: regenerates docs/screenshots/ and prints measured
+#                              image size, startup time and idle memory (not part of "all")
 #
 # Env: BUN_IMAGE (default oven/bun:1.3.1), CACHE_VOLUME (default kontainers-test-cache)
 set -eu
@@ -119,7 +121,9 @@ acme_stack() {
   docker save kontainers:test "$PEBBLE" "$CHALL" | D load -q >/dev/null
 
   D network create kt >/dev/null
-  docker exec "$DIND" mkdir -p /work
+  # A clean /work: in "all", proxy and renewal share one dind, and a second `docker cp tests`
+  # would nest the copy as /work/tests/tests, so bun would run both suites at once.
+  docker exec "$DIND" sh -c 'rm -rf /work && mkdir -p /work'
   t=$(D create "$PEBBLE")
   D cp "$t:/test/certs/pebble.minica.pem" - | docker exec -i "$DIND" tar -x -C /tmp
   D cp "$t:/test/config/pebble-config.json" - | docker exec -i "$DIND" tar -x -C /work
@@ -181,12 +185,14 @@ acme_driver() {
     echo "--- kontainers log"; D logs kontainers 2>&1 | tail -60 | cut -c1-400; echo "--- pebble log"; D logs pebble 2>&1 | tail -20 | cut -c1-300; exit $rc; fi
 }
 
-# Removes the kontainers, Pebble and DNS stub containers, the volume and the network, so the next
-# suite starts clean.
+# Removes every container, volume and network the suite made inside the throwaway dind (kontainers,
+# Pebble, the DNS stub, the targets the tests created, the proxy network), so the next suite starts
+# clean. Only the dind daemon is touched, never the host's.
 acme_teardown() {
-  D rm -f kontainers pebble challtestsrv >/dev/null 2>&1 || true
-  D volume rm kdata >/dev/null 2>&1 || true
-  D network rm kt >/dev/null 2>&1 || true
+  docker exec "$DIND" sh -c '
+    ids=$(docker ps -aq); [ -z "$ids" ] || docker rm -f -v $ids >/dev/null
+    vols=$(docker volume ls -q); [ -z "$vols" ] || docker volume rm $vols >/dev/null
+    nets=$(docker network ls -q --filter type=custom); [ -z "$nets" ] || docker network rm $nets >/dev/null' 2>&1 || true
 }
 
 if [ "$SUITE" = all ] || [ "$SUITE" = proxy ]; then
@@ -207,7 +213,8 @@ if [ "$SUITE" = all ] || [ "$SUITE" = compose ]; then
   # The README's compose instructions, verbatim, inside dind (so "127.0.0.1" is dind's loopback).
   docker image inspect kontainers:test >/dev/null 2>&1 || docker build -q -t kontainers:test . >/dev/null
   docker save kontainers:test | docker exec -i "$DIND" docker load -q >/dev/null
-  docker exec "$DIND" docker tag kontainers:test ataiva/kontainers:0.2.0
+  # Under the tag compose.yaml names, so compose runs this build instead of pulling.
+  docker exec "$DIND" docker tag kontainers:test "$(sed -n 's/^ *image: *\(ataiva\/kontainers:[^ ]*\).*/\1/p' compose.yaml | head -1)"
   docker exec "$DIND" mkdir -p /compose
   docker cp compose.yaml "$DIND:/compose/compose.yaml"
   C() { docker exec -w /compose "$DIND" docker compose "$@"; }
@@ -226,4 +233,50 @@ if [ "$SUITE" = all ] || [ "$SUITE" = compose ]; then
   [ -z "$(C port docker-proxy 2375 2>/dev/null || true)" ] || { echo "docker-proxy port is published"; exit 1; }
   echo "compose: setup token printed, /readyz ok through docker-socket-proxy, only 127.0.0.1:8080 published"
   C down -v >/dev/null 2>&1
+fi
+
+# Not part of "all": regenerates docs/screenshots/*.png from a realistic host (a compose stack, a
+# container created in kontainers, proxy rules with Pebble certificates) and measures the image.
+if [ "$SUITE" = screenshots ]; then
+  PWIMG=mcr.microsoft.com/playwright:v1.56.1-noble
+  acme_stack
+  docker image inspect "$PWIMG" >/dev/null 2>&1 || docker pull -q "$PWIMG" >/dev/null
+  docker exec "$DIND" mkdir -p /work/shots-src
+  docker cp scripts/screenshots/. "$DIND:/work/shots-src/"
+  docker exec -w /work/shots-src "$DIND" docker compose -f demo-compose.yaml up -d --quiet-pull 2>&1 | tail -1
+  # The browser runs on the outer Docker in dind's network namespace, so it is not one of the
+  # containers on the host it photographs. Its npm install lives in .scratch.
+  mkdir -p .scratch/shots-run docs/screenshots
+  cp scripts/screenshots/shots.mjs .scratch/shots-run/
+  browse() {
+    docker run --rm --network "container:$DIND" -v "$PWD/.scratch/shots-run":/run -v "$PWD/docs/screenshots":/out -w /run \
+      -e URL="http://$KIP:8080" -e TOKEN="$TOKEN" -e OUT=/out -e PHASE="$1" "$PWIMG" \
+      sh -c '[ -d node_modules/playwright ] || npm i --silent --no-audit --no-fund playwright@1.56.1 >/dev/null; node shots.mjs'
+  }
+  browse setup
+  # The test ACME server and its DNS stub are only needed to issue the certificates.
+  D rm -f pebble challtestsrv >/dev/null
+  browse shots
+  ls -l docs/screenshots
+
+  echo "--- measurements ($(uname -m) host, Docker $(docker version -f '{{.Server.Version}}'), $(docker info -f '{{.NCPU}} CPUs, {{.MemTotal}} bytes'))"
+  echo "image size (uncompressed, docker image inspect): $(docker image inspect kontainers:test -f '{{.Size}}') bytes"
+  sleep 30
+  echo "idle memory with Caddy and 2 HTTPS rules, $(docker exec "$DIND" docker ps -q | wc -l | tr -d ' ') containers on the host (docker stats, after 30 s idle):"
+  docker exec "$DIND" docker stats --no-stream --format '  {{.Name}} {{.MemUsage}} CPU {{.CPUPerc}}'
+  # Startup: from docker start to the first 200 from /healthz, proxy off, five runs, timed inside
+  # dind with /proc/uptime (10 ms resolution) so host round trips are not counted.
+  D create --name kstart --network kt kontainers:test >/dev/null
+  docker exec "$DIND" sh -c '
+    up() { cut -d" " -f1 /proc/uptime; }
+    for n in 1 2 3 4 5; do
+      t0=$(up); docker start kstart >/dev/null
+      ip=$(docker inspect -f "{{(index .NetworkSettings.Networks \"kt\").IPAddress}}" kstart)
+      until wget -qO- "http://$ip:8080/healthz" >/dev/null 2>&1; do :; done
+      echo "  start $n: $(awk -v a="$t0" -v b="$(up)" "BEGIN { printf \"%d\", (b - a) * 1000 }") ms"
+      docker stop -t 2 kstart >/dev/null
+    done'
+  D rm -f kstart >/dev/null
+  docker exec -w /work/shots-src "$DIND" docker compose -f demo-compose.yaml down -v >/dev/null 2>&1
+  acme_teardown
 fi

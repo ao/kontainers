@@ -1,14 +1,57 @@
 # kontainers
 
-A web UI for one Docker host: containers, images, networks and volumes, plus domain-to-container
-proxy rules with automatic HTTPS certificates (ACME / Let's Encrypt, served by an embedded Caddy).
+Manage the containers on one Docker host from a browser, and point a domain at any of them with an
+HTTPS certificate it gets and renews for you. One container does both.
 
-It is a small Bun program with server-rendered pages and a SQLite file for its own state.
+![The containers page: each row's left edge shows its state](docs/screenshots/containers.png)
+
+[![ci](https://github.com/ao/kontainers/actions/workflows/ci.yml/badge.svg)](https://github.com/ao/kontainers/actions/workflows/ci.yml)
+
+## Why it exists
+
+If you run Portainer for your containers and Nginx Proxy Manager for your domains, kontainers is
+one container that does the everyday part of both:
+
+- Add a rule like `shop.example.com` to container `shop-web-1`, port 80, and the site is up over
+  HTTPS. The Proxy page shows which certificates are valid and until when, and which rules point at
+  a container that is stopped or gone.
+- `docker compose up` recreates containers with new IDs. kontainers notices within 10 seconds and
+  reconnects them, so the routes keep working.
+- Update image pulls a container's image again and recreates it with the same settings. If the new
+  one does not start, the old one is put back.
+
+It is also careful about the host, because access to Docker is root on it. It listens on
+127.0.0.1, has no default password, never force-removes a running container, and will not stop or
+remove itself. The Security section below lists every default.
+
+![HTTPS proxy rules with their certificate status](docs/screenshots/proxy.png)
+
+## What it costs to run
+
+Memory and start time were measured on the 0.2.1 build, in Docker 29.8.2 on an arm64 host with
+12 CPUs; the download size is the published 0.2.0 image's.
+
+| | |
+|---|---|
+| Download | 82.5 MB (arm64) and 85.0 MB (amd64), compressed layers on Docker Hub |
+| Memory at idle | 53 to 55 MiB, with Caddy serving two HTTPS rules and four other containers on the host (`docker stats` after 30 s, two runs) |
+| Start | 1.0 to 4.2 s from `docker start` to a healthy `/healthz` (ten starts over two runs) |
+
+`scripts/test.sh screenshots` repeats these measurements and regenerates the screenshots.
+
+## Try it
+
+    curl -O https://raw.githubusercontent.com/ao/kontainers/main/compose.yaml
+    docker compose up -d
+    docker compose logs kontainers | grep 'setup token'
+
+Open http://127.0.0.1:8080, paste the token, and create your account. On a server, reach it over
+SSH with `ssh -L 8080:127.0.0.1:8080 your-server`. To route domains, see
+[Proxy rules and certificates](#proxy-rules-and-certificates).
 
 ## Status
 
-Version 0.2.0 is a rewrite. Earlier releases (0.1.x, and `ataiva/kontainers:latest` before 0.2.0)
-accepted any login and must not be used.
+Version 0.2 is a rewrite. Earlier releases (0.1.x) accepted any login and must not be used.
 
 What works, and is covered by the test suites below:
 
@@ -87,7 +130,7 @@ With `docker run`, mounting the socket directly:
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.2.0
+      ataiva/kontainers:0.2.1
     docker logs kontainers | grep 'setup token'
 
 The image runs as an unprivileged user, so it needs the socket's group (`--group-add`). On
@@ -104,7 +147,7 @@ to be public: they serve the sites you route, not the kontainers UI.
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.2.0
+      ataiva/kontainers:0.2.1
 
 Use your own email address: Let's Encrypt rejects reserved domains such as example.com, and
 kontainers refuses to start with one.
@@ -114,7 +157,9 @@ prefix, target container name and port. kontainers connects the target container
 `kontainers-proxy` network and Caddy reaches it by name; the target does not need to publish a
 port. Every 10 seconds kontainers reconnects targets that left the network, which is what
 `docker compose up` does when it recreates a container. The path prefix is matched but not
-removed: a rule for `/api` sends `/api/users` to the container as `/api/users`.
+removed: a rule for `/api` sends `/api/users` to the container as `/api/users`. A wildcard
+hostname (`*.example.com`) works over plain HTTP only: Let's Encrypt issues wildcard certificates
+over a DNS challenge, which kontainers does not do, so add one HTTPS rule per name instead.
 
 The Proxy page shows, for each rule, whether its target container exists and is running and,
 for HTTPS rules, when its certificate expires or that there is none yet. A missing certificate
@@ -142,6 +187,7 @@ briefly unavailable; Caddy did not renew certificates in a process that started 
 | `KONTAINERS_ACME_CA` | Let's Encrypt | ACME directory URL |
 | `KONTAINERS_ACME_CA_ROOT` | unset | PEM file to trust for the ACME directory (for a private CA) |
 | `KONTAINERS_ACME_RENEW_CHECK` | unset (Caddy's default) | Seconds between Caddy's checks for certificates due for renewal, 1 to 86400; HTTPS rules only |
+| `KONTAINERS_SELF_CONTAINER` | the container's hostname | ID or name of kontainers' own container, if `--hostname` changed it; kontainers and its compose project get no Stop, Remove or Update |
 | `KONTAINERS_HTTP_PORT` / `KONTAINERS_HTTPS_PORT` | `80` / `443` | Proxy ports |
 
 `/healthz` returns 200 while the process runs. `/readyz` returns 200 when the database and the

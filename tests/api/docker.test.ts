@@ -121,6 +121,31 @@ describe.skipIf(!DOCKER)('docker flows', () => {
     await dockerApi(`/containers/${name}?force=1`, { method: 'DELETE' });
   });
 
+  test('kontainers refuses to stop or remove itself or its compose siblings', async () => {
+    const mk = async (name: string, project: string) => {
+      const r = await dockerApi(`/containers/create?name=${name}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ Image: IMAGE, Cmd: ['sleep', '300'], Labels: { 'com.docker.compose.project': project } }) });
+      expect(r.status).toBe(201);
+      expect((await dockerApi(`/containers/${name}/start`, { method: 'POST' })).status).toBe(204);
+    };
+    const [own, sib, other] = [`k-${run}-self`, `k-${run}-sib`, `k-${run}-oth`];
+    await mk(own, `kself${run}`); await mk(sib, `kself${run}`); await mk(other, `kother${run}`);
+    // A second server that believes it runs in `own`.
+    const { srv: s2, c: c2 } = await readyServer({ KONTAINERS_SELF_CONTAINER: own });
+    try {
+      const list = await c2.page('/containers');
+      expect(list).toMatch(new RegExp(`data-name="${own}"[\\s\\S]*?this is kontainers`));
+      expect(list).toMatch(new RegExp(`data-name="${sib}"[\\s\\S]*?part of kontainers`));
+      for (const n of [own, sib]) for (const op of ['stop', 'restart', 'remove', 'update']) {
+        expect((await c2.submit(`/containers/${n}/${op}`, {})).error).toContain('kontainers itself');
+      }
+      expect(((await (await dockerApi(`/containers/${sib}/json`)).json()) as any).State.Running).toBe(true);
+      expect((await c2.submit(`/containers/${other}/stop`, {})).error).toBe('');
+    } finally {
+      await s2.stop();
+      for (const n of [own, sib, other]) await dockerApi(`/containers/${n}?force=1`, { method: 'DELETE' });
+    }
+  }, 60000);
+
   describe('update image', () => {
     // "busybox:1.36" is pointed at alpine locally, so pulling it again moves the tag back: a changed image.
     const FAKE_OLD = 'alpine:3.20';
@@ -182,6 +207,41 @@ describe.skipIf(!DOCKER)('docker flows', () => {
       await dockerApi(`/containers/${name}?force=1`, { method: 'DELETE' });
     });
   });
+
+  test('proxy rules cannot target kontainers or the container serving its Docker API', async () => {
+    // Under compose, DOCKER_HOST=tcp://docker-proxy:2375 names the socket proxy's service. Here the
+    // daemon is tcp://dind:2375, so a sibling whose compose service is "dind" plays that part.
+    const mk = async (name: string, labels: Record<string, string>) => {
+      const r = await dockerApi(`/containers/create?name=${name}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ Image: IMAGE, Cmd: ['sleep', '300'], Labels: labels }) });
+      expect(r.status).toBe(201);
+      expect((await dockerApi(`/containers/${name}/start`, { method: 'POST' })).status).toBe(204);
+    };
+    const project = `kpx${run}`;
+    const [own, api, app] = [`k-${run}-pself`, `k-${run}-papi`, `k-${run}-papp`];
+    await mk(own, { 'com.docker.compose.project': project, 'com.docker.compose.service': 'kontainers' });
+    await mk(api, { 'com.docker.compose.project': project, 'com.docker.compose.service': 'dind' });
+    await mk(app, { 'com.docker.compose.project': project, 'com.docker.compose.service': 'app' });
+    const { srv: s2, c: c2 } = await readyServer({ KONTAINERS_SELF_CONTAINER: own, KONTAINERS_PROXY: '1', KONTAINERS_CADDY_BIN: '/nonexistent/caddy', KONTAINERS_PROXY_NETWORK: `kpx-${run}` });
+    try {
+      await c2.page('/proxy');
+      const rule = (target: string, hostname: string) => c2.submit('/proxy', { hostname, path: '/', targetContainer: target, targetPort: '80' });
+      expect((await rule(own, 'self.example.com')).error).toContain('kontainers itself');
+      expect((await rule(api, 'api.example.com')).error).toContain("Docker API");
+      const net = async () => Object.values(((await (await dockerApi(`/networks/kpx-${run}`)).json()) as any).Containers || {}).map((x: any) => x.Name);
+      expect(await net()).not.toContain(api);
+      // Another service of the same compose project is an ordinary target.
+      const ok = await rule(app, 'app.example.com');
+      expect(ok.error).toBe('');
+      expect(await net()).toContain(app);
+      const page = await c2.page('/proxy');
+      expect(page).not.toContain('api.example.com');
+      expect(page).not.toContain('self.example.com');
+    } finally {
+      await s2.stop();
+      for (const n of [own, api, app]) await dockerApi(`/containers/${n}?force=1`, { method: 'DELETE' });
+      await dockerApi(`/networks/kpx-${run}`, { method: 'DELETE' });
+    }
+  }, 60000);
 
   test('removing one tag of a multi-tag image keeps the image', async () => {
     const tag = `kontainers-test/extra:${run}`;

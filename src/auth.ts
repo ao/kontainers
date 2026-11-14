@@ -43,9 +43,16 @@ export class Auth {
     if (typeof setupToken !== 'string' || !safeEqual(setupToken, this.setupToken)) {
       const e = new v.ValidationError('wrong setup token'); e.status = 403; throw e;
     }
-    const user = await this.createUser(username, password);
+    // Claim the token before the slow password hash, so two requests sent at once cannot both
+    // create an account. A refused username or password gives it back for another try.
+    const claimed = this.setupToken;
     this.setupToken = null;
-    return user;
+    try {
+      return await this.createUser(username, password);
+    } catch (e) {
+      if (this.needsSetup()) this.setupToken = claimed;
+      throw e;
+    }
   }
 
   async createUser(username: string, password: string): Promise<User> {

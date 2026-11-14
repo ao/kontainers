@@ -3,6 +3,7 @@
 
 import type { Database } from 'bun:sqlite';
 import { readFileSync, unlinkSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { join } from 'node:path';
 import type { Config } from './config';
 import { isLoopback } from './config';
@@ -23,6 +24,8 @@ export interface Deps {
   rules: RuleStore;
   proxy: ProxyManager;
   limiter?: RateLimiter;
+  // The container kontainers runs in (ID or name), when it runs in one.
+  selfContainer?: string;
 }
 
 export type Handler = (req: Request, socketIp: string) => Promise<Response>;
@@ -34,6 +37,12 @@ const COOKIE_SECURE = '__Host-kontainers_session'; // __Host- requires Secure, P
 
 export function normalizeIp(ip: string): string {
   return ip.startsWith('::ffff:') && ip.includes('.') ? ip.slice(7) : ip;
+}
+
+// The host name in a tcp:// or http:// DOCKER_HOST, e.g. "docker-proxy" for tcp://docker-proxy:2375.
+export function dockerApiHost(dockerHost: string): string | null {
+  const m = /^(?:tcp|http):\/\/(\[[^\]]+\]|[^:/]+)/.exec(dockerHost);
+  return m ? m[1].replace(/^\[|\]$/g, '') : null;
 }
 
 // The client address for rate limiting. X-Forwarded-For is believed only when the socket peer is a
@@ -61,13 +70,16 @@ export function parseCookies(header: string | null): Record<string, string> {
 // loopback names and IP literals are accepted: a DNS name pointing at 127.0.0.1 is how DNS rebinding works.
 export function hostAllowed(hostHeader: string | null, cfg: Config): boolean {
   if (!hostHeader) return false;
-  let host: string;
-  try { host = new URL(`http://${hostHeader}`).hostname.replace(/^\[|\]$/g, ''); } catch { return false; }
+  let raw: string;
+  try { raw = new URL(`http://${hostHeader}`).hostname; } catch { return false; }
+  const host = raw.replace(/^\[|\]$/g, '');
   if (cfg.publicUrl) {
     if (host === new URL(cfg.publicUrl).hostname.replace(/^\[|\]$/g, '')) return true;
     return isLoopback(host); // health checks and SSH tunnels still work
   }
-  return isLoopback(host) || /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || /^[0-9a-f:]+$/i.test(host);
+  // An IPv6 literal only in brackets: bare hex words such as "cafe" are DNS names a rebinding
+  // attacker could answer for.
+  return isLoopback(host) || /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || (raw.startsWith('[') && isIP(host) === 6);
 }
 
 // Rejects cross-site requests. Browsers send Origin on every POST and Sec-Fetch-Site on every request.
@@ -214,6 +226,53 @@ export function createHandler(d: Deps): Handler {
     return { user: s.user.username, csrf: s.csrf, flash: f?.flash, error: f?.error, proxyEnabled: cfg.proxy.enabled };
   }
 
+  // kontainers' own container and, under compose, the rest of its project (the socket proxy):
+  // stopping or removing one of them from the UI would cut the UI off from Docker or kill it.
+  let selfCache: views.SelfInfo | null | undefined;
+  async function self(): Promise<views.SelfInfo | null> {
+    if (selfCache !== undefined) return selfCache;
+    if (!d.selfContainer) return (selfCache = null);
+    try {
+      const c = await docker.inspect(d.selfContainer);
+      selfCache = { id: c.Id, project: c.Config?.Labels?.['com.docker.compose.project'] ?? null };
+    } catch (e) {
+      if (e instanceof DockerError && e.status === 404) selfCache = null; // not a container after all
+      else return null; // daemon unreachable: try again on the next request
+    }
+    return selfCache ?? null;
+  }
+  async function refuseSelf(id: string): Promise<void> {
+    const me = await self();
+    if (!me) return;
+    if (views.isSelf(await docker.inspect(id), me)) {
+      throw new v.ValidationError('this is kontainers itself, or part of its compose project; stopping or removing it here would cut off this page. Manage it on the host with docker compose or docker');
+    }
+  }
+
+  // A proxy rule connects its target to the shared proxy network, which every other target can
+  // reach. Two containers must not be targets: kontainers itself (its UI would be reachable from
+  // the targets), and the container that serves kontainers' Docker API, such as the socket proxy
+  // in compose.yaml (any target could then control Docker, which is root on the host).
+  async function proxyTargetRefusal(name: string): Promise<{ reason: string; self: boolean } | null> {
+    let t: any;
+    try { t = await docker.inspect(name); } catch (e) { if (e instanceof DockerError && e.status === 404) return null; throw e; }
+    const me = await self();
+    if (me && t.Id === me.id) return { self: true, reason: 'this is kontainers itself; a proxy rule to it would put its login page in reach of every proxy target' };
+    const api = dockerApiHost(cfg.dockerHost);
+    if (!api) return null;
+    const labels = t.Config?.Labels || {};
+    const nets: any[] = Object.values(t.NetworkSettings?.Networks || {});
+    const serves = String(t.Name || '').replace(/^\//, '') === api
+      || (!!me?.project && labels['com.docker.compose.project'] === me.project && labels['com.docker.compose.service'] === api)
+      || nets.some(n => (n.Aliases || []).includes(api) || (n.DNSNames || []).includes(api) || n.IPAddress === api);
+    return serves ? { self: false, reason: "this container serves kontainers' Docker API; on the proxy network every proxy target could use it to control Docker" } : null;
+  }
+  if (d.proxy) d.proxy.guard = proxyTargetRefusal;
+  async function refuseProxyTarget(name: string): Promise<void> {
+    const no = await proxyTargetRefusal(name);
+    if (no) throw new v.ValidationError(no.reason);
+  }
+
   // Runs a state change, stores the outcome as a flash message, redirects back.
   async function act(s: Session, ip: string, back: string, action: string, target: string | null, fn: () => Promise<string | void> | string | void): Promise<Response> {
     try {
@@ -233,10 +292,12 @@ export function createHandler(d: Deps): Handler {
     const typed = typeof f.username === 'string' ? f.username.slice(0, 64) : '';
     const wait = Math.max(limiter.blocked(`user:${user}`), ipLimiter.blocked(`ip:${ip}`));
     if (wait > 0) return page(views.loginPage({ username: typed, error: `Too many failed attempts. Try again in ${Math.ceil(wait / 60)} minutes.` }), 429, { 'retry-after': String(wait) });
+    // Count the attempt before the password check, which is slow and asynchronous: counted after it,
+    // many requests sent at once all passed blocked() before any of them was recorded.
+    limiter.fail(`user:${user}`);
+    ipLimiter.fail(`ip:${ip}`);
     const u = await auth.verifyLogin(f.username, f.password);
     if (!u) {
-      limiter.fail(`user:${user}`);
-      ipLimiter.fail(`ip:${ip}`);
       audit(null, 'login-failed', user, ip);
       return page(views.loginPage({ username: typed, error: 'Wrong username or password.' }), 401);
     }
@@ -285,9 +346,9 @@ export function createHandler(d: Deps): Handler {
 
     if (m === 'GET') {
       if (p === '/') return redirect('/containers');
-      if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainers()));
+      if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainers(), await self()));
       if (p === '/containers/new') return page(views.newContainerPage(ctx(s), cfg.allowBindMounts));
-      if ((r = /^\/containers\/([^/]+)$/.exec(p))) return page(views.containerPage(ctx(s), await docker.inspect(r[1])));
+      if ((r = /^\/containers\/([^/]+)$/.exec(p))) return page(views.containerPage(ctx(s), await docker.inspect(r[1]), await self()));
       if ((r = /^\/api\/containers\/([^/]+)\/stats$/.exec(p))) {
         return new Response(JSON.stringify(summarizeStats(await docker.stats(r[1]))), { headers: { 'content-type': 'application/json' } });
       }
@@ -303,6 +364,7 @@ export function createHandler(d: Deps): Handler {
         const status = (r: (typeof list)[number]) => ({
           target: proxy.targetState.get(r.target_container) ?? null,
           cert: r.tls ? proxy.certificate(r.hostname) : null,
+          refused: proxy.refusalFor(r.target_container),
         });
         return page(views.proxyPage(ctx(s), list, { running: proxy.running, lastError: proxy.lastError }, status));
       }
@@ -346,12 +408,16 @@ export function createHandler(d: Deps): Handler {
     if ((r = /^\/containers\/([^/]+)\/update$/.exec(p))) {
       const id = r[1];
       // The container gets a new ID, so return to the list.
-      return act(s, ip, '/containers', 'container-update', id, () => updateContainer(docker, id));
+      return act(s, ip, '/containers', 'container-update', id, async () => {
+        await refuseSelf(id);
+        return updateContainer(docker, id);
+      });
     }
     if ((r = /^\/containers\/([^/]+)\/(start|stop|restart|unpause|remove)$/.exec(p))) {
       const [, id, op] = r;
       const back = op === 'remove' ? '/containers' : (f.back === 'detail' ? `/containers/${encodeURIComponent(id)}` : '/containers');
       return act(s, ip, back, `container-${op}`, id, async () => {
+        if (op !== 'start' && op !== 'unpause') await refuseSelf(id);
         if (op === 'start') await docker.start(id);
         else if (op === 'stop') await docker.stop(id);
         else if (op === 'restart') await docker.restart(id);
@@ -393,6 +459,7 @@ export function createHandler(d: Deps): Handler {
         if (!cfg.proxy.enabled) throw new v.ValidationError('the proxy is off (KONTAINERS_PROXY)');
         const input = { hostname: f.hostname, path: f.path, targetContainer: f.targetContainer, targetPort: f.targetPort, tls: !!f.tls };
         rules.validate(input);
+        await refuseProxyTarget(String(f.targetContainer));
         await proxy.attach(String(f.targetContainer));
         const rule = rules.create(input);
         try { await proxy.apply(); } catch (e) { rules.remove(rule.id); await proxy.apply().catch(() => {}); throw e; }
@@ -407,6 +474,7 @@ export function createHandler(d: Deps): Handler {
         if (!old) throw Object.assign(new v.ValidationError('rule not found'), { status: 404 });
         const input = { hostname: f.hostname, path: f.path, targetContainer: f.targetContainer, targetPort: f.targetPort, tls: !!f.tls };
         rules.validate(input);
+        await refuseProxyTarget(String(f.targetContainer));
         await proxy.attach(String(f.targetContainer));
         const updated = rules.update(id, input);
         try {
@@ -453,6 +521,9 @@ export function createHandler(d: Deps): Handler {
   }
 
   async function handle(req: Request, socketIp: string): Promise<Response> {
+    // kontainers' container is on the proxy network so that Caddy can reach the targets. The UI must
+    // not be served there: any proxy target, typically an internet-facing app, could reach it.
+    if (d.proxy?.fromTargetNetwork(socketIp)) return text('kontainers is not served on the proxy network.\n', 403);
     const url = new URL(req.url);
     const p = url.pathname;
     const ip = clientIp(socketIp, req.headers.get('x-forwarded-for'), cfg.trustedProxies);

@@ -215,6 +215,19 @@ describe('login rate limiting', () => {
     } finally { await srv.stop(); }
   });
 
+  test('guesses sent all at once are limited too', async () => {
+    const { srv } = await readyServer();
+    try {
+      const x = new Client(srv.base);
+      const all = await Promise.all(Array.from({ length: 30 }, () => x.post('/login', { username: 'admin', password: 'wrong password!!' }, { csrf: false })));
+      const codes = all.map(r => r.status);
+      expect(codes.filter(s => s === 401).length).toBe(5);
+      expect(codes.filter(s => s === 429).length).toBe(25);
+      // The right password is refused too until the window ends: the limit is per username.
+      expect((await x.post('/login', { username: 'admin', password: PW }, { csrf: false })).status).toBe(429);
+    } finally { await srv.stop(); }
+  }, 60000);
+
   test('20 failures from one address block that address for every username', async () => {
     const { srv } = await readyServer();
     try {

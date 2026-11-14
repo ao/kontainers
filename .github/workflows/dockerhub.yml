@@ -20,5 +20,5 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: ataiva/kontainers
-          short-description: Web UI for one Docker host, with domain proxy rules and automatic HTTPS. Use 0.2.0 or later.
+          short-description: Web UI for one Docker host, with domain proxy rules and automatic HTTPS. Use 0.2.1 or later.
           readme-filepath: README.md

@@ -56,7 +56,7 @@ test('pull an image, create a container, read its logs, stop and remove it', asy
   await expect(page.getByRole('status')).toContainText('Pulled busybox:1.36');
   await expect(page.getByRole('cell', { name: 'busybox:1.36' })).toBeVisible();
 
-  await page.getByRole('link', { name: 'Containers' }).click();
+  await page.getByRole('link', { name: 'Containers', exact: true }).click();
   await page.getByRole('link', { name: 'New container' }).click();
   await page.getByLabel('Image', { exact: true }).fill('busybox:1.36');
   await page.getByLabel('Pull the image first').uncheck();
@@ -83,7 +83,7 @@ test('pull an image, create a container, read its logs, stop and remove it', asy
   await expect(page.getByRole('status')).toContainText('Done');
   await expect(page.getByRole('heading', { name: 'e2e-web' })).toBeVisible();
   await expect(page.locator('dl.facts')).toContainText('exited');
-  await page.getByRole('link', { name: 'Containers' }).click();
+  await page.getByRole('link', { name: 'Containers', exact: true }).click();
   await expect(page.locator('tr[data-name="e2e-web"]')).toContainText('exited');
 
   // Cancelling the confirm prompt keeps the container.

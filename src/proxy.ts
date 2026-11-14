@@ -49,13 +49,19 @@ export class RuleStore {
   }
 
   validate(input: RuleInput) {
-    return {
+    const r = {
       hostname: v.hostname(input.hostname),
       path: v.pathPrefix(input.path),
       target: v.name(typeof input.targetContainer === 'string' ? input.targetContainer.replace(/^\//, '') : input.targetContainer, 'target container'),
       port: v.port(input.targetPort, 'target port'),
       tls: input.tls === undefined ? true : input.tls === true || input.tls === 'on' || input.tls === 'true' || input.tls === '1',
     };
+    // Let's Encrypt issues wildcard certificates only over the DNS-01 challenge, which needs DNS
+    // provider credentials kontainers does not handle; an HTTPS wildcard rule would never get one.
+    if (r.tls && r.hostname.startsWith('*.')) {
+      throw new v.ValidationError(`a wildcard hostname cannot get an automatic certificate (that needs a DNS challenge, which kontainers does not do); add one rule per name, or turn HTTPS off for ${r.hostname}`);
+    }
+    return r;
   }
 
   create(input: RuleInput, now = Date.now()): Rule {
@@ -137,7 +143,39 @@ export function buildCaddyConfig(rules: Rule[], cfg: Config, adminSocket: string
   };
 }
 
+const ipv4 = (ip: string): number | null => {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
+  if (!m) return null;
+  const o = m.slice(1).map(Number);
+  return o.some(x => x > 255) ? null : o[0] * 2 ** 24 + o[1] * 2 ** 16 + o[2] * 2 ** 8 + o[3];
+};
+
+export interface Subnet { subnet: string; gateway?: string }
+
+// True when ip is inside one of the IPv4 subnets ("172.18.0.0/16") and is not that subnet's gateway.
+// The gateway is the host side of the bridge: connections from the host, such as the published UI
+// port, arrive from it.
+export function inSubnetNotGateway(ip: string, nets: Subnet[]): boolean {
+  const addr = ip.startsWith('::ffff:') ? ip.slice(7) : ip;
+  const a = ipv4(addr);
+  if (a === null) return false;
+  for (const n of nets) {
+    const [base, bits] = String(n.subnet).split('/');
+    const b = ipv4(base), len = Number(bits);
+    if (b === null || !Number.isInteger(len) || len < 0 || len > 32) continue;
+    const size = 2 ** (32 - len);
+    if (Math.floor(a / size) === Math.floor(b / size) && addr !== n.gateway) return true;
+  }
+  return false;
+}
+
+export type TargetGuard = (container: string) => Promise<{ reason: string; self: boolean } | null>;
+
 export class ProxyManager {
+  // Set by the server: refuses containers that must never be put on the proxy network.
+  guard: TargetGuard | null = null;
+  // The proxy network's IPv4 subnets, from the last inspect.
+  private subnets: Subnet[] = [];
   private proc: ReturnType<typeof Bun.spawn> | null = null;
   private stopping = false;
   private restarts = 0;
@@ -155,13 +193,45 @@ export class ProxyManager {
 
   get running(): boolean { return this.proc !== null && this.proc.exitCode === null; }
 
+  // True for a connection from another container on the proxy network.
+  fromTargetNetwork(socketIp: string): boolean {
+    return this.cfg.proxy.enabled && inSubnetNotGateway(socketIp, this.subnets);
+  }
+
+  private noteSubnets(net: any): void {
+    this.subnets = (net?.IPAM?.Config || []).filter((c: any) => c?.Subnet).map((c: any) => ({ subnet: c.Subnet, gateway: c.Gateway }));
+  }
+
   // Target container name -> Docker state ("running", "exited", ..., or "missing"), from the last reconcile.
   targetState = new Map<string, string>();
   private timer: ReturnType<typeof setInterval> | null = null;
 
+  // Targets the guard refused at the last check. Their rules stay saved but are not served:
+  // Caddy runs inside kontainers, so it can reach the Docker API container over kontainers' own
+  // networks even when that container is not on the proxy network.
+  private refused = new Map<string, { reason: string; self: boolean }>();
+  private servable(): Rule[] { return this.store.list().filter(r => !this.refused.has(r.target_container)); }
+
+  // Asks the guard about every rule's target. Returns true when the refused set changed.
+  private async checkTargets(): Promise<boolean> {
+    if (!this.guard) return false;
+    const next = new Map<string, { reason: string; self: boolean }>();
+    for (const name of new Set(this.store.list().map(r => r.target_container))) {
+      const no = await this.guard(name).catch(() => this.refused.get(name) ?? null);
+      if (no) next.set(name, no);
+    }
+    const changed = next.size !== this.refused.size || [...next.keys()].some(k => !this.refused.has(k));
+    for (const [name, no] of next) if (!this.refused.has(name)) console.log(`kontainers: not serving rules for ${name}: ${no.reason}`);
+    this.refused = next;
+    return changed;
+  }
+
+  refusalFor(container: string): string | null { return this.refused.get(container)?.reason ?? null; }
+
   async start(): Promise<void> {
     if (!this.cfg.proxy.enabled) return;
     await this.ensureNetwork();
+    await this.checkTargets().catch(() => false);
     this.spawn();
     const tick = () => void this.reconcile().catch(e => console.error(`kontainers: proxy check failed: ${(e as Error).message}`));
     tick();
@@ -177,11 +247,25 @@ export class ProxyManager {
     const [containers, net] = await Promise.all([this.docker.listContainers(), this.docker.inspectNetwork(this.cfg.proxy.network)]);
     const byName = new Map<string, string>();
     for (const c of containers) for (const n of c.Names || []) byName.set(String(n).replace(/^\//, ''), c.State);
+    this.noteSubnets(net);
+    if (await this.checkTargets()) await this.apply().catch(e => console.error(`kontainers: proxy update failed: ${(e as Error).message}`));
     const attached = new Set(Object.values(net?.Containers || {}).map((x: any) => x.Name));
     const state = new Map<string, string>();
     for (const r of rules) {
       const s = byName.get(r.target_container) ?? 'missing';
       state.set(r.target_container, s);
+      // Rules saved before 0.2.1 could point at the container serving the Docker API: never
+      // reconnect it, and take it off the network if a rule put it there.
+      const refused = this.refused.get(r.target_container);
+      if (refused) {
+        if (!refused.self && attached.has(r.target_container)) {
+          try {
+            await this.docker.disconnect(this.cfg.proxy.network, r.target_container);
+            console.log(`kontainers: disconnected ${r.target_container} from ${this.cfg.proxy.network}: ${refused.reason}`);
+          } catch (e) { console.error(`kontainers: cannot disconnect ${r.target_container} from ${this.cfg.proxy.network}: ${(e as Error).message}`); }
+        }
+        continue;
+      }
       if (s === 'running' && !attached.has(r.target_container)) {
         try {
           await this.attach(r.target_container);
@@ -211,7 +295,7 @@ export class ProxyManager {
   }
 
   private spawn(): void {
-    const conf = buildCaddyConfig(this.store.list(), this.cfg, this.adminSocket);
+    const conf = buildCaddyConfig(this.servable(), this.cfg, this.adminSocket);
     writeFileSync(this.configFile, JSON.stringify(conf), { mode: 0o600 });
     this.hasTls = 'tls' in (conf.apps as Record<string, unknown>);
     const proc = Bun.spawn([this.cfg.proxy.caddyBin, 'run', '--config', this.configFile], {
@@ -261,7 +345,7 @@ export class ProxyManager {
   // Push the current rules to the running Caddy. Throws if Caddy rejects the config.
   async apply(): Promise<void> {
     if (!this.cfg.proxy.enabled) return;
-    const conf = buildCaddyConfig(this.store.list(), this.cfg, this.adminSocket);
+    const conf = buildCaddyConfig(this.servable(), this.cfg, this.adminSocket);
     writeFileSync(this.configFile, JSON.stringify(conf), { mode: 0o600 });
     if (!existsSync(this.adminSocket)) return; // picked up from the file when Caddy (re)starts
     if (this.proc && !this.hasTls && 'tls' in (conf.apps as Record<string, unknown>)) {
@@ -295,10 +379,11 @@ export class ProxyManager {
 
   private async ensureNetwork(): Promise<void> {
     try {
-      await this.docker.inspectNetwork(this.cfg.proxy.network);
+      this.noteSubnets(await this.docker.inspectNetwork(this.cfg.proxy.network));
     } catch (e) {
       if (!(e instanceof DockerError) || e.status !== 404) { console.error(`kontainers: cannot inspect proxy network: ${(e as Error).message}`); return; }
       await this.docker.createNetwork(this.cfg.proxy.network);
+      this.noteSubnets(await this.docker.inspectNetwork(this.cfg.proxy.network).catch(() => null));
     }
     // When kontainers itself runs in a container, its hostname is its container ID: join the network.
     try { await this.attach(osHostname()); } catch { /* not running in a container, or no permission */ }

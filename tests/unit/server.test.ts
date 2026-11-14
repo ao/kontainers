@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { loadConfig } from '../../src/config';
-import { clientIp, containerSpec, splitArgs, hostAllowed, normalizeIp, parseCookies, parsePort, parseVolume, sameOrigin } from '../../src/server';
+import { clientIp, containerSpec, dockerApiHost, splitArgs, hostAllowed, normalizeIp, parseCookies, parsePort, parseVolume, sameOrigin } from '../../src/server';
 import { demux } from '../../src/docker';
-import { esc, html, raw, formatPorts, containersPage, containerPage, imagesPage, proxyPage, loginPage, setupPage } from '../../src/views';
+import { esc, html, raw, formatPorts, isSelf, containersPage, containerPage, imagesPage, proxyPage, loginPage, setupPage } from '../../src/views';
 import type { Rule } from '../../src/proxy';
 
 const local = loadConfig({});
@@ -28,7 +28,8 @@ describe('hostAllowed (DNS rebinding)', () => {
     for (const h of ['localhost:8080', '127.0.0.1:8080', '[::1]:8080', '192.168.1.5:8080', '127.0.0.1']) expect(hostAllowed(h, local)).toBe(true);
   });
   test('other DNS names are refused without a public URL', () => {
-    for (const h of ['evil.example:8080', 'rebind.attacker.test', '', 'a b']) expect(hostAllowed(h, local)).toBe(false);
+    for (const h of ['evil.example:8080', 'rebind.attacker.test', '', 'a b', 'cafe', 'dead:8080', 'deadbeef', 'face:b00c']) expect(hostAllowed(h, local)).toBe(false);
+    expect(hostAllowed('[fd00::1]:8080', local)).toBe(true);
     expect(hostAllowed(null, local)).toBe(false);
   });
   test('with a public URL, its host and loopback pass', () => {
@@ -99,6 +100,24 @@ describe('pages', () => {
     expect(buttons(containersPage(ctx, [row('paused')]))).toEqual(['Unpause']);
     expect(buttons(containersPage(ctx, [row('restarting')]))).toEqual(['Stop']);
     for (const s of ['exited', 'created', 'dead']) expect(buttons(containersPage(ctx, [row(s)]))).toEqual(['Start', 'Remove']);
+  });
+
+  test("kontainers' own container and its compose siblings get no actions", () => {
+    const me = { id: 'f'.repeat(64), project: 'kontainers' };
+    const own = { ...row('running'), Id: me.id, Labels: { 'com.docker.compose.project': 'kontainers' } };
+    const sib = { ...row('running'), Id: 'e'.repeat(64), Names: ['/kontainers-docker-proxy-1'], Labels: { 'com.docker.compose.project': 'kontainers' } };
+    const other = { ...row('running'), Id: 'd'.repeat(64), Names: ['/other'], Labels: { 'com.docker.compose.project': 'shop' } };
+    expect(isSelf(own, me)).toBe(true);
+    expect(isSelf(sib, me)).toBe(true);
+    expect(isSelf(other, me)).toBe(false);
+    expect(isSelf(other, { id: me.id, project: null })).toBe(false);
+    expect(isSelf(own, null)).toBe(false);
+    const page = containersPage(ctx, [own, sib, other], me);
+    expect(buttons(page)).toEqual(['Stop', 'Restart']); // only "other"
+    expect(page).toContain('this is kontainers');
+    expect(page).toContain('part of kontainers');
+    const detail = containerPage(ctx, { Id: me.id, Name: '/kontainers', State: { Status: 'running' }, Config: { Labels: { 'kontainers.managed': 'true' } }, HostConfig: {} }, me);
+    expect(buttons(detail)).toEqual([]);
   });
 
   test('detail page actions return to the detail page, except remove', () => {
@@ -172,5 +191,24 @@ describe('demux', () => {
   test('survives a truncated frame', () => {
     const b = new Uint8Array([1, 0, 0, 0, 0, 0, 0, 10, 65, 66]);
     expect(demux(b)).toBe('AB');
+  });
+});
+
+describe('dockerApiHost', () => {
+  test('the host name of a tcp or http DOCKER_HOST', () => {
+    expect(dockerApiHost('tcp://docker-proxy:2375')).toBe('docker-proxy');
+    expect(dockerApiHost('http://10.0.0.5:2375/')).toBe('10.0.0.5');
+    expect(dockerApiHost('tcp://[fd00::5]:2375')).toBe('fd00::5');
+    expect(dockerApiHost('unix:///var/run/docker.sock')).toBeNull();
+  });
+});
+
+describe('container page', () => {
+  test('environment values are hidden, including every line of a multi-line value', () => {
+    const c = { Id: 'c'.repeat(64), Name: '/app', State: { Status: 'exited' }, Config: { Image: 'app:1', Env: ['KEY=-----BEGIN KEY-----\nsecret-line-two\nsecret-line-three', 'MODE=prod'], Labels: {} }, HostConfig: {} };
+    const page = containerPage({ user: 'admin', csrf: 't' }, c);
+    expect(page).toContain('KEY=…');
+    expect(page).toContain('MODE=…');
+    expect(page).not.toContain('secret-line');
   });
 });
