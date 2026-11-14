@@ -213,7 +213,8 @@ if [ "$SUITE" = all ] || [ "$SUITE" = compose ]; then
   # The README's compose instructions, verbatim, inside dind (so "127.0.0.1" is dind's loopback).
   docker image inspect kontainers:test >/dev/null 2>&1 || docker build -q -t kontainers:test . >/dev/null
   docker save kontainers:test | docker exec -i "$DIND" docker load -q >/dev/null
-  docker exec "$DIND" docker tag kontainers:test ataiva/kontainers:0.2.0
+  # Under the tag compose.yaml names, so compose runs this build instead of pulling.
+  docker exec "$DIND" docker tag kontainers:test "$(sed -n 's/^ *image: *\(ataiva\/kontainers:[^ ]*\).*/\1/p' compose.yaml | head -1)"
   docker exec "$DIND" mkdir -p /compose
   docker cp compose.yaml "$DIND:/compose/compose.yaml"
   C() { docker exec -w /compose "$DIND" docker compose "$@"; }
