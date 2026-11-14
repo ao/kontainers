@@ -243,6 +243,9 @@ if [ "$SUITE" = screenshots ]; then
   docker image inspect "$PWIMG" >/dev/null 2>&1 || docker pull -q "$PWIMG" >/dev/null
   docker exec "$DIND" mkdir -p /work/shots-src
   docker cp scripts/screenshots/. "$DIND:/work/shots-src/"
+  # An older build under the current tag, as on a host that pulled nginx:1.27-alpine when 1.27.0
+  # was the newest: the update check then has something real to find.
+  D pull -q nginx:1.27.0-alpine >/dev/null && D tag nginx:1.27.0-alpine nginx:1.27-alpine
   docker exec -w /work/shots-src "$DIND" docker compose -f demo-compose.yaml up -d --quiet-pull 2>&1 | tail -1
   # The browser runs on the outer Docker in dind's network namespace, so it is not one of the
   # containers on the host it photographs. Its npm install lives in .scratch.
