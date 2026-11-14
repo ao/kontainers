@@ -1,7 +1,7 @@
 # kontainers: one image, one process (plus Caddy when the proxy is on).
-FROM caddy:2.10.2 AS caddy
+FROM caddy:2.11.8 AS caddy
 
-FROM oven/bun:1.3.1-slim
+FROM oven/bun:1.4.4-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libcap2-bin \
  && rm -rf /var/lib/apt/lists/*
