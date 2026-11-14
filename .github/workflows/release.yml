@@ -17,14 +17,14 @@ jobs:
       matrix:
         suite: [unit, api, image, e2e, proxy, renewal, compose]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: scripts/test.sh ${{ matrix.suite }}
 
   publish:
     needs: test
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check the tag matches package.json
         id: version
         run: |

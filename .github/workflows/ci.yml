@@ -16,7 +16,7 @@ jobs:
       matrix:
         suite: [unit, api, image, e2e, proxy, renewal, compose]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: scripts/test.sh ${{ matrix.suite }}
         run: scripts/test.sh ${{ matrix.suite }}
 
@@ -24,5 +24,5 @@ jobs:
     # The image must build on both release architectures.
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: docker build -t kontainers:arm64 .
