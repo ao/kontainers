@@ -1,0 +1,21 @@
+# A small, realistic host for the screenshots: a web shop with a cache and a database.
+name: shop
+services:
+  web:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 5s
+  cache:
+    image: redis:7-alpine
+    restart: unless-stopped
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: demo-only
+    volumes:
+      - shop-db:/var/lib/postgresql/data
+volumes:
+  shop-db:

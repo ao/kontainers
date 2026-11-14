@@ -40,7 +40,7 @@ describe.skipIf(!URL_)('proxy with ACME', () => {
   });
 
   test('the proxy is running and answers 404 for unknown hosts', async () => {
-    expect(await c.page('/proxy')).toContain('Proxy: running');
+    expect(await c.page('/proxy')).toContain('Proxy running');
     const r = await fetch(`http://nothing.test:${HTTP}/`);
     expect(r.status).toBe(404);
     expect(await r.text()).toContain('no proxy rule');

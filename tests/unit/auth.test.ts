@@ -27,6 +27,21 @@ describe('first-run setup', () => {
     expect(auth.issueSetupToken()).toBeNull();
   });
 
+  test('two setups sent at once with the right token create one account', async () => {
+    const { auth } = fresh();
+    const tok = auth.issueSetupToken()!;
+    const results = await Promise.allSettled([auth.setup(tok, 'first', PW), auth.setup(tok, 'second', PW), auth.setup(tok, 'third', PW)]);
+    expect(results.filter(r => r.status === 'fulfilled').length).toBe(1);
+    expect(auth.userCount()).toBe(1);
+  });
+
+  test('a refused password during setup leaves the token usable', async () => {
+    const { auth } = fresh();
+    const tok = auth.issueSetupToken()!;
+    await expect(auth.setup(tok, 'admin', 'short')).rejects.toThrow('12');
+    expect((await auth.setup(tok, 'admin', PW)).username).toBe('admin');
+  });
+
   test('without a token issued, setup is impossible', async () => {
     const { auth } = fresh();
     await expect(auth.setup('', 'admin', PW)).rejects.toThrow();

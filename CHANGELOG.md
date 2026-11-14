@@ -9,6 +9,12 @@
   Let's Encrypt issues wildcard certificates only over a DNS challenge, which kontainers does not
   do, so such a rule waited for a certificate forever. Wildcards still work over plain HTTP.
 - `KONTAINERS_SELF_CONTAINER` names kontainers' container when its hostname is not the container ID.
+- First-run setup could create more than one account when several requests with the right token
+  arrived at once (the token was given up only after the password hash). It is now claimed first.
+- A new look: a container-yard palette, each container row's state shown as a stripe down its left
+  edge, the current page marked in the navigation, and the proxy rules shown before the form.
+- `SECURITY.md` with private vulnerability reporting; Dependabot for the base images and actions.
+- README: screenshots, measured download size, memory and start time, and a shorter start.
 
 ## 0.2.0
 

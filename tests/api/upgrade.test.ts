@@ -43,7 +43,7 @@ describe('upgrade from the 0.2.0 database', () => {
     const c = new Client(srv.base);
     await c.post('/login', { username: 'admin', password: PW }, { csrf: false });
     const page = await c.page('/proxy');
-    expect(page).toContain('Proxy: not running'); // no Caddy in this test
+    expect(page).toContain('Proxy not running'); // no Caddy in this test
     expect(page).toContain('app.example.com');
     expect(page).toContain('example.org');
     expect(srv.output()).toContain('proxy did not start');

@@ -70,15 +70,14 @@ export function formatPorts(ports: any[]): string {
   }).join(', ');
 }
 
-export function layout(title: string, ctx: PageCtx, body: Html): string {
+const SECTIONS = ['Containers', 'Images', 'Networks', 'Volumes', 'Proxy', 'Settings'];
+
+// `section` marks the nav entry for pages whose title is not the section name (a container's page).
+export function layout(title: string, ctx: PageCtx, body: Html, section = title): string {
+  const links = SECTIONS.map(s => html`<a href="/${s.toLowerCase()}"${s === section ? raw(' aria-current="page"') : raw('')}>${s}</a>`);
   const nav = ctx.user ? html`
     <nav>
-      <a href="/containers">Containers</a>
-      <a href="/images">Images</a>
-      <a href="/networks">Networks</a>
-      <a href="/volumes">Volumes</a>
-      <a href="/proxy">Proxy</a>
-      <a href="/settings">Settings</a>
+      ${links}
       <span class="spacer"></span>
       <span class="who">${ctx.user}</span>
       <form method="post" action="/logout" class="inline">${csrfField(ctx)}<button class="link">Log out</button></form>
@@ -124,15 +123,16 @@ export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = 
   const rows = list.map(c => {
     const name = (c.Names?.[0] || '').replace(/^\//, '');
     const project = c.Labels?.['com.docker.compose.project'];
-    return html`<tr data-name="${name}">
-  <td><a href="/containers/${c.Id}">${name}</a>${project ? html` <small class="muted">compose: ${project}</small>` : ''}</td><td>${c.Image}</td>
-  <td><span class="state ${c.State}">${c.State}</span> <small>${c.Status}</small></td><td>${formatPorts(c.Ports)}</td>
+    return html`<tr data-name="${name}" data-state="${c.State}">
+  <td><a href="/containers/${c.Id}">${name}</a>${project ? html`<small>compose project ${project}</small>` : ''}</td><td><span class="ref">${c.Image}</span></td>
+  <td><span class="state ${c.State}">${c.State}</span><small>${c.Status}</small></td><td><span class="ref">${formatPorts(c.Ports)}</span></td>
   <td class="actions">${isSelf(c, me) ? selfNote(c, me) : containerActions(ctx, c.Id, name, c.State)}</td></tr>`;
   });
+  const running = list.filter(c => c.State === 'running').length;
   return layout('Containers', ctx, html`
-<p><a class="button" href="/containers/new">New container</a></p>
+<div class="toolbar"><span class="muted">${running} of ${list.length} running</span><a class="button primary" href="/containers/new">New container</a></div>
 <table><thead><tr><th>Name</th><th>Image</th><th>State</th><th>Published ports</th><th></th></tr></thead>
-<tbody>${rows.length ? rows : html`<tr><td colspan="5">No containers.</td></tr>`}</tbody></table>`);
+<tbody>${rows.length ? rows : html`<tr><td colspan="5">No containers yet. <a href="/containers/new">Create one</a>, or start one with docker and it appears here.</td></tr>`}</tbody></table>`);
 }
 
 export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null): string {
@@ -141,11 +141,12 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null):
   const mounts = (c.Mounts || []).map((m: any) => html`<li><code>${m.Type} ${m.Name || m.Source} → ${m.Destination}${m.RW ? '' : ' (ro)'}</code></li>`);
   const nets = Object.keys(c.NetworkSettings?.Networks || {}).map(n => html`<li>${n}</li>`);
   return layout(name, ctx, html`
+<p><a href="/containers">All containers</a></p>
 <dl class="facts">
   <dt>ID</dt><dd><code>${shortId(c.Id)}</code></dd>
-  <dt>Image</dt><dd>${c.Config?.Image}</dd>
+  <dt>Image</dt><dd><code>${c.Config?.Image}</code></dd>
   <dt>State</dt><dd><span class="state ${c.State?.Status}">${c.State?.Status}</span></dd>
-  <dt>Started</dt><dd>${!c.State?.StartedAt || c.State.StartedAt.startsWith('0001-') ? 'never' : c.State.StartedAt}</dd>
+  <dt>Started</dt><dd>${!c.State?.StartedAt || c.State.StartedAt.startsWith('0001-') ? 'never' : `${c.State.StartedAt.slice(0, 16).replace('T', ' ')} UTC`}</dd>
   ${c.State?.Health ? html`<dt>Health</dt><dd>${c.State.Health.Status}</dd>` : ''}
   ${c.State?.Status === 'exited' ? html`<dt>Exit code</dt><dd>${c.State.ExitCode}</dd>` : ''}
   <dt>Restart policy</dt><dd>${c.HostConfig?.RestartPolicy?.Name}</dd>
@@ -163,15 +164,15 @@ ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
 <h2>Mounts</h2><ul>${mounts.length ? mounts : html`<li>none</li>`}</ul>
 <h2>Networks</h2><ul>${nets}</ul>
 <h2>Logs</h2>
-<p><label><input type="checkbox" id="follow" checked> Follow</label></p>
-<pre id="logs" data-logs="/api/containers/${c.Id}/logs?tail=300">loading…</pre>`);
+<p><label class="check"><input type="checkbox" id="follow" checked> Follow new lines</label></p>
+<pre id="logs" data-logs="/api/containers/${c.Id}/logs?tail=300">loading…</pre>`, 'Containers');
 }
 
 export function newContainerPage(ctx: PageCtx, allowBind: boolean): string {
   return layout('New container', ctx, html`
 <form method="post" action="/containers" class="stack">${csrfField(ctx)}
   <label>Image <input name="image" required placeholder="nginx:1.27-alpine"></label>
-  <label><input type="checkbox" name="pull" checked> Pull the image first</label>
+  <label class="check"><input type="checkbox" name="pull" checked> Pull the image first</label>
   <label>Name <input name="name" placeholder="optional"></label>
   <label>Command <input name="cmd" placeholder='optional, e.g. sh -c "echo hi; sleep 60"'></label>
   <label>Ports, one per line: <code>[host-ip:]host:container[/udp]</code>. Without a host IP the port is published on 127.0.0.1.
@@ -180,9 +181,9 @@ export function newContainerPage(ctx: PageCtx, allowBind: boolean): string {
   <label>Volumes, one per line: <code>volume-name:/path[:ro]</code>${allowBind ? raw(' or <code>/host/path:/path[:ro]</code>') : raw('. Host paths are disabled.')}
     <textarea name="volumes" rows="2"></textarea></label>
   <label>Restart policy <select name="restart"><option>no</option><option>unless-stopped</option><option>always</option><option>on-failure</option></select></label>
-  <label><input type="checkbox" name="start" checked> Start after creating</label>
+  <label class="check"><input type="checkbox" name="start" checked> Start after creating</label>
   <button>Create</button>
-</form>`);
+</form>`, 'Containers');
 }
 
 export function imagesPage(ctx: PageCtx, list: any[], pulls: { ref: string; state: string; error?: string }[] = []): string {
@@ -241,22 +242,27 @@ export function proxyPage(ctx: PageCtx, rules: Rule[], status: { running: boolea
     return layout('Proxy', ctx, html`<p>The proxy is off. Start kontainers with <code>KONTAINERS_PROXY=1</code> and publish ports 80 and 443
 to route domains to containers with automatic HTTPS. See the README.</p>`);
   }
-  const rows = rules.map(r => html`<tr><td>${r.tls ? 'https' : 'http'}://${r.hostname}${r.path === '/' ? '' : r.path}</td>
-<td>${r.target_container}:${r.target_port}</td><td>${ruleState(r, ruleStatus(r))}</td>
+  const rows = rules.map(r => {
+    const st = ruleStatus(r);
+    const bad = r.enabled && (st.target === 'missing' || (st.target && st.target !== 'running') || (r.tls && (!st.cert || st.cert.notAfter.getTime() < Date.now())));
+    return html`<tr data-state="${!r.enabled ? 'exited' : bad ? 'restarting' : 'running'}"><td><a href="${r.tls ? 'https' : 'http'}://${r.hostname}${r.path === '/' ? '' : r.path}">${r.tls ? 'https' : 'http'}://${r.hostname}${r.path === '/' ? '' : r.path}</a></td>
+<td><span class="ref">${r.target_container}:${r.target_port}</span></td><td>${ruleState(r, st)}</td>
 <td class="actions"><a class="button" href="/proxy/${r.id}/edit">Edit</a> ${post(ctx, `/proxy/${r.id}/toggle`, r.enabled ? 'Disable' : 'Enable')}
-${post(ctx, `/proxy/${r.id}/remove`, 'Remove', { confirm: `Remove the rule for ${r.hostname}?`, cls: 'danger' })}</td></tr>`);
+${post(ctx, `/proxy/${r.id}/remove`, 'Remove', { confirm: `Remove the rule for ${r.hostname}?`, cls: 'danger' })}</td></tr>`;
+  });
   return layout('Proxy', ctx, html`
-<p>Proxy: ${status.running ? 'running' : 'not running'}${status.lastError ? html` <span class="error">${status.lastError}</span>` : ''}</p>
+<div class="toolbar"><span class="status${status.running ? raw(' on') : raw('')}">Proxy ${status.running ? 'running' : 'not running'}</span>${status.lastError ? html`<span class="error">${status.lastError}</span>` : ''}</div>
+<table><thead><tr><th>Address</th><th>Target</th><th>State</th><th></th></tr></thead>
+<tbody>${rows.length ? rows : html`<tr><td colspan="4">No rules yet. Add one below to send a domain to a container.</td></tr>`}</tbody></table>
+<section class="add"><h2>Add a rule</h2>
 <form method="post" action="/proxy" class="stack">${csrfField(ctx)}
   <label>Hostname <input name="hostname" required placeholder="app.example.com"></label>
   <label>Path prefix (sent to the container unchanged) <input name="path" value="/"></label>
   <label>Target container <input name="targetContainer" required placeholder="container name"></label>
   <label>Target port <input name="targetPort" type="number" min="1" max="65535" required></label>
-  <label><input type="checkbox" name="tls" checked> HTTPS with an automatic certificate</label>
+  <label class="check"><input type="checkbox" name="tls" checked> HTTPS with an automatic certificate</label>
   <button>Add rule</button>
-</form>
-<table><thead><tr><th>Address</th><th>Target</th><th>State</th><th></th></tr></thead>
-<tbody>${rows.length ? rows : html`<tr><td colspan="4">No rules.</td></tr>`}</tbody></table>`);
+</form></section>`);
 }
 
 export function editRulePage(ctx: PageCtx, r: Rule): string {
@@ -266,9 +272,9 @@ export function editRulePage(ctx: PageCtx, r: Rule): string {
   <label>Path prefix (sent to the container unchanged) <input name="path" value="${r.path}"></label>
   <label>Target container <input name="targetContainer" required value="${r.target_container}"></label>
   <label>Target port <input name="targetPort" type="number" min="1" max="65535" required value="${r.target_port}"></label>
-  <label><input type="checkbox" name="tls"${r.tls ? raw(' checked') : raw('')}> HTTPS with an automatic certificate</label>
+  <label class="check"><input type="checkbox" name="tls"${r.tls ? raw(' checked') : raw('')}> HTTPS with an automatic certificate</label>
   <button>Save</button> <a href="/proxy">Cancel</a>
-</form>`);
+</form>`, 'Proxy');
 }
 
 export function settingsPage(ctx: PageCtx, users: { id: number; username: string }[], selfId: number): string {

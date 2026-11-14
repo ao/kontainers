@@ -10,6 +10,8 @@
 #   scripts/test.sh proxy      proxy rules and certificates against Pebble, all inside dind
 #   scripts/test.sh renewal    Pebble issues 90-second certificates; Caddy must renew them on its own
 #   scripts/test.sh compose    the README compose instructions, verbatim, inside dind
+#   scripts/test.sh screenshots  not a test: regenerates docs/screenshots/ and prints measured
+#                              image size, startup time and idle memory (not part of "all")
 #
 # Env: BUN_IMAGE (default oven/bun:1.3.1), CACHE_VOLUME (default kontainers-test-cache)
 set -eu
@@ -226,4 +228,50 @@ if [ "$SUITE" = all ] || [ "$SUITE" = compose ]; then
   [ -z "$(C port docker-proxy 2375 2>/dev/null || true)" ] || { echo "docker-proxy port is published"; exit 1; }
   echo "compose: setup token printed, /readyz ok through docker-socket-proxy, only 127.0.0.1:8080 published"
   C down -v >/dev/null 2>&1
+fi
+
+# Not part of "all": regenerates docs/screenshots/*.png from a realistic host (a compose stack, a
+# container created in kontainers, proxy rules with Pebble certificates) and measures the image.
+if [ "$SUITE" = screenshots ]; then
+  PWIMG=mcr.microsoft.com/playwright:v1.56.1-noble
+  acme_stack
+  docker image inspect "$PWIMG" >/dev/null 2>&1 || docker pull -q "$PWIMG" >/dev/null
+  docker exec "$DIND" mkdir -p /work/shots-src
+  docker cp scripts/screenshots/. "$DIND:/work/shots-src/"
+  docker exec -w /work/shots-src "$DIND" docker compose -f demo-compose.yaml up -d --quiet-pull 2>&1 | tail -1
+  # The browser runs on the outer Docker in dind's network namespace, so it is not one of the
+  # containers on the host it photographs. Its npm install lives in .scratch.
+  mkdir -p .scratch/shots-run docs/screenshots
+  cp scripts/screenshots/shots.mjs .scratch/shots-run/
+  browse() {
+    docker run --rm --network "container:$DIND" -v "$PWD/.scratch/shots-run":/run -v "$PWD/docs/screenshots":/out -w /run \
+      -e URL="http://$KIP:8080" -e TOKEN="$TOKEN" -e OUT=/out -e PHASE="$1" "$PWIMG" \
+      sh -c '[ -d node_modules/playwright ] || npm i --silent --no-audit --no-fund playwright@1.56.1 >/dev/null; node shots.mjs'
+  }
+  browse setup
+  # The test ACME server and its DNS stub are only needed to issue the certificates.
+  D rm -f pebble challtestsrv >/dev/null
+  browse shots
+  ls -l docs/screenshots
+
+  echo "--- measurements ($(uname -m) host, Docker $(docker version -f '{{.Server.Version}}'), $(docker info -f '{{.NCPU}} CPUs, {{.MemTotal}} bytes'))"
+  echo "image size (uncompressed, docker image inspect): $(docker image inspect kontainers:test -f '{{.Size}}') bytes"
+  sleep 30
+  echo "idle memory with Caddy and 2 HTTPS rules, $(docker exec "$DIND" docker ps -q | wc -l | tr -d ' ') containers on the host (docker stats, after 30 s idle):"
+  docker exec "$DIND" docker stats --no-stream --format '  {{.Name}} {{.MemUsage}} CPU {{.CPUPerc}}'
+  # Startup: from docker start to the first 200 from /healthz, proxy off, five runs, timed inside
+  # dind with /proc/uptime (10 ms resolution) so host round trips are not counted.
+  D create --name kstart --network kt kontainers:test >/dev/null
+  docker exec "$DIND" sh -c '
+    up() { cut -d" " -f1 /proc/uptime; }
+    for n in 1 2 3 4 5; do
+      t0=$(up); docker start kstart >/dev/null
+      ip=$(docker inspect -f "{{(index .NetworkSettings.Networks \"kt\").IPAddress}}" kstart)
+      until wget -qO- "http://$ip:8080/healthz" >/dev/null 2>&1; do :; done
+      echo "  start $n: $(awk -v a="$t0" -v b="$(up)" "BEGIN { printf \"%d\", (b - a) * 1000 }") ms"
+      docker stop -t 2 kstart >/dev/null
+    done'
+  D rm -f kstart >/dev/null
+  docker exec -w /work/shots-src "$DIND" docker compose -f demo-compose.yaml down -v >/dev/null 2>&1
+  acme_teardown
 fi
