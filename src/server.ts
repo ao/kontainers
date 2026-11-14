@@ -23,6 +23,8 @@ export interface Deps {
   rules: RuleStore;
   proxy: ProxyManager;
   limiter?: RateLimiter;
+  // The container kontainers runs in (ID or name), when it runs in one.
+  selfContainer?: string;
 }
 
 export type Handler = (req: Request, socketIp: string) => Promise<Response>;
@@ -214,6 +216,29 @@ export function createHandler(d: Deps): Handler {
     return { user: s.user.username, csrf: s.csrf, flash: f?.flash, error: f?.error, proxyEnabled: cfg.proxy.enabled };
   }
 
+  // kontainers' own container and, under compose, the rest of its project (the socket proxy):
+  // stopping or removing one of them from the UI would cut the UI off from Docker or kill it.
+  let selfCache: views.SelfInfo | null | undefined;
+  async function self(): Promise<views.SelfInfo | null> {
+    if (selfCache !== undefined) return selfCache;
+    if (!d.selfContainer) return (selfCache = null);
+    try {
+      const c = await docker.inspect(d.selfContainer);
+      selfCache = { id: c.Id, project: c.Config?.Labels?.['com.docker.compose.project'] ?? null };
+    } catch (e) {
+      if (e instanceof DockerError && e.status === 404) selfCache = null; // not a container after all
+      else return null; // daemon unreachable: try again on the next request
+    }
+    return selfCache ?? null;
+  }
+  async function refuseSelf(id: string): Promise<void> {
+    const me = await self();
+    if (!me) return;
+    if (views.isSelf(await docker.inspect(id), me)) {
+      throw new v.ValidationError('this is kontainers itself, or part of its compose project; stopping or removing it here would cut off this page. Manage it on the host with docker compose or docker');
+    }
+  }
+
   // Runs a state change, stores the outcome as a flash message, redirects back.
   async function act(s: Session, ip: string, back: string, action: string, target: string | null, fn: () => Promise<string | void> | string | void): Promise<Response> {
     try {
@@ -285,9 +310,9 @@ export function createHandler(d: Deps): Handler {
 
     if (m === 'GET') {
       if (p === '/') return redirect('/containers');
-      if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainers()));
+      if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainers(), await self()));
       if (p === '/containers/new') return page(views.newContainerPage(ctx(s), cfg.allowBindMounts));
-      if ((r = /^\/containers\/([^/]+)$/.exec(p))) return page(views.containerPage(ctx(s), await docker.inspect(r[1])));
+      if ((r = /^\/containers\/([^/]+)$/.exec(p))) return page(views.containerPage(ctx(s), await docker.inspect(r[1]), await self()));
       if ((r = /^\/api\/containers\/([^/]+)\/stats$/.exec(p))) {
         return new Response(JSON.stringify(summarizeStats(await docker.stats(r[1]))), { headers: { 'content-type': 'application/json' } });
       }
@@ -346,12 +371,16 @@ export function createHandler(d: Deps): Handler {
     if ((r = /^\/containers\/([^/]+)\/update$/.exec(p))) {
       const id = r[1];
       // The container gets a new ID, so return to the list.
-      return act(s, ip, '/containers', 'container-update', id, () => updateContainer(docker, id));
+      return act(s, ip, '/containers', 'container-update', id, async () => {
+        await refuseSelf(id);
+        return updateContainer(docker, id);
+      });
     }
     if ((r = /^\/containers\/([^/]+)\/(start|stop|restart|unpause|remove)$/.exec(p))) {
       const [, id, op] = r;
       const back = op === 'remove' ? '/containers' : (f.back === 'detail' ? `/containers/${encodeURIComponent(id)}` : '/containers');
       return act(s, ip, back, `container-${op}`, id, async () => {
+        if (op !== 'start' && op !== 'unpause') await refuseSelf(id);
         if (op === 'start') await docker.start(id);
         else if (op === 'stop') await docker.stop(id);
         else if (op === 'restart') await docker.restart(id);

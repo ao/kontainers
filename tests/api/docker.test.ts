@@ -121,6 +121,31 @@ describe.skipIf(!DOCKER)('docker flows', () => {
     await dockerApi(`/containers/${name}?force=1`, { method: 'DELETE' });
   });
 
+  test('kontainers refuses to stop or remove itself or its compose siblings', async () => {
+    const mk = async (name: string, project: string) => {
+      const r = await dockerApi(`/containers/create?name=${name}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ Image: IMAGE, Cmd: ['sleep', '300'], Labels: { 'com.docker.compose.project': project } }) });
+      expect(r.status).toBe(201);
+      expect((await dockerApi(`/containers/${name}/start`, { method: 'POST' })).status).toBe(204);
+    };
+    const [own, sib, other] = [`k-${run}-self`, `k-${run}-sib`, `k-${run}-oth`];
+    await mk(own, `kself${run}`); await mk(sib, `kself${run}`); await mk(other, `kother${run}`);
+    // A second server that believes it runs in `own`.
+    const { srv: s2, c: c2 } = await readyServer({ KONTAINERS_SELF_CONTAINER: own });
+    try {
+      const list = await c2.page('/containers');
+      expect(list).toMatch(new RegExp(`data-name="${own}"[\\s\\S]*?this is kontainers`));
+      expect(list).toMatch(new RegExp(`data-name="${sib}"[\\s\\S]*?part of kontainers`));
+      for (const n of [own, sib]) for (const op of ['stop', 'restart', 'remove', 'update']) {
+        expect((await c2.submit(`/containers/${n}/${op}`, {})).error).toContain('kontainers itself');
+      }
+      expect(((await (await dockerApi(`/containers/${sib}/json`)).json()) as any).State.Running).toBe(true);
+      expect((await c2.submit(`/containers/${other}/stop`, {})).error).toBe('');
+    } finally {
+      await s2.stop();
+      for (const n of [own, sib, other]) await dockerApi(`/containers/${n}?force=1`, { method: 'DELETE' });
+    }
+  }, 60000);
+
   describe('update image', () => {
     // "busybox:1.36" is pointed at alpine locally, so pulling it again moves the tag back: a changed image.
     const FAKE_OLD = 'alpine:3.20';

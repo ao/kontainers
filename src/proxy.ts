@@ -49,13 +49,19 @@ export class RuleStore {
   }
 
   validate(input: RuleInput) {
-    return {
+    const r = {
       hostname: v.hostname(input.hostname),
       path: v.pathPrefix(input.path),
       target: v.name(typeof input.targetContainer === 'string' ? input.targetContainer.replace(/^\//, '') : input.targetContainer, 'target container'),
       port: v.port(input.targetPort, 'target port'),
       tls: input.tls === undefined ? true : input.tls === true || input.tls === 'on' || input.tls === 'true' || input.tls === '1',
     };
+    // Let's Encrypt issues wildcard certificates only over the DNS-01 challenge, which needs DNS
+    // provider credentials kontainers does not handle; an HTTPS wildcard rule would never get one.
+    if (r.tls && r.hostname.startsWith('*.')) {
+      throw new v.ValidationError(`a wildcard hostname cannot get an automatic certificate (that needs a DNS challenge, which kontainers does not do); add one rule per name, or turn HTTPS off for ${r.hostname}`);
+    }
+    return r;
   }
 
   create(input: RuleInput, now = Date.now()): Rule {

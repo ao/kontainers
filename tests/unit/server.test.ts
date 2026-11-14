@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { loadConfig } from '../../src/config';
 import { clientIp, containerSpec, splitArgs, hostAllowed, normalizeIp, parseCookies, parsePort, parseVolume, sameOrigin } from '../../src/server';
 import { demux } from '../../src/docker';
-import { esc, html, raw, formatPorts, containersPage, containerPage, imagesPage, proxyPage, loginPage, setupPage } from '../../src/views';
+import { esc, html, raw, formatPorts, isSelf, containersPage, containerPage, imagesPage, proxyPage, loginPage, setupPage } from '../../src/views';
 import type { Rule } from '../../src/proxy';
 
 const local = loadConfig({});
@@ -99,6 +99,24 @@ describe('pages', () => {
     expect(buttons(containersPage(ctx, [row('paused')]))).toEqual(['Unpause']);
     expect(buttons(containersPage(ctx, [row('restarting')]))).toEqual(['Stop']);
     for (const s of ['exited', 'created', 'dead']) expect(buttons(containersPage(ctx, [row(s)]))).toEqual(['Start', 'Remove']);
+  });
+
+  test("kontainers' own container and its compose siblings get no actions", () => {
+    const me = { id: 'f'.repeat(64), project: 'kontainers' };
+    const own = { ...row('running'), Id: me.id, Labels: { 'com.docker.compose.project': 'kontainers' } };
+    const sib = { ...row('running'), Id: 'e'.repeat(64), Names: ['/kontainers-docker-proxy-1'], Labels: { 'com.docker.compose.project': 'kontainers' } };
+    const other = { ...row('running'), Id: 'd'.repeat(64), Names: ['/other'], Labels: { 'com.docker.compose.project': 'shop' } };
+    expect(isSelf(own, me)).toBe(true);
+    expect(isSelf(sib, me)).toBe(true);
+    expect(isSelf(other, me)).toBe(false);
+    expect(isSelf(other, { id: me.id, project: null })).toBe(false);
+    expect(isSelf(own, null)).toBe(false);
+    const page = containersPage(ctx, [own, sib, other], me);
+    expect(buttons(page)).toEqual(['Stop', 'Restart']); // only "other"
+    expect(page).toContain('this is kontainers');
+    expect(page).toContain('part of kontainers');
+    const detail = containerPage(ctx, { Id: me.id, Name: '/kontainers', State: { Status: 'running' }, Config: { Labels: { 'kontainers.managed': 'true' } }, HostConfig: {} }, me);
+    expect(buttons(detail)).toEqual([]);
   });
 
   test('detail page actions return to the detail page, except remove', () => {

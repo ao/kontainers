@@ -1,6 +1,6 @@
 {
   "name": "kontainers",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Web UI for one Docker host: containers, images, networks, volumes, and domain proxy rules with automatic HTTPS",
   "license": "MIT",
   "type": "module",

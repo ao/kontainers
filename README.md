@@ -114,7 +114,9 @@ prefix, target container name and port. kontainers connects the target container
 `kontainers-proxy` network and Caddy reaches it by name; the target does not need to publish a
 port. Every 10 seconds kontainers reconnects targets that left the network, which is what
 `docker compose up` does when it recreates a container. The path prefix is matched but not
-removed: a rule for `/api` sends `/api/users` to the container as `/api/users`.
+removed: a rule for `/api` sends `/api/users` to the container as `/api/users`. A wildcard
+hostname (`*.example.com`) works over plain HTTP only: Let's Encrypt issues wildcard certificates
+over a DNS challenge, which kontainers does not do, so add one HTTPS rule per name instead.
 
 The Proxy page shows, for each rule, whether its target container exists and is running and,
 for HTTPS rules, when its certificate expires or that there is none yet. A missing certificate
@@ -142,6 +144,7 @@ briefly unavailable; Caddy did not renew certificates in a process that started 
 | `KONTAINERS_ACME_CA` | Let's Encrypt | ACME directory URL |
 | `KONTAINERS_ACME_CA_ROOT` | unset | PEM file to trust for the ACME directory (for a private CA) |
 | `KONTAINERS_ACME_RENEW_CHECK` | unset (Caddy's default) | Seconds between Caddy's checks for certificates due for renewal, 1 to 86400; HTTPS rules only |
+| `KONTAINERS_SELF_CONTAINER` | the container's hostname | ID or name of kontainers' own container, if `--hostname` changed it; kontainers and its compose project get no Stop, Remove or Update |
 | `KONTAINERS_HTTP_PORT` / `KONTAINERS_HTTPS_PORT` | `80` / `443` | Proxy ports |
 
 `/healthz` returns 200 while the process runs. `/readyz` returns 200 when the database and the

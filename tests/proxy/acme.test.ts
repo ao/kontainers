@@ -32,6 +32,13 @@ describe.skipIf(!URL_)('proxy with ACME', () => {
     expect(r.error).toBe('');
   });
 
+  test('kontainers recognises its own container from its hostname and will not stop it', async () => {
+    // Here kontainers runs inside the daemon it manages, as on a real host.
+    expect(await c.page('/containers')).toMatch(/data-name="kontainers"[\s\S]*?this is kontainers/);
+    expect((await c.submit('/containers/kontainers/stop', {})).error).toContain('kontainers itself');
+    expect((await fetch(URL_ + '/healthz')).status).toBe(200);
+  });
+
   test('the proxy is running and answers 404 for unknown hosts', async () => {
     expect(await c.page('/proxy')).toContain('Proxy: running');
     const r = await fetch(`http://nothing.test:${HTTP}/`);

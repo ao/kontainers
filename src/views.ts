@@ -41,6 +41,20 @@ function containerActions(ctx: PageCtx, id: string, name: string, state: string,
   return html`${a('start', 'Start')} ${a('remove', 'Remove', { confirm: `Remove container ${name}?`, cls: 'danger' })}`;
 }
 
+export interface SelfInfo { id: string; project: string | null }
+
+const labelsOf = (c: any): Record<string, string> => c?.Labels || c?.Config?.Labels || {};
+
+// True for kontainers' own container and for the other containers of its compose project.
+export function isSelf(c: any, me: SelfInfo | null): boolean {
+  if (!me) return false;
+  if (c?.Id === me.id) return true;
+  return !!me.project && labelsOf(c)['com.docker.compose.project'] === me.project;
+}
+
+const selfNote = (c: any, me: SelfInfo | null) =>
+  html`<small class="muted">${c?.Id === me?.id ? 'this is kontainers' : 'part of kontainers'}: manage it on the host</small>`;
+
 // Docker lists a port published on all interfaces twice (0.0.0.0 and ::); show it once as "*".
 export function formatPorts(ports: any[]): string {
   const groups = new Map<string, Set<string>>();
@@ -106,14 +120,14 @@ const shortId = (id: string) => String(id || '').replace(/^sha256:/, '').slice(0
 const fmtTime = (s: number) => new Date(s * 1000).toISOString().replace('T', ' ').slice(0, 16);
 const fmtSize = (b: number) => b > 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${(b / 1e6).toFixed(1)} MB`;
 
-export function containersPage(ctx: PageCtx, list: any[]): string {
+export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = null): string {
   const rows = list.map(c => {
     const name = (c.Names?.[0] || '').replace(/^\//, '');
     const project = c.Labels?.['com.docker.compose.project'];
     return html`<tr data-name="${name}">
   <td><a href="/containers/${c.Id}">${name}</a>${project ? html` <small class="muted">compose: ${project}</small>` : ''}</td><td>${c.Image}</td>
   <td><span class="state ${c.State}">${c.State}</span> <small>${c.Status}</small></td><td>${formatPorts(c.Ports)}</td>
-  <td class="actions">${containerActions(ctx, c.Id, name, c.State)}</td></tr>`;
+  <td class="actions">${isSelf(c, me) ? selfNote(c, me) : containerActions(ctx, c.Id, name, c.State)}</td></tr>`;
   });
   return layout('Containers', ctx, html`
 <p><a class="button" href="/containers/new">New container</a></p>
@@ -121,7 +135,7 @@ export function containersPage(ctx: PageCtx, list: any[]): string {
 <tbody>${rows.length ? rows : html`<tr><td colspan="5">No containers.</td></tr>`}</tbody></table>`);
 }
 
-export function containerPage(ctx: PageCtx, c: any): string {
+export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null): string {
   const name = String(c.Name || '').replace(/^\//, '');
   const env = (c.Config?.Env || []).map((e: string) => html`<li><code>${e.replace(/=.*/, '=…')}</code></li>`);
   const mounts = (c.Mounts || []).map((m: any) => html`<li><code>${m.Type} ${m.Name || m.Source} → ${m.Destination}${m.RW ? '' : ' (ro)'}</code></li>`);
@@ -136,8 +150,8 @@ export function containerPage(ctx: PageCtx, c: any): string {
   ${c.State?.Status === 'exited' ? html`<dt>Exit code</dt><dd>${c.State.ExitCode}</dd>` : ''}
   <dt>Restart policy</dt><dd>${c.HostConfig?.RestartPolicy?.Name}</dd>
 </dl>
-<div class="actions">${containerActions(ctx, c.Id, name, c.State?.Status || '', true)}
-${c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project']
+<div class="actions">${isSelf(c, me) ? selfNote(c, me) : containerActions(ctx, c.Id, name, c.State?.Status || '', true)}
+${isSelf(c, me) ? '' : c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project']
     ? post(ctx, `/containers/${c.Id}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?` })
     : c.Config?.Labels?.['com.docker.compose.project'] ? html`<small class="muted">Part of compose project ${c.Config.Labels['com.docker.compose.project']}: update it with <code>docker compose pull &amp;&amp; docker compose up -d</code>.</small>` : ''}</div>
 ${c.State?.Status === 'running' ? html`<h2>Usage</h2>

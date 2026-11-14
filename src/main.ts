@@ -3,6 +3,7 @@
 //   bun src/main.ts backup FILE     write a consistent snapshot of the database to FILE
 
 import { existsSync } from 'node:fs';
+import { hostname } from 'node:os';
 import { bindProblem, loadConfig } from './config';
 import { openDb, snapshot } from './db';
 import { Auth } from './auth';
@@ -32,7 +33,9 @@ const auth = new Auth(db);
 const docker = new Docker(cfg.dockerHost, { allowBindMounts: cfg.allowBindMounts });
 const rules = new RuleStore(db);
 const proxy = new ProxyManager(cfg, rules, docker);
-const handler = createHandler({ cfg, db, auth, docker, rules, proxy });
+// In a container the hostname is the container ID, unless --hostname changed it.
+const selfContainer = process.env.KONTAINERS_SELF_CONTAINER || (cfg.inContainer ? hostname() : undefined);
+const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer });
 
 const server = Bun.serve({
   hostname: cfg.host,

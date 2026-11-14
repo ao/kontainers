@@ -25,6 +25,14 @@ describe('RuleStore', () => {
     expect(s.list()).toEqual([]);
     expect(() => s.remove(r.id)).toThrow('not found');
   });
+  test('a wildcard hostname is allowed over plain HTTP but refused with HTTPS', () => {
+    const s = store();
+    expect(() => s.create({ hostname: '*.example.com', targetContainer: 'web', targetPort: 80 })).toThrow('DNS challenge');
+    expect(() => s.create({ hostname: '*.example.com', targetContainer: 'web', targetPort: 80, tls: true })).toThrow('DNS challenge');
+    expect(s.create({ hostname: '*.example.com', targetContainer: 'web', targetPort: 80, tls: false }).hostname).toBe('*.example.com');
+    const id = s.list()[0].id;
+    expect(() => s.update(id, { hostname: '*.example.com', targetContainer: 'web', targetPort: 80, tls: true })).toThrow('DNS challenge');
+  });
   test('hostname + path is unique', () => {
     const s = store();
     s.create({ hostname: 'a.example.com', targetContainer: 'web', targetPort: 80 });

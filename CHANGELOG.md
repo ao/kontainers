@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1
+
+- kontainers recognises its own container, and under compose the rest of its project (the socket
+  proxy), and offers no Stop, Restart, Remove or Update for them; the server refuses those actions
+  too. Before, one click could stop the UI or cut it off from Docker.
+- An HTTPS proxy rule with a wildcard hostname (`*.example.com`) is refused with an explanation.
+  Let's Encrypt issues wildcard certificates only over a DNS challenge, which kontainers does not
+  do, so such a rule waited for a certificate forever. Wildcards still work over plain HTTP.
+- `KONTAINERS_SELF_CONTAINER` names kontainers' container when its hostname is not the container ID.
+
 ## 0.2.0
 
 A rewrite. Nothing from 0.1.x carries over, including its data.
