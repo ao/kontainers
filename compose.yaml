@@ -37,6 +37,7 @@ services:
       ALLOW_START: 1
       ALLOW_STOP: 1
       ALLOW_RESTARTS: 1
+      DISTRIBUTION: 1   # registry digests for update checks; reads only
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks: [docker-api]

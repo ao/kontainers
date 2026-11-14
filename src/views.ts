@@ -1,6 +1,7 @@
 // Server-rendered HTML. Every interpolated value goes through esc(); there is no inline script or style.
 
 import type { Rule } from './proxy';
+import { containerStatus, type UpdateState } from './updates';
 
 export function esc(v: unknown): string {
   return String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -119,23 +120,49 @@ const shortId = (id: string) => String(id || '').replace(/^sha256:/, '').slice(0
 const fmtTime = (s: number) => new Date(s * 1000).toISOString().replace('T', ' ').slice(0, 16);
 const fmtSize = (b: number) => b > 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${(b / 1e6).toFixed(1)} MB`;
 
-export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = null): string {
+export interface UpdateView {
+  get: (ref: string) => UpdateState | null;
+  lastRun: number | null;
+  scheduled: number | null; // hours between scheduled checks, or null when off
+}
+
+const ago = (t: number) => {
+  const m = Math.round((Date.now() - t) / 60000);
+  return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 48 * 60 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} days ago`;
+};
+
+// ref: the image reference the container was created with; imageId: the image it runs.
+const hasNewer = (u: UpdateView | null, ref: string, imageId: string | undefined) =>
+  containerStatus(u?.get(ref) ?? null, imageId)?.status === 'available';
+const updateBadge = (u: UpdateView | null, ref: string, imageId: string | undefined) =>
+  hasNewer(u, ref, imageId) ? html`<small class="update">newer image available</small>` : '';
+
+export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = null, updates: UpdateView | null = null): string {
   const rows = list.map(c => {
     const name = (c.Names?.[0] || '').replace(/^\//, '');
     const project = c.Labels?.['com.docker.compose.project'];
     return html`<tr data-name="${name}" data-state="${c.State}">
-  <td><a href="/containers/${c.Id}">${name}</a>${project ? html`<small>compose project ${project}</small>` : ''}</td><td><span class="ref">${c.Image}</span></td>
+  <td><a href="/containers/${c.Id}">${name}</a>${project ? html`<small>compose project ${project}</small>` : ''}</td><td><span class="ref">${c.Image}</span>${updateBadge(updates, c.Image, c.ImageID)}</td>
   <td><span class="state ${c.State}">${c.State}</span><small>${c.Status}</small></td><td><span class="ref">${formatPorts(c.Ports)}</span></td>
   <td class="actions">${isSelf(c, me) ? selfNote(c, me) : containerActions(ctx, c.Id, name, c.State)}</td></tr>`;
   });
   const running = list.filter(c => c.State === 'running').length;
+  const newer = list.filter(c => hasNewer(updates, c.Image, c.ImageID)).length;
+  const checked = updates
+    ? html`<span class="muted">${newer ? `${newer} with a newer image; ` : ''}${updates.lastRun ? `checked for updates ${ago(updates.lastRun)}` : updates.scheduled ? 'not checked for updates yet' : 'update checks are off'}</span>
+${post(ctx, '/updates/check', 'Check for updates')}`
+    : '';
   return layout('Containers', ctx, html`
-<div class="toolbar"><span class="muted">${running} of ${list.length} running</span><a class="button primary" href="/containers/new">New container</a></div>
+<div class="toolbar"><span class="muted">${running} of ${list.length} running</span><span class="spread"></span>${checked}<a class="button primary" href="/containers/new">New container</a></div>
 <table><thead><tr><th>Name</th><th>Image</th><th>State</th><th>Published ports</th><th></th></tr></thead>
 <tbody>${rows.length ? rows : html`<tr><td colspan="5">No containers yet. <a href="/containers/new">Create one</a>, or start one with docker and it appears here.</td></tr>`}</tbody></table>`);
 }
 
-export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null): string {
+export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, updates: UpdateView | null = null): string {
+  const raw = updates?.get(c.Config?.Image) ?? null;
+  const upd = raw && { ...containerStatus(raw, c.Image)!, checkedAt: raw.checkedAt };
+  const updText = !upd ? '' : upd.status === 'available' ? (raw!.status === 'available' ? 'a newer image is available for this tag' : upd.reason)
+    : upd.status === 'current' ? 'the newest image for this tag' : `update status unknown: ${upd.reason || ''}`;
   const name = String(c.Name || '').replace(/^\//, '');
   const env = (c.Config?.Env || []).map((e: string) => html`<li><code>${e.replace(/=[\s\S]*/, '=…')}</code></li>`);
   const mounts = (c.Mounts || []).map((m: any) => html`<li><code>${m.Type} ${m.Name || m.Source} → ${m.Destination}${m.RW ? '' : ' (ro)'}</code></li>`);
@@ -144,7 +171,7 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null):
 <p><a href="/containers">All containers</a></p>
 <dl class="facts">
   <dt>ID</dt><dd><code>${shortId(c.Id)}</code></dd>
-  <dt>Image</dt><dd><code>${c.Config?.Image}</code></dd>
+  <dt>Image</dt><dd><code>${c.Config?.Image}</code>${upd ? html`<small class="${upd.status === 'available' ? 'update' : 'muted'}">${updText} (checked ${ago(upd.checkedAt)})</small>` : ''}</dd>
   <dt>State</dt><dd><span class="state ${c.State?.Status}">${c.State?.Status}</span></dd>
   <dt>Started</dt><dd>${!c.State?.StartedAt || c.State.StartedAt.startsWith('0001-') ? 'never' : `${c.State.StartedAt.slice(0, 16).replace('T', ' ')} UTC`}</dd>
   ${c.State?.Health ? html`<dt>Health</dt><dd>${c.State.Health.Status}</dd>` : ''}
@@ -153,7 +180,7 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null):
 </dl>
 <div class="actions">${isSelf(c, me) ? selfNote(c, me) : containerActions(ctx, c.Id, name, c.State?.Status || '', true)}
 ${isSelf(c, me) ? '' : c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project']
-    ? post(ctx, `/containers/${c.Id}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?` })
+    ? post(ctx, `/containers/${c.Id}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' ? 'primary' : '' })
     : c.Config?.Labels?.['com.docker.compose.project'] ? html`<small class="muted">Part of compose project ${c.Config.Labels['com.docker.compose.project']}: update it with <code>docker compose pull &amp;&amp; docker compose up -d</code>.</small>` : ''}</div>
 ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
 <dl class="facts" id="stats" data-stats="/api/containers/${c.Id}/stats">

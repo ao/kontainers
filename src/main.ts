@@ -10,6 +10,7 @@ import { Auth } from './auth';
 import { Docker } from './docker';
 import { ProxyManager, RuleStore } from './proxy';
 import { createHandler } from './server';
+import { UpdateChecker } from './updates';
 
 const cfg = loadConfig();
 const [cmd, arg] = process.argv.slice(2);
@@ -35,7 +36,9 @@ const rules = new RuleStore(db);
 const proxy = new ProxyManager(cfg, rules, docker);
 // In a container the hostname is the container ID, unless --hostname changed it.
 const selfContainer = process.env.KONTAINERS_SELF_CONTAINER || (cfg.inContainer ? hostname() : undefined);
-const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer });
+const updates = new UpdateChecker(docker, cfg.updateCheckHours * 3600 * 1000);
+const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates });
+updates.start();
 
 const server = Bun.serve({
   hostname: cfg.host,
@@ -67,6 +70,7 @@ async function shutdown(sig: string) {
   closing = true;
   console.log(`kontainers: ${sig}, shutting down`);
   server.stop();
+  updates.stop();
   await proxy.stop();
   db.close();
   process.exit(0);

@@ -133,6 +133,9 @@ export class Docker {
   // Images
   listImages() { return this.json<any[]>('GET', '/images/json'); }
   inspectImage(ref: string) { return this.json<any>('GET', `/images/${encodeURIComponent(v.imageRef(ref))}/json`); }
+  // The registry's current manifest for an image reference, asked by the daemon with its own
+  // registry credentials. Nothing is downloaded.
+  distribution(ref: string) { return this.json<any>('GET', `/distribution/${encodeURIComponent(v.image(ref))}/json`, undefined, 30000); }
   async rename(id: string, name: string) {
     await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/rename?name=${encodeURIComponent(v.name(name))}`);
   }

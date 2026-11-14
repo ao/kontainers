@@ -77,7 +77,7 @@ start_app() {
     # The proxy reads dind's socket from the shared volume.
     docker run -d --name "$SOCKPROXY" --network "$NET" --network-alias docker-proxy \
       -v "$SOCKVOL":/var/run -e CONTAINERS=1 -e IMAGES=1 -e NETWORKS=1 -e VOLUMES=1 -e POST=1 \
-      -e ALLOW_START=1 -e ALLOW_STOP=1 -e ALLOW_RESTARTS=1 tecnativa/docker-socket-proxy:0.3.0 >/dev/null
+      -e ALLOW_START=1 -e ALLOW_STOP=1 -e ALLOW_RESTARTS=1 -e DISTRIBUTION=1 tecnativa/docker-socket-proxy:0.3.0 >/dev/null
   fi
   docker rm -f "$APP" >/dev/null 2>&1 || true
   docker run -d --name "$APP" --network "$NET" -e DOCKER_HOST=tcp://docker-proxy:2375 kontainers:test >/dev/null

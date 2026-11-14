@@ -12,6 +12,7 @@ import { Docker, DockerError, summarizeStats, type CreateSpec } from './docker';
 import type { ProxyManager, RuleStore } from './proxy';
 import { snapshot } from './db';
 import { updateContainer } from './update';
+import { containerStatus, type UpdateChecker } from './updates';
 import { STATIC } from './static';
 import * as v from './validate';
 import * as views from './views';
@@ -26,6 +27,7 @@ export interface Deps {
   limiter?: RateLimiter;
   // The container kontainers runs in (ID or name), when it runs in one.
   selfContainer?: string;
+  updates?: UpdateChecker;
 }
 
 export type Handler = (req: Request, socketIp: string) => Promise<Response>;
@@ -241,6 +243,10 @@ export function createHandler(d: Deps): Handler {
     }
     return selfCache ?? null;
   }
+  const updateView = (): views.UpdateView | null => d.updates
+    ? { get: (ref: string) => d.updates!.get(ref), lastRun: d.updates.lastRun, scheduled: cfg.updateCheckHours > 0 ? cfg.updateCheckHours : null }
+    : null;
+
   async function refuseSelf(id: string): Promise<void> {
     const me = await self();
     if (!me) return;
@@ -346,9 +352,9 @@ export function createHandler(d: Deps): Handler {
 
     if (m === 'GET') {
       if (p === '/') return redirect('/containers');
-      if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainers(), await self()));
+      if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainers(), await self(), updateView()));
       if (p === '/containers/new') return page(views.newContainerPage(ctx(s), cfg.allowBindMounts));
-      if ((r = /^\/containers\/([^/]+)$/.exec(p))) return page(views.containerPage(ctx(s), await docker.inspect(r[1]), await self()));
+      if ((r = /^\/containers\/([^/]+)$/.exec(p))) return page(views.containerPage(ctx(s), await docker.inspect(r[1]), await self(), updateView()));
       if ((r = /^\/api\/containers\/([^/]+)\/stats$/.exec(p))) {
         return new Response(JSON.stringify(summarizeStats(await docker.stats(r[1]))), { headers: { 'content-type': 'application/json' } });
       }
@@ -410,7 +416,18 @@ export function createHandler(d: Deps): Handler {
       // The container gets a new ID, so return to the list.
       return act(s, ip, '/containers', 'container-update', id, async () => {
         await refuseSelf(id);
-        return updateContainer(docker, id);
+        const ref = (await docker.inspect(id)).Config?.Image;
+        const msg = await updateContainer(docker, id);
+        if (ref && d.updates) await d.updates.check(ref).catch(() => {});
+        return msg;
+      });
+    }
+    if (p === '/updates/check') {
+      return act(s, ip, '/containers', 'update-check', null, async () => {
+        if (!d.updates) throw new v.ValidationError('update checks are not available');
+        const n = await d.updates.checkAll();
+        const available = n === 0 ? 0 : (await docker.listContainers()).filter(c => containerStatus(d.updates!.get(c.Image), c.ImageID)?.status === 'available').length;
+        return `Checked ${n} image${n === 1 ? '' : 's'}: ${available === 0 ? 'every container runs the newest image for its tag' : `${available} container${available === 1 ? ' has' : 's have'} a newer image`}.`;
       });
     }
     if ((r = /^\/containers\/([^/]+)\/(start|stop|restart|unpause|remove)$/.exec(p))) {

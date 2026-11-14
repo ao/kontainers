@@ -90,7 +90,12 @@ div.actions { margin: 1rem 0; white-space: normal; }
 span.error, small .error { padding: 0; border: 0; background: none; color: var(--rust); }
 .warn { color: var(--warn); }
 .muted { color: var(--muted); }
-.toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.toolbar { display: flex; align-items: center; gap: .9rem; margin-bottom: 1rem; flex-wrap: wrap; }
+.toolbar .spread { flex: 1; }
+.toolbar form.inline button { padding: .35rem .8rem; font-size: .88rem; }
+small.update { display: block; color: var(--warn); font-weight: 600; font-size: .82rem; margin-top: .15rem; }
+small.update::before { content: "\\2191 "; }
+button.primary { background: var(--marine); color: var(--marine-ink); border-color: var(--marine); }
 .status { display: inline-flex; align-items: center; gap: .45rem; font-weight: 600; }
 .status::before { content: ""; width: .6rem; height: .6rem; border-radius: 50%; background: var(--stop); }
 .status.on::before { background: var(--run); }
