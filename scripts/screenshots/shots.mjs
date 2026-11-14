@@ -32,6 +32,8 @@ if (PHASE === 'setup') {
   // A container created in kontainers, so its page offers Update image.
   await page.goto(BASE + '/containers/new');
   await page.getByLabel('Image', { exact: true }).fill('nginx:1.27-alpine');
+  // Keep the older local nginx:1.27-alpine (test.sh tags 1.27.0 as it), so there is an update to find.
+  await page.getByLabel('Pull the image first').uncheck();
   await page.getByLabel('Name', { exact: true }).fill('blog');
   await page.getByLabel(/^Ports/).fill('8081:80');
   await page.getByLabel(/^Environment/).fill('TZ=Europe/London');
@@ -60,6 +62,9 @@ if (PHASE === 'setup') {
   await page.getByLabel('Password').fill(PW);
   await page.getByRole('button', { name: 'Log in' }).click();
   await page.waitForURL(/\/containers$/);
+  await page.getByRole('button', { name: 'Check for updates' }).click();
+  await page.getByRole('status').filter({ hasText: /newer image/ }).waitFor();
+  await page.goto(BASE + '/containers'); // the same list without the flash message
   await shot('containers');
   await page.goto(BASE + '/proxy');
   await shot('proxy', { fullPage: true });

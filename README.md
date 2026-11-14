@@ -63,6 +63,13 @@ What works, and is covered by the test suites below:
   recreate the container with the same name, command, environment, ports, volumes, restart policy
   and networks. The old container is stopped and set aside first and is put back if the new one
   cannot be created or started. Compose containers are left to `docker compose pull && docker compose up -d`.
+- update checks: every 6 hours, and on "Check for updates", kontainers asks the registry which
+  image each container's tag points at now (through the Docker daemon, which downloads only the
+  manifest) and marks containers that run an older one, including containers left on an old image
+  after a `docker pull`. Tags are checked, not digest-pinned references. Under docker-socket-proxy
+  this needs `DISTRIBUTION=1`, which `compose.yaml` sets. On Docker Hub, checks count toward the
+  pull rate limit: from one address without a login, six checks of six images lowered the
+  remaining count by three (Docker 29.9, 2026-11-14); Docker Hub reported a limit of 100 an hour.
 - images: list, pull (public images; registry logins are not supported), remove, per tag
 - networks and volumes: list, create, remove
 - proxy rules: hostname and path prefix to a container port, HTTPS with a certificate obtained
@@ -130,7 +137,7 @@ With `docker run`, mounting the socket directly:
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.2.1
+      ataiva/kontainers:0.3.0
     docker logs kontainers | grep 'setup token'
 
 The image runs as an unprivileged user, so it needs the socket's group (`--group-add`). On
@@ -147,7 +154,7 @@ to be public: they serve the sites you route, not the kontainers UI.
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.2.1
+      ataiva/kontainers:0.3.0
 
 Use your own email address: Let's Encrypt rejects reserved domains such as example.com, and
 kontainers refuses to start with one.
@@ -188,6 +195,7 @@ briefly unavailable; Caddy did not renew certificates in a process that started 
 | `KONTAINERS_ACME_CA_ROOT` | unset | PEM file to trust for the ACME directory (for a private CA) |
 | `KONTAINERS_ACME_RENEW_CHECK` | unset (Caddy's default) | Seconds between Caddy's checks for certificates due for renewal, 1 to 86400; HTTPS rules only |
 | `KONTAINERS_SELF_CONTAINER` | the container's hostname | ID or name of kontainers' own container, if `--hostname` changed it; kontainers and its compose project get no Stop, Remove or Update |
+| `KONTAINERS_UPDATE_CHECK_HOURS` | `6` | Hours between update checks, 0 to 720; `0` turns scheduled checks off ("Check for updates" still works) |
 | `KONTAINERS_HTTP_PORT` / `KONTAINERS_HTTPS_PORT` | `80` / `443` | Proxy ports |
 
 `/healthz` returns 200 while the process runs. `/readyz` returns 200 when the database and the

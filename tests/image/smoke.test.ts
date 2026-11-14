@@ -31,6 +31,13 @@ describe.skipIf(!URL_)('image', () => {
     let logs = '';
     for (let i = 0; i < 20 && !logs.includes('smoke-ok'); i++) { logs = await (await c.get('/api/containers/smoke/logs')).text(); await Bun.sleep(200); }
     expect(logs).toContain('smoke-ok');
+    // The update check goes through the proxy too (compose.yaml sets DISTRIBUTION=1 for it).
+    const checked = await c.submit('/updates/check', {});
+    expect(checked.error).toBe('');
+    expect(checked.flash).toMatch(/^Checked 1 image/);
+    const page = await c.page('/containers/smoke');
+    expect(page).toMatch(/the newest image for this tag|a newer image is available for this tag/);
+    expect(page).not.toContain('update status unknown');
     expect((await c.submit('/containers/smoke/stop', {})).error).toBe('');
     expect((await c.submit('/containers/smoke/remove', {})).error).toBe('');
   });

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+- Update checks. Every 6 hours (`KONTAINERS_UPDATE_CHECK_HOURS`, `0` for never) and on "Check for
+  updates", kontainers asks the registry, through the Docker daemon, which image each container's
+  tag points at now. Only manifests are fetched, no layers. Containers running an older image are
+  marked on the list and their page, including ones left on an old image after a `docker pull`;
+  for containers kontainers created, Update image is then the highlighted action.
+- `compose.yaml`: the socket proxy also allows `DISTRIBUTION=1` (read-only registry lookups).
+  Without it, update checks report that they were refused and say how to fix it.
+
 ## 0.2.1
 
 - kontainers recognises its own container, and under compose the rest of its project (the socket

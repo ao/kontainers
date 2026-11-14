@@ -77,7 +77,7 @@ start_app() {
     # The proxy reads dind's socket from the shared volume.
     docker run -d --name "$SOCKPROXY" --network "$NET" --network-alias docker-proxy \
       -v "$SOCKVOL":/var/run -e CONTAINERS=1 -e IMAGES=1 -e NETWORKS=1 -e VOLUMES=1 -e POST=1 \
-      -e ALLOW_START=1 -e ALLOW_STOP=1 -e ALLOW_RESTARTS=1 tecnativa/docker-socket-proxy:0.3.0 >/dev/null
+      -e ALLOW_START=1 -e ALLOW_STOP=1 -e ALLOW_RESTARTS=1 -e DISTRIBUTION=1 tecnativa/docker-socket-proxy:0.3.0 >/dev/null
   fi
   docker rm -f "$APP" >/dev/null 2>&1 || true
   docker run -d --name "$APP" --network "$NET" -e DOCKER_HOST=tcp://docker-proxy:2375 kontainers:test >/dev/null
@@ -243,6 +243,9 @@ if [ "$SUITE" = screenshots ]; then
   docker image inspect "$PWIMG" >/dev/null 2>&1 || docker pull -q "$PWIMG" >/dev/null
   docker exec "$DIND" mkdir -p /work/shots-src
   docker cp scripts/screenshots/. "$DIND:/work/shots-src/"
+  # An older build under the current tag, as on a host that pulled nginx:1.27-alpine when 1.27.0
+  # was the newest: the update check then has something real to find.
+  D pull -q nginx:1.27.0-alpine >/dev/null && D tag nginx:1.27.0-alpine nginx:1.27-alpine
   docker exec -w /work/shots-src "$DIND" docker compose -f demo-compose.yaml up -d --quiet-pull 2>&1 | tail -1
   # The browser runs on the outer Docker in dind's network namespace, so it is not one of the
   # containers on the host it photographs. Its npm install lives in .scratch.

@@ -22,6 +22,7 @@ export interface Config {
   // Set in the official image: the port publish (-p 127.0.0.1:8080:8080) is the network boundary there.
   inContainer: boolean;
   allowInsecure: boolean;
+  updateCheckHours: number; // 0 turns scheduled update checks off
 }
 
 export function isLoopback(host: string): boolean {
@@ -103,5 +104,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     allowBindMounts: bool(env.KONTAINERS_ALLOW_BIND_MOUNTS),
     inContainer: bool(env.KONTAINERS_IN_CONTAINER),
     allowInsecure: bool(env.KONTAINERS_ALLOW_INSECURE),
+    updateCheckHours: optionalInt("KONTAINERS_UPDATE_CHECK_HOURS", env.KONTAINERS_UPDATE_CHECK_HOURS, 0, 720) ?? 6,
   };
 }
