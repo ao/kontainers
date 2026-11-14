@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - Update checks. Every 6 hours (`KONTAINERS_UPDATE_CHECK_HOURS`, `0` for never) and on "Check for
   updates", kontainers asks the registry, through the Docker daemon, which image each container's
