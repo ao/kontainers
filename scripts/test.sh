@@ -121,7 +121,9 @@ acme_stack() {
   docker save kontainers:test "$PEBBLE" "$CHALL" | D load -q >/dev/null
 
   D network create kt >/dev/null
-  docker exec "$DIND" mkdir -p /work
+  # A clean /work: in "all", proxy and renewal share one dind, and a second `docker cp tests`
+  # would nest the copy as /work/tests/tests, so bun would run both suites at once.
+  docker exec "$DIND" sh -c 'rm -rf /work && mkdir -p /work'
   t=$(D create "$PEBBLE")
   D cp "$t:/test/certs/pebble.minica.pem" - | docker exec -i "$DIND" tar -x -C /tmp
   D cp "$t:/test/config/pebble-config.json" - | docker exec -i "$DIND" tar -x -C /work
@@ -183,12 +185,14 @@ acme_driver() {
     echo "--- kontainers log"; D logs kontainers 2>&1 | tail -60 | cut -c1-400; echo "--- pebble log"; D logs pebble 2>&1 | tail -20 | cut -c1-300; exit $rc; fi
 }
 
-# Removes the kontainers, Pebble and DNS stub containers, the volume and the network, so the next
-# suite starts clean.
+# Removes every container, volume and network the suite made inside the throwaway dind (kontainers,
+# Pebble, the DNS stub, the targets the tests created, the proxy network), so the next suite starts
+# clean. Only the dind daemon is touched, never the host's.
 acme_teardown() {
-  D rm -f kontainers pebble challtestsrv >/dev/null 2>&1 || true
-  D volume rm kdata >/dev/null 2>&1 || true
-  D network rm kt >/dev/null 2>&1 || true
+  docker exec "$DIND" sh -c '
+    ids=$(docker ps -aq); [ -z "$ids" ] || docker rm -f -v $ids >/dev/null
+    vols=$(docker volume ls -q); [ -z "$vols" ] || docker volume rm $vols >/dev/null
+    nets=$(docker network ls -q --filter type=custom); [ -z "$nets" ] || docker network rm $nets >/dev/null' 2>&1 || true
 }
 
 if [ "$SUITE" = all ] || [ "$SUITE" = proxy ]; then
