@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { loadConfig } from '../../src/config';
-import { clientIp, containerSpec, splitArgs, hostAllowed, normalizeIp, parseCookies, parsePort, parseVolume, sameOrigin } from '../../src/server';
+import { clientIp, containerSpec, dockerApiHost, splitArgs, hostAllowed, normalizeIp, parseCookies, parsePort, parseVolume, sameOrigin } from '../../src/server';
 import { demux } from '../../src/docker';
 import { esc, html, raw, formatPorts, isSelf, containersPage, containerPage, imagesPage, proxyPage, loginPage, setupPage } from '../../src/views';
 import type { Rule } from '../../src/proxy';
@@ -28,7 +28,8 @@ describe('hostAllowed (DNS rebinding)', () => {
     for (const h of ['localhost:8080', '127.0.0.1:8080', '[::1]:8080', '192.168.1.5:8080', '127.0.0.1']) expect(hostAllowed(h, local)).toBe(true);
   });
   test('other DNS names are refused without a public URL', () => {
-    for (const h of ['evil.example:8080', 'rebind.attacker.test', '', 'a b']) expect(hostAllowed(h, local)).toBe(false);
+    for (const h of ['evil.example:8080', 'rebind.attacker.test', '', 'a b', 'cafe', 'dead:8080', 'deadbeef', 'face:b00c']) expect(hostAllowed(h, local)).toBe(false);
+    expect(hostAllowed('[fd00::1]:8080', local)).toBe(true);
     expect(hostAllowed(null, local)).toBe(false);
   });
   test('with a public URL, its host and loopback pass', () => {
@@ -190,5 +191,24 @@ describe('demux', () => {
   test('survives a truncated frame', () => {
     const b = new Uint8Array([1, 0, 0, 0, 0, 0, 0, 10, 65, 66]);
     expect(demux(b)).toBe('AB');
+  });
+});
+
+describe('dockerApiHost', () => {
+  test('the host name of a tcp or http DOCKER_HOST', () => {
+    expect(dockerApiHost('tcp://docker-proxy:2375')).toBe('docker-proxy');
+    expect(dockerApiHost('http://10.0.0.5:2375/')).toBe('10.0.0.5');
+    expect(dockerApiHost('tcp://[fd00::5]:2375')).toBe('fd00::5');
+    expect(dockerApiHost('unix:///var/run/docker.sock')).toBeNull();
+  });
+});
+
+describe('container page', () => {
+  test('environment values are hidden, including every line of a multi-line value', () => {
+    const c = { Id: 'c'.repeat(64), Name: '/app', State: { Status: 'exited' }, Config: { Image: 'app:1', Env: ['KEY=-----BEGIN KEY-----\nsecret-line-two\nsecret-line-three', 'MODE=prod'], Labels: {} }, HostConfig: {} };
+    const page = containerPage({ user: 'admin', csrf: 't' }, c);
+    expect(page).toContain('KEY=…');
+    expect(page).toContain('MODE=…');
+    expect(page).not.toContain('secret-line');
   });
 });

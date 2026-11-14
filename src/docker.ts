@@ -162,6 +162,9 @@ export class Docker {
   async connect(network: string, container: string) {
     await this.req('POST', `/networks/${encodeURIComponent(v.ref(network, 'network'))}/connect`, { Container: v.ref(container) });
   }
+  async disconnect(network: string, container: string) {
+    await this.req('POST', `/networks/${encodeURIComponent(v.ref(network, 'network'))}/disconnect`, { Container: v.ref(container), Force: false });
+  }
 
   // Volumes
   async listVolumes(): Promise<any[]> { return (await this.json<{ Volumes: any[] | null }>('GET', '/volumes')).Volumes || []; }

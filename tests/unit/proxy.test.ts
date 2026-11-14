@@ -2,7 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { migrate } from '../../src/db';
 import { loadConfig } from '../../src/config';
-import { RuleStore, buildCaddyConfig, type Rule } from '../../src/proxy';
+import { mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { ProxyManager, RuleStore, buildCaddyConfig, inSubnetNotGateway, type Rule } from '../../src/proxy';
 
 const cfg = loadConfig({ KONTAINERS_PROXY: '1', KONTAINERS_DATA: '/data' });
 
@@ -115,5 +118,65 @@ describe('buildCaddyConfig', () => {
     const json = JSON.stringify(buildCaddyConfig(s.list(), cfg, '/s'));
     expect(json).not.toMatch(/[{}]\s*"?[^"]*\n/);
     expect(json).toContain('"ok.example.com"');
+  });
+});
+
+describe('the proxy network boundary', () => {
+  test('addresses on the proxy network are recognised, except its gateway', () => {
+    const nets = [{ subnet: '172.18.0.0/16', gateway: '172.18.0.1' }];
+    expect(inSubnetNotGateway('172.18.0.5', nets)).toBe(true);
+    expect(inSubnetNotGateway('::ffff:172.18.3.4', nets)).toBe(true);
+    expect(inSubnetNotGateway('172.18.0.1', nets)).toBe(false);
+    expect(inSubnetNotGateway('172.19.0.5', nets)).toBe(false);
+    expect(inSubnetNotGateway('127.0.0.1', nets)).toBe(false);
+    expect(inSubnetNotGateway('10.200.0.1', [{ subnet: '10.0.0.0/8' }])).toBe(true);
+    expect(inSubnetNotGateway('fe80::1', nets)).toBe(false);
+    expect(inSubnetNotGateway('172.18.0.5', [])).toBe(false);
+    expect(inSubnetNotGateway('172.18.0.5', [{ subnet: 'garbage' }, { subnet: '172.18.0.0/40' }])).toBe(false);
+  });
+});
+
+describe('ProxyManager and protected targets', () => {
+  function manager(attached: string[], refuse: Record<string, { reason: string; self: boolean }>) {
+    const dir = mkdtempSync(join(tmpdir(), 'kontainers-pm-'));
+    const c = loadConfig({ KONTAINERS_PROXY: '1', KONTAINERS_DATA: dir, KONTAINERS_CADDY_BIN: '/nonexistent/caddy' });
+    const s = store();
+    const calls = { connect: [] as string[], disconnect: [] as string[] };
+    const docker = {
+      listContainers: async () => ['web', 'docker-proxy', 'kontainers'].map(n => ({ Names: ['/' + n], State: 'running' })),
+      inspectNetwork: async () => ({
+        IPAM: { Config: [{ Subnet: '172.18.0.0/16', Gateway: '172.18.0.1' }] },
+        Containers: Object.fromEntries(attached.map((n, i) => [`id${i}`, { Name: n }])),
+      }),
+      connect: async (_net: string, name: string) => { calls.connect.push(name); },
+      disconnect: async (_net: string, name: string) => { calls.disconnect.push(name); },
+    };
+    const pm = new ProxyManager(c, s, docker as any);
+    pm.guard = async name => refuse[name] ?? null;
+    return { pm, s, calls, config: () => readFileSync(join(dir, 'run', 'caddy.json'), 'utf8') };
+  }
+
+  test('a rule to the Docker API container is not served or reconnected, and that container is taken off the network', async () => {
+    const { pm, s, calls, config } = manager(['docker-proxy'], { 'docker-proxy': { reason: "serves kontainers' Docker API", self: false } });
+    s.create({ hostname: 'api.example.com', targetContainer: 'docker-proxy', targetPort: 2375, tls: false });
+    s.create({ hostname: 'web.example.com', targetContainer: 'web', targetPort: 80, tls: false });
+    await pm.reconcile();
+    expect(calls.disconnect).toEqual(['docker-proxy']);
+    expect(calls.connect).toEqual(['web']);
+    expect(pm.refusalFor('docker-proxy')).toContain('Docker API');
+    expect(pm.refusalFor('web')).toBeNull();
+    expect(config()).toContain('web.example.com');
+    expect(config()).not.toContain('api.example.com');
+    expect(pm.fromTargetNetwork('172.18.0.9')).toBe(true);
+    expect(pm.fromTargetNetwork('172.18.0.1')).toBe(false);
+    expect(pm.fromTargetNetwork('127.0.0.1')).toBe(false);
+  });
+
+  test('a rule to kontainers itself is not served, but kontainers stays on the network', async () => {
+    const { pm, s, calls, config } = manager(['kontainers'], { kontainers: { reason: 'this is kontainers itself', self: true } });
+    s.create({ hostname: 'k.example.com', targetContainer: 'kontainers', targetPort: 8080, tls: false });
+    await pm.reconcile();
+    expect(calls.disconnect).toEqual([]);
+    expect(config()).not.toContain('k.example.com');
   });
 });

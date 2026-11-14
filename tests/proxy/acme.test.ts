@@ -69,6 +69,23 @@ describe.skipIf(!URL_)('proxy with ACME', () => {
     expect(issuer).toContain('DNS:app.test');
   }, 120000);
 
+  test('the UI refuses connections from containers on the proxy network', async () => {
+    // Any proxy target could otherwise reach the login page, whatever the published port allows.
+    const api = (method: string, path: string, body?: unknown) => fetch(`http://docker/v1.41${path}`,
+      { method, unix: '/var/run/docker.sock', headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined } as RequestInit);
+    const name = 'probe-' + Math.random().toString(36).slice(2, 8);
+    const script = 'const r = await fetch("http://kontainers:8080/login", { headers: { host: "127.0.0.1:8080" } }); console.log("status", r.status, (await r.text()).trim())';
+    expect((await api('POST', `/containers/create?name=${name}`, { Image: 'kontainers:test', Entrypoint: ['bun'], Cmd: ['-e', script], HostConfig: { NetworkMode: 'kontainers-proxy' } })).status).toBe(201);
+    try {
+      expect((await api('POST', `/containers/${name}/start`)).status).toBe(204);
+      await (await api('POST', `/containers/${name}/wait`)).text();
+      const logs = await (await api('GET', `/containers/${name}/logs?stdout=1&stderr=1`)).text();
+      expect(logs).toContain('status 403 kontainers is not served on the proxy network.');
+    } finally { await api('DELETE', `/containers/${name}?force=1`); }
+    // The test driver is on another network and still gets the page.
+    expect((await fetch(URL_ + '/login')).status).toBe(200);
+  }, 60000);
+
   test('plain HTTP on the same host redirects to HTTPS', async () => {
     const r = await fetch(`http://app.test:${HTTP}/x`, { redirect: 'manual' });
     expect([301, 302, 307, 308]).toContain(r.status);

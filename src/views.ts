@@ -137,7 +137,7 @@ export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = 
 
 export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null): string {
   const name = String(c.Name || '').replace(/^\//, '');
-  const env = (c.Config?.Env || []).map((e: string) => html`<li><code>${e.replace(/=.*/, '=…')}</code></li>`);
+  const env = (c.Config?.Env || []).map((e: string) => html`<li><code>${e.replace(/=[\s\S]*/, '=…')}</code></li>`);
   const mounts = (c.Mounts || []).map((m: any) => html`<li><code>${m.Type} ${m.Name || m.Source} → ${m.Destination}${m.RW ? '' : ' (ro)'}</code></li>`);
   const nets = Object.keys(c.NetworkSettings?.Networks || {}).map(n => html`<li>${n}</li>`);
   return layout(name, ctx, html`
@@ -222,10 +222,11 @@ export function volumesPage(ctx: PageCtx, list: any[]): string {
 <table><thead><tr><th>Name</th><th>Driver</th><th>Created</th><th></th></tr></thead><tbody>${rows}</tbody></table>`);
 }
 
-export interface RuleStatus { target: string | null; cert: { notAfter: Date } | null }
+export interface RuleStatus { target: string | null; cert: { notAfter: Date } | null; refused?: string | null }
 
 function ruleState(r: Rule, st: RuleStatus): Html {
   if (!r.enabled) return html`off`;
+  if (st.refused) return html`not served<br><small><span class="error">${st.refused}</span></small>`;
   const problems: Html[] = [];
   if (st.target === 'missing') problems.push(html`<span class="error">no container named ${r.target_container}</span>`);
   else if (st.target && st.target !== 'running') problems.push(html`<span class="error">target is ${st.target}</span>`);
@@ -244,7 +245,7 @@ to route domains to containers with automatic HTTPS. See the README.</p>`);
   }
   const rows = rules.map(r => {
     const st = ruleStatus(r);
-    const bad = r.enabled && (st.target === 'missing' || (st.target && st.target !== 'running') || (r.tls && (!st.cert || st.cert.notAfter.getTime() < Date.now())));
+    const bad = r.enabled && (!!st.refused || st.target === 'missing' || (st.target && st.target !== 'running') || (r.tls && (!st.cert || st.cert.notAfter.getTime() < Date.now())));
     return html`<tr data-state="${!r.enabled ? 'exited' : bad ? 'restarting' : 'running'}"><td><a href="${r.tls ? 'https' : 'http'}://${r.hostname}${r.path === '/' ? '' : r.path}">${r.tls ? 'https' : 'http'}://${r.hostname}${r.path === '/' ? '' : r.path}</a></td>
 <td><span class="ref">${r.target_container}:${r.target_port}</span></td><td>${ruleState(r, st)}</td>
 <td class="actions"><a class="button" href="/proxy/${r.id}/edit">Edit</a> ${post(ctx, `/proxy/${r.id}/toggle`, r.enabled ? 'Disable' : 'Enable')}
