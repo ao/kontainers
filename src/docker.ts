@@ -133,11 +133,18 @@ export class Docker {
     }
   }
 
-  async logs(id: string, tail = 200, timestamps = true, max = 10000): Promise<string> {
+  // Logs, newest `tail` lines, keeping at most `maxBytes` of output while reading, so one container
+  // that printed a 20 MB line cannot make kontainers hold 40 MB per request. What is cut is the
+  // oldest output, and the text says so.
+  async logs(id: string, tail = 200, timestamps = true, max = 10000, maxBytes = 2 << 20): Promise<string> {
     const t = v.intInRange(tail, 1, max, 200);
     const res = await this.req('GET', `/containers/${encodeURIComponent(v.ref(id))}/logs?stdout=1&stderr=1&timestamps=${timestamps ? 1 : 0}&tail=${t}`, undefined, 60000);
-    const buf = new Uint8Array(await res.arrayBuffer());
-    return demux(buf);
+    const out = new BoundedLog(maxBytes);
+    if (res.body) {
+      const reader = res.body.getReader();
+      for (;;) { const { value, done } = await reader.read(); if (done) break; out.push(value); }
+    }
+    return out.text();
   }
 
   // keepBindMounts: an update recreating a container that already has them. allowedBindSources: an
@@ -273,3 +280,64 @@ export function demux(buf: Uint8Array): string {
 
 // An image ID rather than a reference: "sha256:<hex>" or bare hex.
 export const isImageId = (s: unknown) => typeof s === 'string' && /^(sha256:)?[a-f0-9]{12,64}$/.test(s);
+
+// Docker's log stream, demultiplexed as it arrives (8-byte frame headers when the container has
+// no TTY, raw bytes when it has one), keeping only the newest `max` bytes of output.
+export class BoundedLog {
+  private parts: Uint8Array[] = [];
+  private size = 0;
+  dropped = 0;
+  private mode: 'unknown' | 'framed' | 'raw' = 'unknown';
+  private pending: Uint8Array = new Uint8Array(0); // bytes not yet parsed (a header split across chunks)
+  private left = 0; // payload bytes still due for the current frame
+  constructor(private max: number) {}
+
+  push(chunk: Uint8Array): void {
+    let buf: Uint8Array = this.pending.length ? concat(this.pending, chunk) : chunk;
+    this.pending = new Uint8Array(0);
+    if (this.mode === 'unknown') {
+      if (buf.length < 8) { this.pending = buf; return; }
+      this.mode = (buf[0] === 0 || buf[0] === 1 || buf[0] === 2) && buf[1] === 0 && buf[2] === 0 && buf[3] === 0 ? 'framed' : 'raw';
+    }
+    if (this.mode === 'raw') { this.keep(buf); return; }
+    let i = 0;
+    while (i < buf.length) {
+      if (this.left > 0) {
+        const n = Math.min(this.left, buf.length - i);
+        this.keep(buf.subarray(i, i + n));
+        this.left -= n; i += n;
+        continue;
+      }
+      if (buf.length - i < 8) { this.pending = buf.slice(i); return; }
+      this.left = ((buf[i + 4] << 24) >>> 0) + (buf[i + 5] << 16) + (buf[i + 6] << 8) + buf[i + 7];
+      i += 8;
+    }
+  }
+
+  private keep(b: Uint8Array): void {
+    if (!b.length) return;
+    this.parts.push(b.slice());
+    this.size += b.length;
+    while (this.size - this.parts[0].length >= this.max) { this.size -= this.parts[0].length; this.dropped += this.parts.shift()!.length; }
+    if (this.size > this.max) {
+      const cut = this.size - this.max;
+      this.parts[0] = this.parts[0].subarray(cut);
+      this.size -= cut; this.dropped += cut;
+    }
+  }
+
+  text(): string {
+    let s = new TextDecoder().decode(this.parts.length === 1 ? this.parts[0] : concat(...this.parts));
+    if (!this.dropped) return s;
+    const nl = s.indexOf('\n');
+    if (nl >= 0 && nl < 4096) s = s.slice(nl + 1); // start at a whole line
+    return `[earlier output not shown: ${(this.dropped / 1e6).toFixed(1)} MB more than kontainers shows at once]\n${s}`;
+  }
+}
+
+function concat(...a: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(a.reduce((n, x) => n + x.length, 0));
+  let o = 0;
+  for (const x of a) { out.set(x, o); o += x.length; }
+  return out;
+}

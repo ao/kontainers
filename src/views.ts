@@ -23,6 +23,7 @@ export function html(strings: TemplateStringsArray, ...values: unknown[]): Html 
 export interface PageCtx {
   user?: string; csrf?: string; flash?: string; error?: string; proxyEnabled?: boolean;
   username?: string; token?: string; // re-filled after a failed login or setup (never the password)
+  form?: Record<string, string>; // a failed form, to fill in again
 }
 
 const csrfField = (ctx: PageCtx) => html`<input type="hidden" name="_csrf" value="${ctx.csrf}">`;
@@ -67,7 +68,8 @@ export function formatPorts(ports: any[]): string {
     const k = `${p.PublicPort}->${p.PrivatePort}/${p.Type}`;
     (groups.get(k) || groups.set(k, new Set()).get(k)!).add(p.IP || '');
   }
-  return [...groups].map(([k, ips]) => {
+  // By host port, so a container with many ports reads in order.
+  return [...groups].sort(([a], [b]) => parseInt(a, 10) - parseInt(b, 10)).map(([k, ips]) => {
     const all = ips.has('0.0.0.0') && ips.has('::');
     const list = all ? ['*'] : [...ips].map(ip => (ip.includes(':') ? `[${ip}]` : ip || '*'));
     return list.map(ip => `${ip}:${k}`).join(', ');
@@ -303,20 +305,25 @@ ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
 }
 
 export function newContainerPage(ctx: PageCtx, allowBind: boolean, autoUpdates = false): string {
+  // After a failed create, the form comes back as it was sent.
+  const f = ctx.form;
+  const val = (k: string) => f?.[k] ?? '';
+  const box = (k: string, dflt: boolean) => ((f ? !!f[k] : dflt) ? raw(' checked') : raw(''));
+  const opt = (v: string) => html`<option${v === (f?.restart || 'no') ? raw(' selected') : raw('')}>${v}</option>`;
   return layout('New container', ctx, html`
 <form method="post" action="/containers" class="stack">${csrfField(ctx)}
-  <label>Image <input name="image" required placeholder="nginx:1.27-alpine"></label>
-  <label class="check"><input type="checkbox" name="pull" checked> Pull the image first</label>
-  <label>Name <input name="name" placeholder="optional"></label>
-  <label>Command <input name="cmd" placeholder='optional, e.g. sh -c "echo hi; sleep 60"'></label>
+  <label>Image <input name="image" required placeholder="nginx:1.27-alpine" value="${val('image')}"></label>
+  <label class="check"><input type="checkbox" name="pull"${box('pull', true)}> Pull the image first</label>
+  <label>Name <input name="name" placeholder="optional" value="${val('name')}"></label>
+  <label>Command <input name="cmd" placeholder='optional, e.g. sh -c "echo hi; sleep 60"' value="${val('cmd')}"></label>
   <label>Ports, one per line: <code>[host-ip:]host:container[/udp]</code>. Without a host IP the port is published on 127.0.0.1.
-    <textarea name="ports" rows="3" placeholder="8081:80"></textarea></label>
-  <label>Environment, one <code>KEY=value</code> per line <textarea name="env" rows="3"></textarea></label>
+    <textarea name="ports" rows="3" placeholder="8081:80">${val('ports')}</textarea></label>
+  <label>Environment, one <code>KEY=value</code> per line <textarea name="env" rows="3">${val('env')}</textarea></label>
   <label>Volumes, one per line: <code>volume-name:/path[:ro]</code>${allowBind ? raw(' or <code>/host/path:/path[:ro]</code>') : raw('. Host paths are disabled.')}
-    <textarea name="volumes" rows="2"></textarea></label>
-  <label>Restart policy <select name="restart"><option>no</option><option>unless-stopped</option><option>always</option><option>on-failure</option></select></label>
-  <label class="check"><input type="checkbox" name="start" checked> Start after creating</label>
-${autoUpdates ? html`  <label class="check"><input type="checkbox" name="autoupdate"> Update automatically when a check finds a newer image</label>\n` : ''}  <button>Create</button>
+    <textarea name="volumes" rows="2">${val('volumes')}</textarea></label>
+  <label>Restart policy <select name="restart">${opt('no')}${opt('unless-stopped')}${opt('always')}${opt('on-failure')}</select></label>
+  <label class="check"><input type="checkbox" name="start"${box('start', true)}> Start after creating</label>
+${autoUpdates ? html`  <label class="check"><input type="checkbox" name="autoupdate"${box('autoupdate', false)}> Update automatically when a check finds a newer image</label>\n` : ''}  <button>Create</button>
 </form>`, 'Containers');
 }
 

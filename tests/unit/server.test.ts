@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { loadConfig } from '../../src/config';
 import { clientIp, containerSpec, dockerApiHost, splitArgs, hostAllowed, normalizeIp, parseCookies, parsePort, parseVolume, sameOrigin } from '../../src/server';
-import { demux } from '../../src/docker';
+import { BoundedLog, demux } from '../../src/docker';
 import { esc, html, raw, formatPorts, isSelf, containersPage, containerPage, editContainerPage, imagesPage, proxyPage, loginPage, quoteArgs, setupPage } from '../../src/views';
 import type { Rule } from '../../src/proxy';
 
@@ -134,7 +134,7 @@ describe('pages', () => {
       { IP: '0.0.0.0', PublicPort: 9001, PrivatePort: 81, Type: 'udp' }, { IP: '::', PublicPort: 9001, PrivatePort: 81, Type: 'udp' },
       { IP: '127.0.0.1', PublicPort: 8080, PrivatePort: 80, Type: 'tcp' }, { IP: '::1', PublicPort: 9100, PrivatePort: 80, Type: 'tcp' },
       { PrivatePort: 5432, Type: 'tcp' },
-    ])).toBe('*:9001->81/udp, 127.0.0.1:8080->80/tcp, [::1]:9100->80/tcp');
+    ])).toBe('127.0.0.1:8080->80/tcp, *:9001->81/udp, [::1]:9100->80/tcp'); // by host port
   });
 
   test('each tag of a multi-tag image has its own Remove', () => {
@@ -237,5 +237,43 @@ describe('editContainerPage', () => {
     expect(page).toContain('<option selected>always</option>');
     expect(page).toContain('except ones the container already has');
     expect(page).not.toContain('<script>');
+  });
+});
+
+describe('BoundedLog', () => {
+  const frame = (stream: number, text: string) => {
+    const p = new TextEncoder().encode(text);
+    const h = new Uint8Array(8); h[0] = stream; new DataView(h.buffer).setUint32(4, p.length);
+    const out = new Uint8Array(8 + p.length); out.set(h); out.set(p, 8); return out;
+  };
+  const feed = (log: BoundedLog, data: Uint8Array, step: number) => { for (let i = 0; i < data.length; i += step) log.push(data.subarray(i, i + step)); };
+  test('framed output is read the same however the chunks fall', () => {
+    const all = new Uint8Array([...frame(1, 'hello\n'), ...frame(2, 'oops\n'), ...frame(1, 'ünïcode\n')]);
+    for (const step of [1, 3, 7, 8, 9, 1000]) {
+      const log = new BoundedLog(1 << 20);
+      feed(log, all, step);
+      expect(log.text()).toBe('hello\noops\nünïcode\n');
+    }
+    expect(demux(all)).toBe('hello\noops\nünïcode\n');
+  });
+  test('TTY output (no frames) is kept as it is', () => {
+    const log = new BoundedLog(1 << 20);
+    feed(log, new TextEncoder().encode('\u001b[32mgreen\u001b[0m\r\nline\n'), 4);
+    expect(log.text()).toBe('\u001b[32mgreen\u001b[0m\r\nline\n');
+  });
+  test('only the newest bytes are kept, from a whole line, and the cut is said', () => {
+    const lines = Array.from({ length: 1000 }, (_, i) => `line ${String(i).padStart(4, '0')}\n`).join('');
+    const log = new BoundedLog(1000);
+    feed(log, frame(1, lines), 64);
+    const t = log.text();
+    expect(t).toMatch(/^\[earlier output not shown: [\d.]+ MB more than kontainers shows at once\]\nline \d{4}\n/);
+    expect(t.endsWith('line 0999\n')).toBe(true);
+    expect(t.length).toBeLessThan(1100);
+    expect(log.dropped).toBe(9000);
+  });
+  test('one huge line is cut to the limit', () => {
+    const log = new BoundedLog(4096);
+    feed(log, frame(1, 'x'.repeat(100000) + '\n'), 8192);
+    expect(log.text().length).toBeLessThan(4200);
   });
 });

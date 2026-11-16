@@ -228,7 +228,16 @@ export function createHandler(d: Deps): Handler {
   const pulls = new Map<string, { state: 'pulling' | 'failed'; error?: string; at: number }>();
   const secure = !!cfg.publicUrl?.startsWith('https:');
   const cookieName = secure ? COOKIE_SECURE : COOKIE_PLAIN;
-  const flashes = new Map<string, { flash?: string; error?: string }>();
+  // Outcomes waiting to be shown, per session. Several actions at once (two tabs) each add theirs;
+  // form: what a failed form held, to fill it in again.
+  const flashes = new Map<string, { flash?: string; error?: string; form?: Record<string, string> }>();
+  const addFlash = (idHash: string, m: { flash?: string; error?: string; form?: Record<string, string> }) => {
+    const f = flashes.get(idHash) ?? {};
+    if (m.flash) f.flash = f.flash ? `${f.flash}\n${m.flash}` : m.flash;
+    if (m.error) f.error = f.error ? `${f.error}\n${m.error}` : m.error;
+    if (m.form) f.form = m.form;
+    flashes.set(idHash, f);
+  };
 
   const setCookie = (id: string) => `${cookieName}=${id}; Path=/; HttpOnly; SameSite=Strict${secure ? '; Secure' : ''}`;
   const clearCookie = () => `${cookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure ? '; Secure' : ''}`;
@@ -244,7 +253,7 @@ export function createHandler(d: Deps): Handler {
   function ctx(s: Session): views.PageCtx {
     const f = flashes.get(s.idHash);
     flashes.delete(s.idHash);
-    return { user: s.user.username, csrf: s.csrf, flash: f?.flash, error: f?.error, proxyEnabled: cfg.proxy.enabled };
+    return { user: s.user.username, csrf: s.csrf, flash: f?.flash, error: f?.error, form: f?.form, proxyEnabled: cfg.proxy.enabled };
   }
 
   // kontainers' own container and, under compose, the rest of its project (the socket proxy):
@@ -317,16 +326,19 @@ export function createHandler(d: Deps): Handler {
   }
 
   // Runs a state change, stores the outcome as a flash message, redirects back.
-  async function act(s: Session, ip: string, back: string | (() => string), action: string, target: string | null, fn: () => Promise<string | void> | string | void): Promise<Response> {
+  // back: where to go after, or a function of whether it failed. keep: on failure, the form to fill
+  // in again (never a password field).
+  async function act(s: Session, ip: string, back: string | ((failed: boolean) => string), action: string, target: string | null, fn: () => Promise<string | void> | string | void, keep?: Record<string, string>): Promise<Response> {
     // The outcome shown is the action's own. Recording it comes after and cannot turn a stop that
     // worked into an error (with a full data volume the record fails, and says so).
     let result: string | null = null;
     try {
       const msg = await fn();
-      flashes.set(s.idHash, { flash: msg || 'Done.' });
+      addFlash(s.idHash, { flash: msg || 'Done.' });
     } catch (e) {
       if (errorStatus(e) >= 500 && !(e instanceof DockerError)) console.error(`kontainers: ${action} failed:`, e);
-      flashes.set(s.idHash, { error: errorMessage(e) });
+      const form = keep ? Object.fromEntries(Object.entries(keep).filter(([k]) => k !== '_csrf' && !/password/i.test(k))) : undefined;
+      addFlash(s.idHash, { error: errorMessage(e), form });
       result = `failed: ${errorMessage(e)}`.slice(0, 500);
     }
     try {
@@ -338,7 +350,7 @@ export function createHandler(d: Deps): Handler {
       if (f?.flash) f.flash += note;
       else if (f?.error) f.error += note;
     }
-    return redirect(typeof back === 'function' ? back() : back);
+    return redirect(typeof back === 'function' ? back(result !== null) : back);
   }
 
   async function login(req: Request, ip: string, cookieId: string | undefined): Promise<Response> {
@@ -431,7 +443,7 @@ export function createHandler(d: Deps): Handler {
         // A download: up to 100000 lines, named after the container and the time.
         const c = await docker.inspect(r[1]);
         const name = String(c.Name || '').replace(/^\//, '').replace(/[^A-Za-z0-9_.-]/g, '_');
-        const body = await docker.logs(c.Id, v.intInRange(url.searchParams.get('tail'), 1, 100000, 10000), url.searchParams.get('timestamps') !== '0', 100000);
+        const body = await docker.logs(c.Id, v.intInRange(url.searchParams.get('tail'), 1, 100000, 10000), url.searchParams.get('timestamps') !== '0', 100000, 50 << 20);
         const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
         return new Response(body, { headers: { 'content-type': 'text/plain; charset=utf-8', 'content-disposition': `attachment; filename="${name}-${stamp}.log"` } });
       }
@@ -483,7 +495,7 @@ export function createHandler(d: Deps): Handler {
     }
 
     if (p === '/containers') {
-      return act(s, ip, '/containers', 'container-create', f.name || f.image || null, async () => {
+      return act(s, ip, failed => (failed ? '/containers/new' : '/containers'), 'container-create', f.name || f.image || null, async () => {
         const spec = containerSpec(f);
         if (f.pull) await docker.pull(spec.image);
         const { Id } = await docker.create(spec);
@@ -498,7 +510,7 @@ export function createHandler(d: Deps): Handler {
         }
         if (f.autoupdate && d.autoUpdates) await d.autoUpdates.set(Id, true);
         return `Created ${spec.name || Id.slice(0, 12)}${f.autoupdate && d.autoUpdates ? '; it is updated automatically when a check finds a newer image' : ''}.`;
-      });
+      }, f);
     }
     if ((r = /^\/containers\/([^/]+)\/edit$/.exec(p))) {
       const id = r[1];

@@ -27,6 +27,14 @@
   digest the registry never served now counts as built on this host. Registry errors are put
   in words. Four images are checked at a time, and Check for updates answers within 20 s,
   carrying on in the background when a registry is slow.
+- Fixed: long names, hostnames and paths pushed tables far off the screen (2400-4400 px wide);
+  table cells now wrap, and a container's ports are listed by host port.
+- Fixed: a mistake in the New container form discarded everything typed; the form now comes
+  back filled in, with the error. Several actions at once in one session (two tabs) each show
+  their outcome instead of the last one only.
+- Fixed: log responses were unbounded (a container that printed a 20 MB line made a 40 MB
+  response and spiked memory). Logs are read as a stream and the page keeps the newest 2 MB,
+  saying how much earlier output it leaves out; a download keeps up to 50 MB.
 - Fixed: editing a rule into another rule's hostname and path gave "internal error"; HTTPS rules
   for names over 230 characters are refused (Caddy's lock file name was too long, so the
   certificate never came and the page blamed DNS). A wildcard rule is no longer shown as a link,

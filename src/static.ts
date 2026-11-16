@@ -40,7 +40,7 @@ h2 { font-size: 1.05rem; font-weight: 650; margin: 2rem 0 .6rem; }
 p { max-width: 70ch; }
 
 table { border-collapse: separate; border-spacing: 0; width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
-th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid var(--line); vertical-align: middle; overflow-wrap: anywhere; }
 tr:last-child td { border-bottom: 0; }
 th { font-weight: 600; font-size: .85rem; color: var(--muted); background: var(--ground); }
 tbody tr:hover td { background: color-mix(in srgb, var(--panel) 92%, var(--marine)); }
@@ -97,7 +97,7 @@ button.link { border: 0; padding: 0; background: none; color: var(--link); font-
 .actions button, .actions a.button { padding: .3rem .7rem; font-size: .88rem; }
 div.actions { margin: 1rem 0; white-space: normal; }
 
-.flash, .error { padding: .6rem .9rem; border-radius: 5px; border-left: 4px solid; background: var(--panel); max-width: 70ch; }
+.flash, .error { white-space: pre-line; padding: .6rem .9rem; border-radius: 5px; border-left: 4px solid; background: var(--panel); max-width: 70ch; }
 .flash { border-color: var(--run); }
 .error { border-color: var(--rust); color: var(--ink); }
 span.error, small .error { padding: 0; border: 0; background: none; color: var(--rust); }

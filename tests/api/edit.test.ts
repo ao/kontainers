@@ -105,3 +105,34 @@ describe.skipIf(!DOCKER)('edit and recreate', () => {
     expect(await c.page(`/containers/${AUTO}`)).toMatch(/<input type="checkbox" name="on" checked>/);
   });
 });
+
+describe.skipIf(!DOCKER)('forms and messages', () => {
+  let srv: Running, c: Client;
+  beforeAll(async () => { ({ srv, c } = await readyServer()); await c.page('/containers/new'); });
+  afterAll(async () => { await srv.stop(); });
+
+  test('a failed create goes back to the form, filled in as it was sent', async () => {
+    const r = await c.submit('/containers', { image: 'busybox:1.36', name: 'kept-name', cmd: 'sleep 9', ports: '8081:80\n99999:1', env: 'A=1\nB=<two>', volumes: 'v1:/data', restart: 'always', pull: '', start: 'on', autoupdate: 'on' });
+    expect(r.error).not.toBe('');
+    expect(r.body).toContain('<h1>New container</h1>');
+    expect(r.body).toContain('value="kept-name"');
+    expect(r.body).toContain('value="sleep 9"');
+    expect(r.body).toContain('8081:80\n99999:1</textarea>');
+    expect(r.body).toContain('A=1\nB=&lt;two&gt;</textarea>');
+    expect(r.body).toContain('<option selected>always</option>');
+    expect(r.body).toMatch(/name="pull">/); // was unchecked
+    expect(r.body).toMatch(/name="autoupdate" checked>/);
+    // The next visit is a clean form again.
+    expect(await c.page('/containers/new')).not.toContain('kept-name');
+  });
+
+  test('two actions at once in one session both report', async () => {
+    const [a, b] = await Promise.all([c.post('/containers/nope-1/start', {}), c.post('/containers/nope-2/start', {})]);
+    expect([a.status, b.status]).toEqual([303, 303]);
+    const page = await c.page('/containers');
+    const err = /<p class="error"[^>]*>([^<]*)<\/p>/.exec(page)?.[1] ?? '';
+    expect(err.split('\n')).toHaveLength(2);
+    expect(err).toContain('nope-1');
+    expect(err).toContain('nope-2');
+  });
+});
