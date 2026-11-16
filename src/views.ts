@@ -237,7 +237,7 @@ export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = 
     const name = nameOf(c);
     const project = projectOf(c);
     return html`<tr data-name="${name}" data-state="${c.State}"${/\(unhealthy\)/.test(c.Status || '') ? raw(' data-health="unhealthy"') : raw('')} data-search="${searchText(c)}"${needsAttention(c) ? raw(' data-attention="1"') : raw('')}${matchesFilter(c, f) ? raw('') : raw(' hidden')}>
-  <td><a href="/containers/${urlId(c)}">${brk(name)}</a>${project && !f.group ? html`<small>compose project ${brk(project)}</small>` : ''}</td><td><span class="ref">${brk(refOf(c))}</span>${ctx.busy?.(name) ? '' : updateBadge(updates, refOf(c), c.ImageID, name, c.Id)}</td>
+  <td><a href="/containers/${urlId(c)}">${brk(name)}</a>${project && !f.group ? html`<small>compose project ${brk(project)}</small>` : ''}<small class="phone-only"><span class="ref">${brk(refOf(c))}</span>${ctx.busy?.(name) ? '' : updateBadge(updates, refOf(c), c.ImageID, name, c.Id)}</small></td><td><span class="ref">${brk(refOf(c))}</span>${ctx.busy?.(name) ? '' : updateBadge(updates, refOf(c), c.ImageID, name, c.Id)}</td>
   <td><span class="state ${c.State}">${c.State}</span><small>${c.Status}</small></td><td><span class="ref">${brk(formatPorts(c.Ports))}</span></td>
   <td class="actions">${isSelf(c, me) ? selfNote(c, me) : ctx.busy?.(name) ? html`<small class="muted">${ctx.busy(name)}</small>` : containerActions(ctx, urlId(c), name, c.State)}</td></tr>`;
   };
@@ -343,7 +343,7 @@ ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
   <a href="/api/containers/${urlId(c)}/logs.txt?tail=10000" id="logdl" download>Download the last 10000 lines</a>
   <span class="muted" id="logcount" aria-live="polite"></span>
 </div>
-<pre id="logs" data-logs="/api/containers/${urlId(c)}/logs">loading…</pre>`, 'Containers');
+<pre id="logs" tabindex="0" role="region" aria-label="Logs of ${name}" data-logs="/api/containers/${urlId(c)}/logs">loading…</pre>`, 'Containers');
 }
 
 export function newContainerPage(ctx: PageCtx, allowBind: boolean, autoUpdates = false): string {

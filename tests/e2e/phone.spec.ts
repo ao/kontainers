@@ -84,7 +84,7 @@ test('on a phone: no violations, and nothing wider than the screen', async ({ br
 test('the image column keeps a short reference on one line on a desktop', async ({ page }) => {
   await page.setViewportSize({ width: 1400, height: 900 });
   await login(page);
-  const lines = await page.locator('#containers span.ref', { hasText: 'busybox:1.36' }).first().evaluate(e => e.getClientRects().length);
+  const lines = await page.locator('#containers td:nth-child(2) span.ref', { hasText: 'busybox:1.36' }).first().evaluate(e => e.getClientRects().length);
   expect(lines).toBe(1);
 });
 

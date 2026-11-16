@@ -8,7 +8,7 @@ const css = `
 :root {
   --ground: #f5f7f6; --panel: #ffffff; --ink: #1c2329; --muted: #5b6670; --line: #d8dedb;
   --marine: #14456e; --marine-ink: #ffffff; --link: #14456e;
-  --run: #1f7a4a; --warn: #b26a00; --stop: #8a949c; --rust: #a63a2b;
+  --run: #1f7a4a; --warn: #955800; --stop: #8a949c; --rust: #a63a2b;
   --focus: #2f7fd1; --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
@@ -45,6 +45,7 @@ th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid var(-
    anywhere, so the table fits the screen. Ordinary words (headers, states, buttons) stay whole. */
 /* Long names, references and addresses carry <wbr> break points (views.ts brk); IDs stay whole. */
 code.id { white-space: nowrap; }
+.phone-only { display: none; }
 /* A table that is still wider than the screen (a very long name) scrolls inside its own box, not
    the whole page. */
 .scroll { overflow-x: auto; max-width: 100%; }
@@ -145,6 +146,11 @@ pre#logs { background: #0f1418; color: #d7dee2; padding: .9rem 1rem; max-height:
   nav .spacer { display: none; }
   nav .who { margin-left: auto; }
   #containers th:nth-child(4), #containers td:nth-child(4) { display: none; }
+  /* The image goes under the name, so the table fits a phone. */
+  #containers th:nth-child(2), #containers td:nth-child(2) { display: none; }
+  #containers .phone-only { display: block; }
+  td.actions button { padding: .25rem .5rem; }
+  main { padding-left: .75rem; padding-right: .75rem; }
   th.wide, td.wide { display: none; }
   th, td { padding: .5rem .4rem; }
   tr.group .groupacts { float: none; display: block; margin-top: .3rem; }

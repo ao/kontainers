@@ -394,19 +394,19 @@ export async function recoverInterrupted(docker: Docker, kept: (name: string, id
 
   // First, quickly: an old container that runs beside a running replacement (a daemon restart
   // starts both) is stopped, so no two copies share the data while the replacements are judged.
-  for (const base of bases) {
-    if (more.signal?.aborted) break;
+  // The stops at the same time: each can take its container's stop timeout.
+  await Promise.allSettled([...bases].map(async base => {
+    if (more.signal?.aborted) return;
     const release = take(base);
-    if (!release) continue;
+    if (!release) return;
     try {
       const row = readRows().find(r => r.name === base);
-      if (!row) continue;
-      const list = await docker.listContainers();
-      const now = list.find(x => nameOf(x) === base);
-      const c = list.find(x => asideOf(x) && String(x.Id) === row.old_id);
+      if (!row) return;
+      const now = first.find(x => nameOf(x) === base);
+      const c = first.find(x => asideOf(x) && String(x.Id) === row.old_id);
       if (c && now && now.Labels?.['kontainers.replaces'] === c.Id && runs(now.State) && runs(c.State)) await docker.stop(c.Id);
     } catch { /* judged below */ } finally { release(); }
-  }
+  }));
 
   // Then every name at once: a watch of one replacement does not hold up the others.
   await Promise.allSettled([...bases].map(async base => {
@@ -487,10 +487,16 @@ export async function recoverInterrupted(docker: Docker, kept: (name: string, id
         if (now.State === 'restarting') verdict = { back: 'and the new container keeps restarting', hold: true };
         else {
           const purpose = await stoppedOnPurposeSince(docker, now.Id, row.at);
+          const info = await docker.inspect(now.Id);
+          const code = Number(info?.State?.ExitCode ?? -1);
           if (purpose === true) verdict = { keep: `the new ${base} was stopped by someone and is left as it is` };
           else if (!wasRunning) verdict = { keep: `the new ${base} is stopped, as ${base} was` };
+          // Ended by SIGTERM or SIGKILL without running out of memory: a docker stop or a daemon
+          // that went down, which the daemon may no longer remember (it keeps 256 events, none from
+          // before a restart). Not a reason to put the old one back or blame the image.
+          else if ((code === 137 || code === 143) && !info?.State?.OOMKilled) { byHand(base, `${name} and ${base} both exist; the new ${base} was stopped by a signal (exit code ${code}), by someone or by Docker going down`); return; }
           // Held back only when the daemon could say that nobody stopped it.
-          else verdict = { back: `and the new container then stopped (${now.Status || 'exited'})`, hold: purpose === false };
+          else verdict = { back: `and the new container then stopped (${now.Status || `exit code ${code}`})`, hold: purpose === false };
         }
       }
       if (!verdict) { later(base, `${name} and ${base} both exist, and ${base} is ${now.State}`); return; }

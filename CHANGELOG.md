@@ -263,6 +263,14 @@
   of a name whose interrupted update is not tidied up yet waits for it.
 - A table box that scrolls on a narrow screen can be reached with the keyboard and is named
   after its section; one that does not scroll is no extra tab stop.
+- A replacement that ended by SIGTERM or SIGKILL (exit code 143 or 137, not out of memory) while
+  kontainers was down is no longer put back and blamed: Docker may have stopped it, or someone
+  may have, and the daemon keeps too few events to tell. Both containers are left for a look by
+  hand. Old containers running beside their replacements are stopped at the same time.
+- Stop of a stopped container and Start of a running one say so, instead of "Not Modified". A
+  registry's 403 that the daemon passes on as an error 500 also refuses the login.
+- Phones: the Containers table shows the image under the name, so it fits. The "newer image"
+  colour has enough contrast (4.5:1), and the log box can be scrolled with the keyboard.
 
 ## 0.3.0
 

@@ -754,7 +754,7 @@ describe('code review of round 5', () => {
     const b = pair(d, 'bb', { Running: false, Status: 'exited' }, { Running: false, Status: 'created' });
     let n = 0;
     const list = d.listContainers.bind(d);
-    d.listContainers = async () => { n++; if (n === 4) throw new Error('daemon busy'); return list(); };
+    d.listContainers = async () => { n++; if (n === 3) throw new Error('daemon busy'); return list(); };
     const seen: string[] = [];
     const { recoverInterrupted } = await import('../../src/update');
     await recoverInterrupted(d as any, () => {}, rowsOf([{ name: 'aa', old_id: a.old, was_running: 1 }, { name: 'bb', old_id: b.old, was_running: 1 }]), undefined, false, { report: r => seen.push(`${r.name}:${r.retry ? 'retry' : 'done'}`) });
@@ -818,5 +818,30 @@ describe('ReplaceJournal', () => {
     expect(j.all()[0]).toMatchObject({ old_id: 'b'.repeat(64), was_running: 0, rollback: 0 });
     j.end('web');
     expect(j.all()).toEqual([]);
+  });
+});
+
+describe('QA round 6', () => {
+  test('a replacement ended by a signal that the daemon no longer remembers is left, with the old one, for a look by hand', async () => {
+    const { d } = setup();
+    const id = d.run('web', 'app:1');
+    const c = d.find(id);
+    c.Id = 'abcdef12' + c.Id.slice(8); d.containers.delete(id); d.containers.set(c.Id, c);
+    c.Name = '/web-old-abcdef12'; c.State = { Running: false, Status: 'exited', ExitCode: 0 };
+    const now = d.run('web', 'app:1');
+    d.find(now).Config.Labels['kontainers.replaces'] = c.Id;
+    d.find(now).Image = 'i2';
+    d.find(now).State = { Running: false, Status: 'exited', ExitCode: 137, OOMKilled: false };
+    d.pastEvents = async () => []; // forgotten: 256 events, none from before a daemon restart
+    const held: string[] = [];
+    const { recoverInterrupted } = await import('../../src/update');
+    const rows = [{ name: 'web', old_id: c.Id, was_running: 1, at: Date.now() - 1000 }];
+    const journal = { begin() {}, end(n: string) { rows.splice(rows.findIndex(r => r.name === n), 1); }, all: () => rows };
+    const r = await recoverInterrupted(d as any, () => {}, journal, undefined, false, { held: (n, img) => { held.push(img); return true; } });
+    expect(r[0].text).toContain('stopped by a signal (exit code 137)');
+    expect(r[0].text).toContain('check them by hand');
+    expect(d.containers.has(now)).toBe(true);
+    expect(d.containers.has(c.Id)).toBe(true);
+    expect(held).toEqual([]);
   });
 });

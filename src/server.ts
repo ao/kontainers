@@ -732,7 +732,9 @@ export function createHandler(d: Deps): Handler {
           // answers a bad token) is the registry refusing; docker-socket-proxy's 403 is a bare page.
           // A 403 with the daemon's own message (anything but HAProxy's bare "Forbidden") is the
           // registry's answer too.
-          const daemon403 = errorStatus(e) === 403 && e instanceof DockerError && e.fromDaemon;
+          // The daemon also wraps a registry's 403 in a 500: "failed with status: 403 Forbidden",
+          // "unknown: access forbidden".
+          const daemon403 = e instanceof DockerError && e.fromDaemon && (errorStatus(e) === 403 || /status: 40[13]\b|\bforbidden\b/i.test(m));
           if (errorStatus(e) === 401 || daemon403 || /unauthorized|incorrect username or password|authentication required|(?<!permission )\bdenied\b/i.test(m)) {
             throw new v.ValidationError(`the registry refused this login, so it was not saved: ${m}`);
           }
@@ -769,8 +771,8 @@ export function createHandler(d: Deps): Handler {
         if (op !== 'start' && op !== 'unpause') await refuseSelf(id);
         // Stopping or starting a container while it is being replaced would undo the replacement.
         await refuseBusy(id);
-        if (op === 'start') await docker.start(id);
-        else if (op === 'stop') await docker.stop(id);
+        if (op === 'start') { if (!(await docker.start(id))) return `${id} was already running.`; }
+        else if (op === 'stop') { if (!(await docker.stop(id))) return `${id} was already stopped.`; }
         else if (op === 'restart') await docker.restart(id);
         else if (op === 'unpause') await docker.unpause(id);
         else {

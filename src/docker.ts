@@ -86,6 +86,8 @@ export class Docker {
     } catch (e) {
       throw new DockerError(`Docker daemon unreachable: ${unreachable(e as Error)}`, 502);
     }
+    // 304: the container was already in that state (start of a running one, stop of a stopped one).
+    if (res.status === 304) return res;
     if (!res.ok) {
       let msg = res.statusText;
       let fromDaemon = false;
@@ -124,8 +126,9 @@ export class Docker {
     return list;
   }
   inspect(id: string) { return this.json<any>('GET', `/containers/${encodeURIComponent(v.ref(id))}/json`); }
-  async start(id: string) { await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/start`); }
-  async stop(id: string) { await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/stop?t=10`, undefined, 60000); }
+  // false: it was already running (start) or already stopped (stop).
+  async start(id: string): Promise<boolean> { return (await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/start`)).status !== 304; }
+  async stop(id: string): Promise<boolean> { return (await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/stop?t=10`, undefined, 60000)).status !== 304; }
   async unpause(id: string) { await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/unpause`); }
   async restart(id: string) { await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/restart?t=10`, undefined, 60000); }
   async remove(id: string, force = false) {
