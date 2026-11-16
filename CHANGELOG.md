@@ -1,276 +1,91 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
-- Fixed: Update image, Edit settings and automatic updates dropped anonymous volumes (an image's
-  VOLUME, such as a database's data directory): the new container started empty and the data
-  was left in a dangling volume. The container's actual mounts are now carried over by name.
-- If kontainers stops in the middle of an update or an edit, it tidies up when it starts again: a
-  container left set aside as `<name>-old-<id>` is put back if nothing has its name, or removed
-  if the new container is running.
-- Fixed: when the image a container was made from was gone (a `docker build` that reused the
-  tag deletes it), Update image copied that image's environment and command into the new
-  container. It now refuses and points to Edit settings, before pulling or stopping anything.
-- Fixed: two updates of one container at once could leave the old one running beside the new
-  one; the second is now refused. A 120-character name no longer makes Update stop and restart
-  the container for nothing (the set-aside name is shortened to fit).
-- Fixed: with a full data volume, a Stop or Start that worked was reported as "internal error"
-  (writing the activity entry failed), a session could end, and a new login gave a 500. Now the
-  action's own outcome is shown with a note that it could not be recorded, logged-in users keep
-  working, and the login page says the data volume is full. The activity entry's target is cut
-  to 200 characters.
-- Fixed: removing, disabling or retargeting a proxy rule left its container on the proxy
-  network, in reach of every other target. Containers no enabled rule points at are now
-  disconnected (kontainers itself stays). The proxy network is made again if it is missing, for
-  example when the Docker API was not reachable at start, and the Proxy page says when it
-  cannot be.
-- Fixed: update checks missed a container left on an old image after a `docker pull` (the list
-  then shows an image ID, so the container's own reference is used), and on Docker's containerd
-  image store every locally built image was "newer image available", kontainers included: a
-  digest the registry never served now counts as built on this host. Registry errors are put
-  in words. Four images are checked at a time, and Check for updates answers within 20 s,
-  carrying on in the background when a registry is slow.
-- Fixed: long names, hostnames and paths pushed tables far off the screen (2400-4400 px wide);
-  table cells now wrap, and a container's ports are listed by host port.
-- Fixed: a mistake in the New container form discarded everything typed; the form now comes
-  back filled in, with the error. Several actions at once in one session (two tabs) each show
-  their outcome instead of the last one only.
-- The container page shows the command, published ports, how often the container restarted,
-  and for an unhealthy one the last healthcheck's output; unhealthy rows get the warning stripe.
-  Networks and volumes are sorted and say which containers use each.
-- Input: international hostnames are stored in punycode; length limits for names and
-  environment values say what the limit is; trailing spaces in environment values are kept; a
-  stray space in an image to pull is ignored; creating a volume whose name exists is refused
-  (Docker answered as if it had made it).
-- The Proxy page says when nothing answers on a rule's target port (visitors would get a 502):
-  kontainers tries a connection from its own container every 10 seconds.
-- A hostname's rules must all be HTTPS or all plain HTTP. With a mix, each rule answered only on
-  its own scheme and the HTTPS rule's redirect from HTTP went to the plain one.
-- Container pages, their actions, logs and usage are addressed by container name, not ID, so a
-  page left open keeps working after `docker compose up` or an update recreates the container.
-- Fixed: log responses were unbounded (a container that printed a 20 MB line made a 40 MB
-  response and spiked memory). Logs are read as a stream and the page keeps the newest 2 MB,
-  saying how much earlier output it leaves out; a download keeps up to 20 MB, two at a time.
-- Fixed: editing a rule into another rule's hostname and path gave "internal error"; HTTPS rules
-  for names over 230 characters are refused (Caddy's lock file name was too long, so the
-  certificate never came and the page blamed DNS). A wildcard rule is no longer shown as a link,
-  and the remove prompt names the path too.
-- Changed: only kontainers itself and the container that serves its Docker API (found from
-  `DOCKER_HOST`, by name, compose service or address, and looked up again every 30 s) are
-  protected from Stop, Restart, Remove and Update. Before, every service in kontainers' compose
-  project was, which locked out anyone who added kontainers to an existing compose file.
-- Containers page: a search box (name, image or compose project) that filters as you type, a Show
-  filter (all, running, stopped, needs attention), and rows grouped by compose project with a
-  running count per project. "Needs attention" means restarting, dead, unhealthy, or exited with
-  an error code (not 0, 130, 137 or 143); the count links to the filter. Filters are in the URL
-  and work without script.
-- Automatic updates, opted in per container on its page, for containers created in kontainers.
-  The new container is watched while it settles (30 s, then until healthy if it has a
-  healthcheck); if it stops, restarts or turns unhealthy, the old one is put back, the image is
-  held back, and a newer image is tried at a later check. Update image now also watches the new
-  container for 5 s and rolls back if it stops.
-- Notifications to webhooks (JSON) and ntfy topics: newer image, automatic update result,
-  container stopped on its own (crash, error exit, out of memory), unhealthy and recovered,
-  certificate missing or about to expire. Each fact is sent once (crash loops: once per 10
-  minutes). Settings lists targets with their last result and has a test button.
-- The container page says when a container was stopped for running out of memory.
+Automatic updates with rollback, notifications, Edit settings, registry logins, Clean up, an
+Activity page, and a Containers page for hosts with hundreds of containers.
+
+Upgrading: add `--stop-timeout 30` to `docker run` (`compose.yaml` now sets
+`stop_grace_period: 30s`), so kontainers has time to put a container back if it is stopped in the
+middle of an update. `compose.yaml` also sets `AUTH=1` on the socket proxy, for checking registry
+logins. The database is migrated at the first start.
+
+### New
+
+- Automatic updates, opted in per container created in kontainers. After an update check finds a
+  newer image, the container is recreated with the same settings, volumes, networks, aliases and
+  fixed addresses, and watched for 30 s (`KONTAINERS_AUTOUPDATE_SETTLE`), then until it is
+  healthy if it has a healthcheck (`KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT`, 120 s). If it stops,
+  restarts or turns unhealthy, the old container is put back and that image is held back until a
+  newer one appears. A stop someone asks for meanwhile is not counted as a failure.
+- Updates that are interrupted (kontainers stopped or killed, the Docker daemon restarted) are
+  finished at the next start from a record written before anything is stopped. A container is
+  removed only on clear evidence; otherwise both are left and the Activity page and a
+  notification say to check them by hand.
+- Notifications to webhooks (JSON) and ntfy topics: a newer image (once per image, naming the
+  containers that use it), an automatic update and its result, a container that stopped on its
+  own (crash, error exit, probably out of memory), unhealthy and healthy again, and a certificate
+  that is missing or close to expiry. Settings has a Send test button and each target's last
+  result. Notifications are never sent to the Docker API kontainers uses, by any name or address,
+  or to link-local (cloud metadata) addresses, and redirects are not followed.
 - Edit settings, for containers created in kontainers: image, command, ports, environment, volumes
-  and restart policy, shown filled in. Saving recreates the container under the same name and on
-  the same networks, watched for 5 s, with the old one put back if the new one fails. Bad input
-  is refused before the old container is stopped. Host paths it already has may stay; new ones
-  follow `KONTAINERS_ALLOW_BIND_MOUNTS`.
-- New container: an option to update it automatically.
-- Phones: the header puts the name on its own line and the navigation below; only the
-  Containers table drops its ports column on a narrow screen (before, every table lost its fourth
-  column). A browser test runs axe-core (WCAG 2 A and AA) on every page at desktop and phone
-  size and checks that no page is wider than a 390-pixel screen.
-- An Activity page: who did what and when, from which address, newest first, 100 a page, with a
-  search. Failed attempts are recorded too, with the error, and so is what kontainers does on its
-  own (automatic updates). Entries older than a year are removed.
-- Logs on the container page: a filter that shows only matching lines (with a count), 300, 1000
-  or 5000 lines, timestamps on or off, and a download of the last 10000 lines (up to 100000 with
-  `?tail=`) as a file named after the container.
-- Clean up (linked from Images): untagged images, tagged images no container uses, networks no
-  container uses, and anonymous volumes no container mounts, each listed with sizes before
-  removal. Stopped containers count as users. Named volumes are never removed in bulk. Items are
-  removed one by one and never forced, so anything that came into use meanwhile is kept.
-- Compose projects on the Containers page have Start all, Restart all and Stop all. kontainers
-  itself, its Docker API container and containers being updated are skipped; each failure is
-  listed.
-- Fixed: Stop, Start, Restart or Remove of a container while an update or an edit replaced it
-  undid the replacement (the old container came back and the good image was held back as
-  failed). They are now refused until it finishes. Edit settings takes the container before it
-  pulls, so two saves at once can no longer leave the old container running beside the new one.
-- Fixed: an automatic update that failed for a reason outside the image (a port in use, a pull
-  that failed) held the image back for good. Only an image whose container started and then
-  stopped, restarted or turned unhealthy is held back; anything else is tried again at the next
-  check. A healthy image is no longer rolled back by Update image or Edit settings because its
-  first healthcheck had not run yet.
-- Notifications: never sent to the Docker API kontainers uses or to link-local addresses (cloud
-  metadata); redirects are not followed (the body and token would go to an address nobody
-  chose); a fact no target received is sent again the next time it comes up; a slow receiver no
-  longer holds up the other events; health notes about a container being replaced are left to
-  the update's own note; "healthy again" is sent once an hour at most; an `oom` event counts
-  only if it came within 30 s of the container stopping.
-- Clean up lists images built on this host (no registry digest) apart and does not remove them
-  in bulk: they cannot be pulled again. Anonymous volumes are removed only when ticked.
-- A failed login for a username that does not exist is recorded as "(no such user)", so a
-  password typed into the username field does not end up on the Activity page.
-- The proxy takes containers off its network only on a network kontainers made, and recognises
-  its own container by its address too.
-- Edit settings says when the image the container was made from is gone, so its environment and
-  command may include that image's own values.
-- Fixed: a `docker stop` or `docker restart` from outside (a backup script, say) while a new
-  container settled made kontainers put the old one back and hold the good image back as failed.
-  A stop someone asked for (Docker records a kill or stop event) now leaves the new container as
-  they left it, and the result says so.
-- Fixed: stopping or restarting kontainers during an update left the new container running
-  unwatched, the old one stopped beside it, and automatic updates for it silently off. Shutdown
-  now undoes a replacement that is still being watched (the old container is back within a
-  second or two) and records it; at the next start an interrupted one is tidied up, recorded on
-  the Activity page, and the container stays opted in.
-- Fixed: with a full data volume, crash and health notifications were not sent, an automatic
-  update that worked turned the container's automatic updates off, and one error stopped the
-  update pass for every container after it. Notes now go out (repeats are still held back, in
-  memory), the new container ID is kept until it can be written, each container is handled on
-  its own, and every page says the data volume is full.
-- Fixed: containers with names over 128 characters (compose makes them from long project names)
-  could not be opened or acted on; their pages use the container ID.
-- Fixed: Edit settings with an image that is not on the host and Pull unticked stopped the
-  container for 10 s before failing. It is refused before anything changes, and the form comes
-  back with what was typed (it came back with the old values).
-- Fixed: Update image, Edit settings and automatic updates dropped a container's network aliases
-  and fixed addresses; they are carried over.
-- Fixed: a healthcheck that flapped sent "healthy again" every cycle; "healthy again" now follows
-  only an "unhealthy" note that went out.
-- "Newer image" notes go out once per image and name every container that uses it (one new
-  `:latest` used by 21 containers sent 21 notes).
-- Clean up treats a volume as anonymous only by Docker's own label; a named volume with a
-  64-character hex name was listed with them.
-- After an automatic update held an image back, the page and the list no longer recommend that
-  image ("newest image held back"), and Check for updates does not count it as being updated.
-- A container killed with exit code 137 and no stop or kill before it is reported as probably out
-  of memory: on cgroup v2 hosts Docker often sends no `oom` event.
-- Check for updates while a scheduled check runs starts a new check after it, instead of
-  reporting the older result.
-- Certificate warnings follow the certificate's lifetime (a sixth of it left, at most 14 days), so
-  short-lived certificates are not reported as failing soon after they are issued.
-- With host bind mounts off, Edit settings can no longer make a read-only host path writable.
-- Smaller things: a form over 1 MB gets a page that says so instead of a blank one; a Docker host
-  name that does not resolve is reported as the daemon not answering; turning automatic updates
-  off during an update says it still finishes; the Activity search finds kontainers' own entries
-  by "kontainers"; the event stream reconnects within 5 s; the live filter on the Containers page
-  goes into the address, the attention link clears the search, and paused containers count as
-  running; table text on a phone breaks inside long names and addresses only, not inside words.
-- Registry logins for private images, on the Settings page: Docker Hub, GHCR or any registry.
-  They are used for pulls (Images, New container, Edit settings, Update image, automatic updates)
-  and update checks, and checked before they are saved: one the registry refuses is not saved.
-  Passwords are stored encrypted (bound to their registry) with a key kept in
-  the data volume (`registry.key`) and left out of the backup. A pull refused for want of a
-  login says which registry to add. `compose.yaml`: `AUTH=1` on the socket proxy, for the check.
-- Replacements (Update image, Edit settings, automatic updates) are written down before the old
-  container is stopped, so a kontainers that is killed in the middle finishes the job at its next
-  start: a container stopped for a replacement that got no further is started again, and a new
-  container that never started is removed and the old one put back. kontainers checks for a
-  shutdown after stopping the old container too, and waits up to 25 s for replacements to undo
-  themselves; `compose.yaml` sets `stop_grace_period: 30s`.
-- While a container is replaced, its old container (`<name>-old-<id>`) cannot be started,
-  removed, edited or updated from kontainers. A rollback checks each step and says when putting
-  the old container back went wrong, instead of saying it was put back.
-- A `docker kill -s HUP` (a reload) is not taken for a stop: a crash after it is still reported,
-  and still rolls an update back. Health is followed per container, so a recreated container is
-  judged afresh. An update's lock is released before its registry lookup and notification, so a
-  crash right after is reported.
-- With docker-socket-proxy, a refused API section (HTTP 403) is reported as such again, with the
-  setting to turn on; it was reported as a bad request.
-- Fixed: Update image, Edit settings and automatic updates put every container on Docker's
-  default bridge network, so a container kept on an internal network could reach the internet
-  afterwards. A replacement is made on the network the old one was made on (or none) and joins
-  the rest; a container on the host's network is refused before anything stops. Replacements
-  carry `kontainers.replaces=<old ID>`, so an opted-in container stays opted in after a restart
-  even when its new ID could not be saved.
-- Interrupted replacements: acted on only when kontainers' own record says it was replacing that
-  container, so a second kontainers on the same host leaves the first one's updates alone; a new
-  container that stopped once nobody watched it is removed and the old one put back; what Docker
-  is still busy with (a daemon restarted at the same time) is tried again every 30 s, five times.
-  Each outcome is on the Activity page and sent as an automatic-update notification.
-- Notifications are checked by address before every delivery, not only by the host name typed:
-  the socket proxy reached by container name, address or a name with a trailing dot, and names
-  or IPv4-mapped addresses that lead to a link-local address, are not sent to.
-- kontainers starts with a full data volume: the database is opened without its shared-memory
-  file when that cannot be made, and a database that cannot be opened gets a plain message.
-- Phones: long names, image references, hashes and addresses get break points instead of every
-  cell breaking anywhere, so words and short names stay whole and Volumes, Settings, Networks,
-  Images and Activity fit a 390-pixel screen; secondary columns (driver, scope, created) are
-  left out there. A container being replaced shows "being updated or edited" instead of its
-  buttons, and its set-aside old container says what it is.
-- An automatic update of a stopped container says it is left stopped. A form over 1 MB, at any
-  size up to 64 MB, gets a page that gives the size in KB.
-- The tidy-up after a restart takes each container's lock (an update started meanwhile waits for
-  it, or is skipped by it), recognises a replacement by its `kontainers.replaces` label only, never
-  removes a replacement someone stopped on purpose, starts a container again only if it stopped
-  after the replacement began, keeps trying while the Docker API does not answer yet, and says
-  what to check by hand when it gives up. An update is refused while an earlier interrupted one
-  of the same name is not tidied up. Opting in is refused while a container is being replaced.
-- Containers on the host's network, or another container's, are refused by Update image, Edit
-  settings and automatic updates before anything is pulled. A container disconnected from every
-  network stays connectable after a replacement.
-- Notifications compare the Docker API by address and port, so a receiver on another port of the
-  same host works, and 0.0.0.0, `::` and `localhost` count as loopback; a target is checked when
-  it is added too. A body over the form limit is refused before the login check, unread.
-- The tidy-up after a restart watches a replacement that is running, as the update would have:
-  one that crash-loops under a restart policy is removed, the old container is put back and the
-  image is held back (it was kept, and the working old container removed). A second kontainers
-  on the same host waits a few minutes before it reports another instance's set-aside container,
-  and treats it as an update under way.
-- A registry that answers a bad login with 403 "denied" (GHCR does) is taken as refusing it, and
-  the login is not saved; before, it was saved unchecked and every pull from that registry failed,
-  public images too. A pull or update check refused for a saved login says so, and Settings shows
-  update checks as well as pulls under "Last used". A broken `registry.key` is reported before the
-  registry is asked.
-- A Check for updates made while an automatic-update pass runs gets a pass of its own afterwards.
-- Phones and wide screens: compose project names, commands and failure notes no longer widen
-  their tables; the Events column of notification targets is left out on phones; the image column
-  keeps at least 14rem on wide screens, and notes in the actions column wrap. International
-  hostnames are shown as written on the Proxy page. A container being replaced does not say a
-  newer image is available.
-- The tidy-up after a restart handles one container at a time under its lock, stops the old
-  container before judging the new one (so the two never run on the same data), puts the old one
-  back when the new one is dead or keeps restarting, never counts kontainers' own kills of a
-  container it was removing as a stop someone asked for (the journal records a rollback in
-  progress), watches a running replacement only when the update began recently, holds an image
-  back only when the image changed, and keeps its record for the next start when it gives up.
-  It no longer delays the proxy or the shutdown handling at start.
-- `DOCKER_HOST=tcp://host` without a port uses port 2375, as Docker does, and notifications are
-  kept off that port. The full-volume notice and the exclusive-mode notice are shown together.
-  A registry login's "Last used" is no longer flipped by every update check.
-- After a restart that interrupted several replacements, the old containers that run beside
-  their replacements are stopped first, and all names are judged at the same time rather than one
-  watch after another. The note after a good watch says so; for a container that is not updated
-  automatically it says its tag now points at the image that failed. The event watcher notes
-  set-aside containers whenever it connects, so a replacement's crashes are left to the tidy-up.
-- Any 403 the Docker daemon itself gives for a login check refuses the login (only the socket
-  proxy's bare "Forbidden" means the check could not be made).
-- A table that is still wider than a phone (a very long compose project name) scrolls inside its
-  own box instead of widening the page.
-- The tidy-up after a restart removes a container only on clear evidence. Long after an update
-  began, a replacement that is restarting, has stopped or is unhealthy is no longer judged from
-  one look: both containers are left and the note says to check them by hand. The old container
-  is stopped only while its replacement runs, and a rollback starts it again only once the new
-  container is gone, so two copies never share the data. Outcomes are reported as they are
-  reached; a name whose listing failed is tried again without losing the others; a rollback that
-  put the old container back but could not start it is finished at the next attempt; an update
-  of a name whose interrupted update is not tidied up yet waits for it.
-- A table box that scrolls on a narrow screen can be reached with the keyboard and is named
-  after its section; one that does not scroll is no extra tab stop.
-- A replacement that ended by SIGTERM or SIGKILL (exit code 143 or 137, not out of memory) while
-  kontainers was down is no longer put back and blamed: Docker may have stopped it, or someone
-  may have, and the daemon keeps too few events to tell. Both containers are left for a look by
-  hand. Old containers running beside their replacements are stopped at the same time.
-- Stop of a stopped container and Start of a running one say so, instead of "Not Modified". A
-  registry's 403 that the daemon passes on as an error 500 also refuses the login.
-- Phones: the Containers table shows the image under the name, so it fits. The "newer image"
-  colour has enough contrast (4.5:1), and the log box can be scrolled with the keyboard.
+  and restart policy. Bad input and an image that is not on the host are refused before the old
+  container is stopped; the form keeps what was typed after an error.
+- Registry logins for private images (Docker Hub, GHCR, your own registry), used for pulls and
+  update checks and checked before they are saved. Passwords are stored encrypted with a key in
+  the data volume (`registry.key`) that the database backup leaves out.
+- Clean up (from Images): untagged images, unused tagged images, unused networks and unused
+  anonymous volumes, listed with sizes before anything is removed. Anything a container uses,
+  running or stopped, stays; images built on the host and named volumes are never removed in bulk.
+- An Activity page: every action and failed attempt, by whom and from where, and what kontainers
+  did on its own, searchable and kept for a year.
+- Containers page: search, a filter for running, stopped and "needs attention", grouping by compose
+  project with Start all, Restart all and Stop all, and the filter kept in the address. A
+  container page shows the command, ports, restarts and why its healthcheck fails.
+- Logs: a filter, 300 to 5000 lines, timestamps on or off, and a download of up to 100000 lines.
+- Phones: every page fits a 390-pixel screen, and a browser test checks accessibility (axe-core,
+  WCAG 2 A and AA) on every page at desktop and phone size.
+
+### Changed
+
+- Only kontainers itself and the container that serves its Docker API are protected from Stop,
+  Restart, Remove and Update (before: every service in kontainers' compose project).
+- Container pages and their actions are addressed by name, so a page left open survives a
+  recreation.
+- Stop, Start, Restart and Remove are refused while the same container is being updated or edited;
+  one update or edit runs at a time per container.
+- A hostname's proxy rules must all be HTTPS or all plain HTTP. HTTPS rules for names over 230
+  characters are refused (the certificate could never be stored).
+- `DOCKER_HOST=tcp://host` without a port means port 2375, as in Docker.
+
+### Fixed
+
+- Update image dropped anonymous volumes (an image's `VOLUME`, such as a database's data
+  directory), so the new container started empty; it put every container on the default bridge
+  network, even one kept on an internal network; and it lost network aliases and fixed addresses.
+- Update image copied the old image's environment and command into the new container when that
+  image had been deleted (a `docker build` reusing the tag); it now refuses.
+- Two Update image clicks at once could leave the old container running beside the new one.
+- Update checks missed containers left on an old image after a `docker pull`, reported every
+  locally built image as having a newer one on Docker's containerd image store, and could take
+  minutes with a slow registry (Check for updates now answers within 20 s and carries on).
+  With docker-socket-proxy, a refused registry lookup now says which setting to turn on.
+- Removing or disabling a proxy rule left its container on the proxy network. The proxy network is
+  made again if it is missing.
+- With a full data volume, actions that worked were reported as "internal error" and a login gave
+  a 500; kontainers now starts, says the volume is full on every page, and keeps working.
+- Log responses were unbounded; a page keeps the newest 2 MB, a download up to 20 MB.
+- Long names, hostnames and paths pushed tables far off the screen.
+- The New container form lost what was typed after an error; several tabs showed only the last
+  outcome.
+- Editing a proxy rule into another rule's hostname and path gave "internal error"; a wildcard
+  rule was shown as a link.
+- Creating a volume whose name exists was reported as done; trailing spaces in environment values
+  were dropped; international hostnames are stored in punycode and shown as written.
+- Stop of a stopped container and Start of a running one gave "Not Modified".
+
+The full list of changes made while 0.4.0 was developed and tested, with the problems that
+exploratory testing found, is in the commit history (pull request #14).
 
 ## 0.3.0
 

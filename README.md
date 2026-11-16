@@ -34,16 +34,16 @@ remove itself. The Security section below lists every default.
 
 ## What it costs to run
 
-Memory and start time were measured on the 0.4 development build, on an EC2 m7g.4xlarge (arm64,
-16 vCPUs, Ubuntu 24.04, Docker 29.9.3), by `scripts/test.sh screenshots` in two runs. The download
+Memory and start time were measured on the 0.4.0 release candidate, on an EC2 m7g.4xlarge (arm64,
+16 vCPUs, Ubuntu 24.04, Docker 29.9.3), by `scripts/test.sh screenshots` in three runs. The download
 size is the published 0.3.0 image's; 0.4 moves to a newer Bun base image that is about 17 MB larger
 compressed (oven/bun 1.3.1-slim is 67.8 MB on Docker Hub for arm64, 1.4.4-slim is 85.3 MB).
 
 | | |
 |---|---|
 | Download | 82.5 MB (arm64) and 85.0 MB (amd64) for 0.3.0, compressed layers on Docker Hub |
-| Memory at idle | 30 to 33 MiB, with Caddy serving two HTTPS rules and four other containers on the host (`docker stats` after 30 s, two runs) |
-| Start | 239 to 270 ms from `docker start` to a healthy `/healthz` (ten starts over two runs) |
+| Memory at idle | 30 to 34 MiB, with Caddy serving two HTTPS rules and four other containers on the host (`docker stats` after 30 s, three runs) |
+| Start | 239 to 299 ms from `docker start` to a healthy `/healthz` (fifteen starts over three runs) |
 
 `scripts/test.sh screenshots` repeats these measurements and regenerates the screenshots. On a
 Mac under OrbStack the 0.2.1 build used 53 to 55 MiB and started in 1.0 to 4.2 s.
@@ -174,12 +174,12 @@ Then open http://127.0.0.1:8080, enter the token, and create the first account.
 
 With `docker run`, mounting the socket directly:
 
-    docker run -d --name kontainers --restart unless-stopped \
+    docker run -d --name kontainers --restart unless-stopped --stop-timeout 30 \
       -p 127.0.0.1:8080:8080 \
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.3.0
+      ataiva/kontainers:0.4.0
     docker logs kontainers | grep 'setup token'
 
 The image runs as an unprivileged user, so it needs the socket's group (`--group-add`). On
@@ -231,13 +231,13 @@ for two weeks.
 Turn the proxy on with `KONTAINERS_PROXY=1` and publish ports 80 and 443. These two ports are meant
 to be public: they serve the sites you route, not the kontainers UI.
 
-    docker run -d --name kontainers --restart unless-stopped \
+    docker run -d --name kontainers --restart unless-stopped --stop-timeout 30 \
       -p 127.0.0.1:8080:8080 -p 80:80 -p 443:443 \
       -e KONTAINERS_PROXY=1 -e KONTAINERS_ACME_EMAIL=REPLACE-WITH-YOUR-EMAIL \
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.3.0
+      ataiva/kontainers:0.4.0
 
 Use your own email address: Let's Encrypt rejects reserved domains such as example.com, and
 kontainers refuses to start with one.
