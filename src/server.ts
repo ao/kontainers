@@ -227,8 +227,9 @@ export function createHandler(d: Deps): Handler {
   const setCookie = (id: string) => `${cookieName}=${id}; Path=/; HttpOnly; SameSite=Strict${secure ? '; Secure' : ''}`;
   const clearCookie = () => `${cookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure ? '; Secure' : ''}`;
 
-  const audit = (s: Session | null, action: string, target: string | null, ip: string) =>
-    db.query('INSERT INTO audit_log (at, username, action, target, ip) VALUES (?, ?, ?, ?, ?)').run(Date.now(), s?.user.username ?? null, action, target, ip);
+  // result: null for success, or what went wrong.
+  const audit = (s: Session | null, action: string, target: string | null, ip: string, result: string | null = null) =>
+    db.query('INSERT INTO audit_log (at, username, action, target, ip, result) VALUES (?, ?, ?, ?, ?, ?)').run(Date.now(), s?.user.username ?? null, action, target, ip, result);
 
   function ctx(s: Session): views.PageCtx {
     const f = flashes.get(s.idHash);
@@ -296,6 +297,7 @@ export function createHandler(d: Deps): Handler {
     } catch (e) {
       if (errorStatus(e) >= 500 && !(e instanceof DockerError)) console.error(`kontainers: ${action} failed:`, e);
       flashes.set(s.idHash, { error: errorMessage(e) });
+      audit(s, action, target, ip, `failed: ${errorMessage(e)}`.slice(0, 500));
     }
     return redirect(typeof back === 'function' ? back() : back);
   }
@@ -396,6 +398,17 @@ export function createHandler(d: Deps): Handler {
       }
       if (p === '/networks') return page(views.networksPage(ctx(s), await docker.listNetworks()));
       if (p === '/volumes') return page(views.volumesPage(ctx(s), await docker.listVolumes()));
+      if (p === '/activity') {
+        const q = (url.searchParams.get('q') || '').trim().slice(0, 100);
+        const before = v.intInRange(url.searchParams.get('before'), 1, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
+        const like = `%${q.replace(/[\\%_]/g, ch => '\\' + ch)}%`;
+        const keys = views.actionsMatching(q);
+        const rows = db.query(`SELECT id, at, username, action, target, ip, result FROM audit_log WHERE id < ? AND (? = ''
+            OR username LIKE ? ESCAPE '\\' OR target LIKE ? ESCAPE '\\' OR ip LIKE ? ESCAPE '\\' OR result LIKE ? ESCAPE '\\'
+            OR action IN (SELECT value FROM json_each(?))) ORDER BY id DESC LIMIT 101`)
+          .all(before, q, like, like, like, like, JSON.stringify(keys)) as views.AuditRow[];
+        return page(views.activityPage(ctx(s), rows.slice(0, 100), q, rows.length > 100 ? rows[99].id : null));
+      }
       if (p === '/cleanup') return page(views.cleanupPage(ctx(s), await cleanup.currentPlan(docker)));
       if (p === '/proxy') {
         const list = rules.list();

@@ -59,7 +59,9 @@ export const MIGRATIONS: string[] = [
      last_at INTEGER,
      last_result TEXT,
      held_image TEXT
-   );`,
+   );
+   ALTER TABLE audit_log ADD COLUMN result TEXT;
+   CREATE INDEX audit_log_at ON audit_log (at);`,
 ];
 
 export function openDb(dataDir: string): Database {

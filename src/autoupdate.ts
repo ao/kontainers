@@ -29,7 +29,7 @@ export class AutoUpdates {
     private checker: UpdateChecker,
     private notifier: Notifier | null,
     private opts: AutoOptions,
-    private audit: (action: string, target: string) => void = () => {},
+    private audit: (action: string, target: string, result?: string) => void = () => {},
     private now: () => number = Date.now,
   ) {}
 
@@ -102,7 +102,7 @@ export class AutoUpdates {
     } catch (e) {
       result = (e as Error).message;
       if (e instanceof UpdateFailed && e.newImage) held = e.newImage;
-      this.audit('auto-update-failed', name);
+      this.audit('auto-update', name, `failed: ${result}`.slice(0, 500));
       await this.notifier?.send({ kind: 'autoupdate', title: `Update of ${name} failed`, message: `${result}. That image is held back until a newer one appears.`, container: name },
         `autoupdate-failed:${name}:${held ?? ''}`);
     } finally {

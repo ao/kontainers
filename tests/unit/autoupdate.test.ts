@@ -75,7 +75,7 @@ function setup() {
   const sent: { kind: string; title: string; key?: string }[] = [];
   const notifier = { send: async (n: any, key?: string) => { sent.push({ kind: n.kind, title: n.title, key }); return 1; } };
   const audit: string[] = [];
-  const auto = new AutoUpdates(db, d as any, checker, notifier as any, { settleMs: 0, healthTimeoutMs: 0 }, (a, t) => audit.push(`${a} ${t}`));
+  const auto = new AutoUpdates(db, d as any, checker, notifier as any, { settleMs: 0, healthTimeoutMs: 0 }, (a, t, r) => audit.push(`${a} ${t}${r ? ` (${r.slice(0, 21)})` : ''}`));
   const cycle = async () => { await checker.checkAll(); await auto.afterCheck(); };
   return { d, db, checker, sent, audit, auto, cycle };
 }
@@ -119,7 +119,7 @@ describe('AutoUpdates', () => {
     expect(auto.get('web')).toMatchObject({ held_image: 'i3' });
     expect(auto.get('web')!.last_result).toContain('old container was put back: the new container stopped with exit code 1');
     expect(sent.map(s => s.title)).toEqual(['Update of web failed']);
-    expect(audit).toEqual(['auto-update-failed web']);
+    expect(audit).toEqual(['auto-update web (failed: update failed)']);
 
     // The same bad image again: not pulled, not tried, no new note.
     d.pulls.length = 0;

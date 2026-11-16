@@ -13,7 +13,8 @@
 #   scripts/test.sh screenshots  not a test: regenerates docs/screenshots/ and prints measured
 #                              image size, startup time and idle memory (not part of "all")
 #
-# Env: BUN_IMAGE (default oven/bun:1.4.4, the image's Bun), CACHE_VOLUME (default kontainers-test-cache)
+# Env: BUN_IMAGE (default oven/bun:1.4.4, the image's Bun), CACHE_VOLUME (default kontainers-test-cache),
+#      DIND_MIRROR (a registry mirror for the test daemons, e.g. https://mirror.gcr.io, against Docker Hub's pull limit)
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -41,7 +42,7 @@ cleanup() {
 start_dind() {
   # TLS off is safe here: the daemon is reachable only on this private network and publishes no port.
   docker run -d --privileged --name "$DIND" --network "$NET" --network-alias dind \
-    -v "$SOCKVOL":/var/run -e DOCKER_TLS_CERTDIR= docker:28-dind \
+    -v "$SOCKVOL":/var/run -e DOCKER_TLS_CERTDIR= docker:28-dind ${DIND_MIRROR:+--registry-mirror=$DIND_MIRROR} \
     --host=tcp://0.0.0.0:2375 --host=unix:///var/run/docker.sock >/dev/null
   i=0
   until docker exec "$DIND" docker version >/dev/null 2>&1; do

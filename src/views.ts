@@ -72,7 +72,7 @@ export function formatPorts(ports: any[]): string {
   }).join(', ');
 }
 
-const SECTIONS = ['Containers', 'Images', 'Networks', 'Volumes', 'Proxy', 'Settings'];
+const SECTIONS = ['Containers', 'Images', 'Networks', 'Volumes', 'Proxy', 'Activity', 'Settings'];
 
 // `section` marks the nav entry for pages whose title is not the section name (a container's page).
 export function layout(title: string, ctx: PageCtx, body: Html, section = title): string {
@@ -503,4 +503,37 @@ ${post(ctx, '/cleanup/networks', `Remove ${p.networks.length} unused network${p.
 ${p.volumes.length ? html`<p>${p.volumes.length} anonymous volume${p.volumes.length === 1 ? '' : 's'} no container mounts (created by images that declare a volume, for containers since removed).</p>
 ${post(ctx, '/cleanup/volumes', `Remove ${p.volumes.length} anonymous volume${p.volumes.length === 1 ? '' : 's'}`, { confirm: 'Remove the unused anonymous volumes and their data?', cls: 'danger' })}` : html`<p class="muted">None unused.</p>`}
 ${p.namedUnused ? html`<p class="muted">${p.namedUnused} named volume${p.namedUnused === 1 ? ' is' : 's are'} not mounted by any container. Named volumes usually hold data, so they are not removed here; remove one on the <a href="/volumes">Volumes</a> page if you are sure.</p>` : ''}`, 'Images');
+}
+
+// What each audit action means, for the Activity page.
+const ACTIONS: Record<string, string> = {
+  'login': 'logged in', 'login-failed': 'failed to log in', 'logout': 'logged out', 'setup': 'created the first account',
+  'password-change': 'changed their password', 'user-create': 'added a user', 'user-remove': 'removed a user', 'backup': 'downloaded a backup',
+  'container-create': 'created a container', 'container-start': 'started', 'container-stop': 'stopped', 'container-restart': 'restarted',
+  'container-unpause': 'unpaused', 'container-remove': 'removed', 'container-update': 'updated the image of', 'container-edit': 'edited the settings of',
+  'autoupdate-on': 'turned on automatic updates for', 'autoupdate-off': 'turned off automatic updates for', 'auto-update': 'updated automatically',
+  'update-check': 'checked for updates', 'image-pull': 'pulled', 'image-remove': 'removed the image',
+  'network-create': 'created the network', 'network-remove': 'removed the network', 'volume-create': 'created the volume', 'volume-remove': 'removed the volume',
+  'proxy-create': 'added the proxy rule', 'proxy-edit': 'edited proxy rule', 'proxy-toggle': 'turned on or off proxy rule', 'proxy-remove': 'removed proxy rule',
+  'notify-add': 'added a notification target', 'notify-test': 'tested notification target', 'notify-remove': 'removed notification target',
+  'cleanup-images': 'cleaned up images', 'cleanup-networks': 'cleaned up networks', 'cleanup-volumes': 'cleaned up anonymous volumes',
+};
+
+export interface AuditRow { id: number; at: number; username: string | null; action: string; target: string | null; ip: string | null; result: string | null }
+
+export function activityPage(ctx: PageCtx, rows: AuditRow[], q: string, older: number | null): string {
+  const who = (r: AuditRow) => r.username ?? (r.ip ? html`<span class="muted">not logged in</span>` : html`<span class="muted">kontainers</span>`);
+  const list = rows.map(r => html`<tr${r.result ? raw(' class="failed"') : raw('')}><td>${new Date(r.at).toISOString().slice(0, 19).replace('T', ' ')}</td><td>${who(r)}</td>
+<td>${ACTIONS[r.action] || r.action}${r.target ? html` <span class="ref">${r.target}</span>` : ''}${r.result ? html`<br><small class="error">${r.result}</small>` : ''}</td><td><span class="ref">${r.ip || ''}</span></td></tr>`);
+  return layout('Activity', ctx, html`
+<p>Who did what, newest first, including failed attempts and what kontainers did on its own. Entries older than a year are removed.</p>
+<form method="get" action="/activity" class="filters" role="search"><label>Search <input type="search" name="q" value="${q}" placeholder="user, action or name"></label><button>Apply</button>${q ? html` <a href="/activity">Clear</a>` : ''}</form>
+${list.length ? html`<table><thead><tr><th>When (UTC)</th><th>Who</th><th>What</th><th>From</th></tr></thead><tbody>${list}</tbody></table>` : html`<p class="muted">${q ? 'Nothing matches.' : 'Nothing yet.'}</p>`}
+${older ? html`<p><a href="/activity?before=${older}${q ? `&q=${encodeURIComponent(q)}` : ''}">Older</a></p>` : ''}`);
+}
+
+// Action names whose description contains `q`, so the search finds "stopped" as well as "container-stop".
+export function actionsMatching(q: string): string[] {
+  const t = q.toLowerCase();
+  return t ? Object.entries(ACTIONS).filter(([k, label]) => label.includes(t) || k.includes(t)).map(([k]) => k) : [];
 }

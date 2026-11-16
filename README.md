@@ -93,6 +93,7 @@ What works, and is covered by the test suites below:
 - proxy rules: hostname and path prefix to a container port, HTTPS with a certificate obtained
   automatically, or plain HTTP; edit, enable, disable, remove; kept across restarts
 - local accounts, first-run setup, database backup
+- an Activity page: every action and failed attempt, by whom and from where, kept for a year
 
 Not included: exec/terminal, compose stacks, multiple hosts, roles (every account is an
 administrator), private registry logins.
