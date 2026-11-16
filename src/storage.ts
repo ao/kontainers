@@ -17,10 +17,15 @@ export function writeFailed(e: unknown, what: string, now = Date.now()): void {
   lastAt = now;
 }
 
+// Set when the database had to be opened in exclusive mode: shown until kontainers restarts.
+let degraded: string | null = null;
+export function setDegraded(msg: string | null): void { degraded = msg; }
+
 // What every page says while writes fail: shown until ten minutes pass without a failed write.
 export function storageTrouble(now = Date.now()): string | null {
+  if (degraded) return degraded;
   if (!lastAt || now - lastAt > SHOW_MS) return null;
   return `Since ${new Date(firstAt).toISOString().slice(11, 16)} UTC kontainers cannot write its database: the data volume is full or read-only. Actions still work, but the Activity log, automatic update results and the record of sent notifications are not being saved. Free space on the volume (/data in the image).`;
 }
 
-export function resetStorageTrouble(): void { firstAt = 0; lastAt = 0; }
+export function resetStorageTrouble(): void { firstAt = 0; lastAt = 0; degraded = null; }

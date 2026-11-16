@@ -21,7 +21,7 @@ export class ReplaceJournal implements Journal {
     try { this.db.query('DELETE FROM replacing WHERE name = ?').run(name); } catch (e) { writeFailed(e, `could not note the end of the replacement of ${name}`); }
   }
 
-  all(): { name: string; old_id: string; was_running: number }[] {
-    return this.db.query('SELECT name, old_id, was_running FROM replacing').all() as { name: string; old_id: string; was_running: number }[];
+  all(): { name: string; old_id: string; was_running: number; at: number }[] {
+    return this.db.query('SELECT name, old_id, was_running, at FROM replacing').all() as { name: string; old_id: string; was_running: number; at: number }[];
   }
 }

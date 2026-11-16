@@ -48,6 +48,8 @@ export class AutoUpdates {
   async set(id: string, on: boolean): Promise<string> {
     const c = await this.docker.inspect(id);
     const name = String(c.Name || '').replace(/^\//, '');
+    // While it is replaced, the container under the name may be the one about to be rolled back.
+    if (on && this.busy.has(name)) throw new v.ValidationError(`an update or edit of ${name} is running; turn automatic updates on when it has finished`);
     if (on) {
       const refusal = updatable(c);
       if (refusal) throw new v.ValidationError(refusal);
@@ -92,12 +94,17 @@ export class AutoUpdates {
 
   // A container kontainers made to replace an opted-in one carries kontainers.replaces=<old ID>.
   // If the new ID could not be saved (a full data volume, then a restart), this finds it again.
+  // Only a finished replacement: none running now for that name, none recorded as unfinished (the
+  // tidy-up after a restart decides those), and the container it replaced is gone.
   adopt(list: any[]): void {
+    const unfinished = new Set((() => { try { return this.opts.journal?.all() ?? []; } catch { return []; } })().map(r => r.name));
+    const ids = new Set(list.map(c => String(c.Id)));
     for (const c of list) {
       const name = nameOf(c);
+      if (this.busy.has(name) || unfinished.has(name)) continue;
       const row = this.get(name);
       const prev = c.Labels?.['kontainers.replaces'];
-      if (row && prev && this.idOf(row) !== c.Id && (prev === row.container_id || prev === this.unsaved.get(name))) this.recreated(name, c.Id);
+      if (row && prev && !ids.has(prev) && this.idOf(row) !== c.Id && (prev === row.container_id || prev === this.unsaved.get(name))) this.recreated(name, c.Id);
     }
   }
 

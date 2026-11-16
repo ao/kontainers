@@ -11,9 +11,9 @@ import { Auth } from './auth';
 import { Docker } from './docker';
 import { recoverInterrupted } from './update';
 import { ReplaceJournal } from './journal';
-import { diskFull, writeFailed } from './storage';
+import { diskFull, setDegraded } from './storage';
 import { ProxyManager, RuleStore } from './proxy';
-import { createHandler, dockerApiHost } from './server';
+import { createHandler, dockerApiAddress } from './server';
 import { UpdateChecker } from './updates';
 import { Notifier } from './notify';
 import { Registries, registryOf } from './registries';
@@ -26,7 +26,13 @@ const [cmd, arg] = process.argv.slice(2);
 if (cmd === 'backup') {
   if (!arg) { console.error('usage: kontainers backup FILE'); process.exit(2); }
   if (existsSync(arg)) { console.error(`kontainers: ${arg} already exists`); process.exit(1); }
-  snapshot(openDb(cfg.dataDir), arg);
+  try {
+    snapshot(openDb(cfg.dataDir), arg);
+  } catch (e) {
+    const m = (e as Error).message;
+    console.error(`kontainers: could not write the backup: ${m}${/locked|busy/i.test(m) ? '. The running kontainers holds the database to itself (it started with the data volume full); free space and restart it, or copy /data while it is stopped' : ''}`);
+    process.exit(1);
+  }
   console.log(`kontainers: wrote ${arg}`);
   process.exit(0);
 } else if (cmd !== undefined && cmd !== 'serve') {
@@ -45,8 +51,8 @@ try {
   process.exit(1);
 }
 if (db.degraded) {
-  console.error(`kontainers: the data volume has no room for the database's shared-memory file (${db.degraded}); opened it in exclusive mode, so \`kontainers backup\` cannot run until kontainers restarts with space free`);
-  writeFailed(new Error('database or disk is full'), 'opened the database in exclusive mode');
+  console.error(`kontainers: could not use the database's shared-memory file (${db.degraded}): the data volume is full, or the file is not writable. Opened the database in exclusive mode, so \`kontainers backup\` cannot run until kontainers restarts with that fixed`);
+  setDegraded('kontainers could not use its database\'s shared-memory file at start (the data volume was full, or the file in it is not writable), so it runs with the database locked to itself: the backup command does not work until it restarts. Free space on the data volume (/data in the image) and restart kontainers.');
 }
 const auth = new Auth(db);
 const docker = new Docker(cfg.dockerHost, { allowBindMounts: cfg.allowBindMounts });
@@ -59,7 +65,7 @@ const proxy = new ProxyManager(cfg, rules, docker);
 const selfContainer = process.env.KONTAINERS_SELF_CONTAINER || (cfg.inContainer ? hostname() : undefined);
 proxy.selfContainer = selfContainer ?? null;
 const updates = new UpdateChecker(docker, cfg.updateCheckHours * 3600 * 1000);
-const notifier = new Notifier(db, undefined, undefined, [dockerApiHost(cfg.dockerHost)].filter((h): h is string => !!h));
+const notifier = new Notifier(db, undefined, undefined, [dockerApiAddress(cfg.dockerHost)].filter((h): h is string => !!h));
 const systemAudit = (action: string, target: string, result?: string) =>
   db.query('INSERT INTO audit_log (at, username, action, target, ip, result) VALUES (?, ?, ?, ?, ?, ?)').run(Date.now(), null, action, target, null, result ?? null);
 // Aborted at shutdown, so a replacement being watched is undone instead of left half done.
@@ -69,6 +75,7 @@ updates.onChecked = () => autoUpdates.afterCheck();
 const events: EventWatcher = new EventWatcher(docker, notifier, Date.now, ms => Bun.sleep(ms), name => autoUpdates.busy.has(name));
 const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal });
 updates.start();
+events.replaceWindowMs = (cfg.autoUpdateSettle + cfg.autoUpdateHealthTimeout + 60) * 1000;
 events.start();
 // Certificate trouble, hourly (first check after 5 minutes), when the proxy runs.
 const certCheck = () => void checkCertificates(rules.list(), h => proxy.certificate(h), notifier).catch(e => console.error(`kontainers: certificate check failed: ${(e as Error).message}`));
@@ -81,9 +88,10 @@ const auditTimer = setInterval(pruneAudit, 86400_000);
 const server = Bun.serve({
   hostname: cfg.host,
   port: cfg.port,
-  // Forms are limited to 1 MB in the handler, which says so on a page; only above 64 MB does the
-  // server itself refuse, with an empty 413.
-  maxRequestBodySize: 64 * 1024 * 1024,
+  // Forms are limited to 1 MB in the handler, which says so (on a page, for a logged-in user) and
+  // refuses bodies over that before reading them; only above 16 MB does the server itself refuse,
+  // with an empty 413.
+  maxRequestBodySize: 16 * 1024 * 1024,
   // Bun's default of 10 s drops the connection while a Docker call is still waiting (an unreachable
   // daemon, a 20 s image pull); the longest, 255 s, lets those finish with a page instead.
   idleTimeout: 255,
@@ -96,28 +104,39 @@ console.log(`kontainers: listening on http://${cfg.host.includes(':') ? `[${cfg.
 if (cfg.inContainer) console.log('kontainers: running in a container; publish the port on 127.0.0.1 only (-p 127.0.0.1:8080:8080) unless TLS is in front');
 const setupToken = auth.issueSetupToken();
 if (setupToken) console.log(`kontainers: no accounts yet. Open /setup and enter this one-time setup token: ${setupToken}`);
-if (!(await docker.ping())) console.error(`kontainers: Docker is not reachable at ${cfg.dockerHost}; pages will show errors until it is`);
+const TIDY_ATTEMPTS = 10;
+const tidied = new Set<string>();
+// When Docker is not there yet (a daemon restarting with kontainers), the tidy-up starts 30 s later
+// and keeps trying.
+if (await docker.ping()) await tidyUp(1);
 else {
-  await tidyUp(1);
-  try { autoUpdates.adopt(await docker.listContainers()); } catch (e) { console.error(`kontainers: ${(e as Error).message}`); }
+  console.error(`kontainers: Docker is not reachable at ${cfg.dockerHost}; pages will show errors until it is`);
+  setTimeout(() => void tidyUp(1), 30_000).unref?.();
 }
 
 // Finishes replacements a restart interrupted (update.ts recoverInterrupted). What Docker is still
-// busy with (a daemon that restarted with kontainers, removing a container) is tried again every
-// 30 s, five times. Each outcome is logged, recorded on the Activity page and sent as an
-// automatic-update notification.
+// busy with, or a Docker API that does not answer yet, is tried again every 30 s, ten times; the
+// last attempt says what is left to check by hand. Each outcome is logged, recorded once on the
+// Activity page and sent as an automatic-update notification.
 async function tidyUp(attempt: number): Promise<void> {
   const kept = (name: string, id: string) => { if (autoUpdates.get(name)) autoUpdates.recreated(name, id); };
   let again = false;
   try {
-    for (const r of await recoverInterrupted(docker, kept, journal, n => autoUpdates.busy.has(n))) {
+    for (const r of await recoverInterrupted(docker, kept, journal, n => autoUpdates.busy.take(n), attempt >= TIDY_ATTEMPTS)) {
+      if (r.retry) { again = true; if (attempt === 1) console.log(`kontainers: ${r.text}`); continue; }
+      const key = `${r.name}\n${r.text}`;
+      if (tidied.has(key)) continue;
+      tidied.add(key);
       console.log(`kontainers: ${r.text}`);
-      if (r.retry && attempt < 5) { again = true; continue; }
       try { systemAudit('recover', r.name, `${r.trouble ? 'failed' : 'note'}: ${r.text}`.slice(0, 500)); } catch { /* the log line is enough */ }
       void notifier.send({ kind: 'autoupdate', title: `Interrupted update of ${r.name}`, message: `${r.text}.`, container: r.name }, `recover:${r.name}:${Bun.hash(r.text).toString(36)}`, 3600_000).catch(() => {});
     }
-  } catch (e) { console.error(`kontainers: could not look for interrupted updates: ${(e as Error).message}`); again = attempt < 5; }
-  if (again && !stopping.signal.aborted) setTimeout(() => void tidyUp(attempt + 1), 30_000).unref?.();
+    autoUpdates.adopt(await docker.listContainers());
+  } catch (e) {
+    if (attempt === 1 || attempt >= TIDY_ATTEMPTS) console.error(`kontainers: could not look for interrupted updates${attempt >= TIDY_ATTEMPTS ? ' (gave up)' : ''}: ${(e as Error).message}`);
+    again = true;
+  }
+  if (again && attempt < TIDY_ATTEMPTS && !stopping.signal.aborted) setTimeout(() => void tidyUp(attempt + 1), 30_000).unref?.();
 }
 
 try {

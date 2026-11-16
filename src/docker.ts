@@ -236,6 +236,7 @@ export class Docker {
     // A recreated container keeps the network it was made on: a user network or none, never the
     // host's or another container's.
     if (opts.network) {
+      if (opts.network.mode === 'host' || opts.network.mode.startsWith('container:')) throw new v.ValidationError("kontainers does not create containers on the host's network or another container's");
       if (opts.network.mode !== 'none') v.ref(opts.network.mode, 'network');
       host.NetworkMode = opts.network.mode;
       if (opts.network.mode !== 'none' && opts.network.endpoint && (opts.network.endpoint.Aliases?.length || opts.network.endpoint.IPAMConfig)) {

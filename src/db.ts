@@ -91,8 +91,10 @@ export function openDb(dataDir: string): Database & { degraded?: string } {
       try { chmodSync(file, 0o600); } catch { /* not fatal on odd filesystems */ }
       // In exclusive locking mode, set before WAL is first used, SQLite keeps the WAL index in
       // memory and never needs the -shm file, which a full volume cannot grow.
+      // The wait for a lock first, so a second process (kontainers backup) waits instead of failing.
+      db.exec('PRAGMA busy_timeout = 5000;');
       if (exclusive) db.exec('PRAGMA locking_mode = EXCLUSIVE;');
-      db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+      db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
       migrate(db);
       // SQLite can fall back to a read-only shared-memory file it could not open for writing; then
       // every write fails later. Taking the write lock once finds that out now.

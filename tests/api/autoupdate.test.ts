@@ -356,6 +356,10 @@ describe.skipIf(!DOCKER)('automatic updates and notifications', () => {
     const big = await c.post('/containers', { image: 'busybox:1.36', name: 'big', env: 'A=' + 'x'.repeat(6_000_000) });
     expect(big.status).toBe(413);
     expect(await big.text()).toContain('kontainers accepts at most 1024 KB');
+    // Without a login, refused before anything else and without being read.
+    const anon = await fetch(`${srv.base}/login`, { method: 'POST', body: 'username=' + 'x'.repeat(2_000_000), headers: { 'content-type': 'application/x-www-form-urlencoded', origin: srv.base } });
+    expect(anon.status).toBe(413);
+    expect(await anon.text()).toContain('kontainers accepts at most 1024 KB');
   });
 
   test('the container list shows the unhealthy and exited containers as needing attention', async () => {

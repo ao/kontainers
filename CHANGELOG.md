@@ -206,6 +206,18 @@
   buttons, and its set-aside old container says what it is.
 - An automatic update of a stopped container says it is left stopped. A form over 1 MB, at any
   size up to 64 MB, gets a page that gives the size in KB.
+- The tidy-up after a restart takes each container's lock (an update started meanwhile waits for
+  it, or is skipped by it), recognises a replacement by its `kontainers.replaces` label only, never
+  removes a replacement someone stopped on purpose, starts a container again only if it stopped
+  after the replacement began, keeps trying while the Docker API does not answer yet, and says
+  what to check by hand when it gives up. An update is refused while an earlier interrupted one
+  of the same name is not tidied up. Opting in is refused while a container is being replaced.
+- Containers on the host's network, or another container's, are refused by Update image, Edit
+  settings and automatic updates before anything is pulled. A container disconnected from every
+  network stays connectable after a replacement.
+- Notifications compare the Docker API by address and port, so a receiver on another port of the
+  same host works, and 0.0.0.0, `::` and `localhost` count as loopback; a target is checked when
+  it is added too. A body over the form limit is refused before the login check, unread.
 
 ## 0.3.0
 

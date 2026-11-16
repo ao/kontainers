@@ -385,3 +385,18 @@ describe('the Docker API by any other name', () => {
     expect(calls).toBe(1);
   });
 });
+
+describe('the Docker API by address and port', () => {
+  const names: Record<string, string[]> = { localhost: ['127.0.0.1'], 'docker-proxy': ['172.18.0.2'] };
+  const fakeLookup = (async (h: string) => (names[h] || []).map(address => ({ address, family: 4 }))) as any;
+  test('another port on the same host is fine; any spelling of loopback on the API port is not', async () => {
+    const n = new Notifier(db(), async () => new Response(null, { status: 204 }), Date.now, ['127.0.0.1:2375'], fakeLookup);
+    expect(await n.refusal('http://localhost:8090/topic')).toBeNull();
+    expect(await n.refusal('http://localhost:2375/containers/x/kill')).toContain("Docker API");
+    expect(await n.refusal('http://0.0.0.0:2375/x')).toContain("Docker API");
+    expect(await n.refusal('http://[::1]:2375/x')).toContain("Docker API");
+    const p = new Notifier(db(), async () => new Response(null, { status: 204 }), Date.now, ['docker-proxy:2375'], fakeLookup);
+    expect(await p.refusal('http://172.18.0.2:2375/x')).toContain('docker-proxy:2375');
+    expect(await p.refusal('http://172.18.0.2:8080/x')).toBeNull();
+  });
+});

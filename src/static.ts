@@ -45,6 +45,8 @@ th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid var(-
    anywhere, so the table fits the screen. Ordinary words (headers, states, buttons) stay whole. */
 /* Long names, references and addresses carry <wbr> break points (views.ts brk); IDs stay whole. */
 code.id { white-space: nowrap; }
+/* Free text (results, notes, errors) may hold a long address or reference without break points. */
+td.free, td small { overflow-wrap: anywhere; }
 tr:last-child td { border-bottom: 0; }
 th { font-weight: 600; font-size: .85rem; color: var(--muted); background: var(--ground); }
 tbody tr:hover td { background: color-mix(in srgb, var(--panel) 92%, var(--marine)); }

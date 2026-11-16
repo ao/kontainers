@@ -6,6 +6,7 @@ export class NameLocks {
 
   has(name: string): boolean { return this.held.has(name); }
   get size(): number { return this.held.size; }
+  names(): string[] { return [...this.held.keys()]; }
 
   // Takes the lock for a name, or returns null when it is held. The function it returns releases
   // this hold only, once: a release after someone else took the name again does nothing.

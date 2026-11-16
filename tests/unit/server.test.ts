@@ -354,6 +354,9 @@ describe('round 3', () => {
     expect(brk('a'.repeat(64)).__html).toBe(['a'.repeat(16), 'a'.repeat(16), 'a'.repeat(16), 'a'.repeat(16)].join('<wbr>'));
     expect(brk('ghcr.io/org/some-long-name:2026.11').__html).toBe('ghcr.<wbr>io/<wbr>org/<wbr>some-<wbr>long-<wbr>name:<wbr>2026.<wbr>11');
     expect(brk('<script>alert(1)</script>-xxxxxxxxxx').__html).not.toContain('<script>');
+    const emoji = '🐳'.repeat(30);
+    expect(brk(emoji).__html.replace(/<wbr>/g, '')).toBe(emoji);
+    expect(brk(emoji).__html.split('<wbr>').every(p => Array.from(p).every(ch => ch === '🐳'))).toBe(true);
   });
   test('a container being replaced shows what is happening instead of its buttons', () => {
     const busy = (n: string) => n === 'web' ? 'being updated or edited' : n === 'web-old-12345678' ? 'old container of web, kept until its update or edit finishes' : null;

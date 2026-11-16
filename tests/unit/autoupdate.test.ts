@@ -319,7 +319,7 @@ describe('recoverInterrupted', () => {
   test('the new one runs: the leftover is removed', async () => {
     const { d } = setup();
     const old = aside(d, 'web', false);
-    d.run('web', 'app:1');
+    replacing(d, d.run('web', 'app:1'), old);
     const { recoverInterrupted } = await import('../../src/update');
     const kept: string[] = [];
     const rows = [{ name: 'web', old_id: old, was_running: 1 }];
@@ -339,8 +339,9 @@ describe('recoverInterrupted', () => {
   test('with the journal: a new container that stopped once nobody watched it goes, and the old one is back', async () => {
     const { d } = setup();
     const old = aside(d, 'web', false);
-    const now = d.run('web', 'app:1');
+    const now = replacing(d, d.run('web', 'app:1'), old);
     d.find(now).State = { Running: false, Status: 'exited', ExitCode: 1 };
+    d.pastEvents = async () => [];
     const rows = [{ name: 'web', old_id: old, was_running: 1 }];
     const { recoverInterrupted } = await import('../../src/update');
     const r = await recoverInterrupted(d as any, () => {}, journalOf(rows));
@@ -352,8 +353,9 @@ describe('recoverInterrupted', () => {
   test('with the journal: what cannot be settled yet keeps its entry, to be tried again', async () => {
     const { d } = setup();
     const old = aside(d, 'web', false);
-    const now = d.run('web', 'app:1');
+    const now = replacing(d, d.run('web', 'app:1'), old);
     d.find(now).State = { Running: false, Status: 'exited', ExitCode: 1 };
+    d.pastEvents = async () => [];
     const remove = d.remove.bind(d);
     d.remove = async (i: string) => { if (i === now) throw new Error('removal of container is already in progress'); return remove(i); };
     const rows = [{ name: 'web', old_id: old, was_running: 1 }];
@@ -367,11 +369,13 @@ describe('recoverInterrupted', () => {
     expect(d.find('web').Id).toBe(old);
     expect(rows).toHaveLength(0);
   });
-  const journalOf = (rows: { name: string; old_id: string; was_running: number }[]) => ({ begin() {}, end(n: string) { const i = rows.findIndex(r => r.name === n); if (i >= 0) rows.splice(i, 1); }, all: () => [...rows] });
+  const journalOf = (rows: { name: string; old_id: string; was_running: number; at?: number }[]) => ({ begin() {}, end(n: string) { const i = rows.findIndex(r => r.name === n); if (i >= 0) rows.splice(i, 1); }, all: () => rows.map(r => ({ at: Date.now() - 1000, ...r })) });
+  // The replacement kontainers makes carries the ID of the container it replaces.
+  const replacing = (d: FakeDocker, id: string, old: string) => { d.find(id).Config.Labels['kontainers.replaces'] = old; return id; };
   test('with the journal: a new one that never started goes, and the old one is back and running', async () => {
     const { d } = setup();
     const old = aside(d, 'web', false);
-    const now = d.run('web', 'app:1');
+    const now = replacing(d, d.run('web', 'app:1'), old);
     d.find(now).State = { Running: false, Status: 'created' };
     const rows = [{ name: 'web', old_id: old, was_running: 1 }];
     const { recoverInterrupted } = await import('../../src/update');
@@ -384,7 +388,7 @@ describe('recoverInterrupted', () => {
   test('with the journal: stopped for an update and nothing else happened, it is started again', async () => {
     const { d } = setup();
     const id = d.run('web', 'app:1');
-    d.find(id).State = { Running: false, Status: 'exited', ExitCode: 0 };
+    d.find(id).State = { Running: false, Status: 'exited', ExitCode: 0, FinishedAt: new Date().toISOString() };
     const rows = [{ name: 'web', old_id: id, was_running: 1 }];
     const { recoverInterrupted } = await import('../../src/update');
     expect((await recoverInterrupted(d as any, () => {}, journalOf(rows)))[0].text).toContain(`started web again`);
@@ -505,8 +509,97 @@ describe('networks of a replacement', () => {
     expect(networkPlan(c('bridge', { internal_only: {} }))).toEqual({ network: { mode: 'internal_only', endpoint: {} }, connect: [] });
     expect(networkPlan(c('front', { front: { IPAMConfig: { IPv4Address: '10.1.0.5' } }, back: {} }))).toEqual({ network: { mode: 'front', endpoint: { IPAMConfig: { IPv4Address: '10.1.0.5' } } }, connect: [['back', {}]] });
     expect(networkPlan(c('none', { none: {} }))).toEqual({ network: { mode: 'none' }, connect: [] });
-    expect(networkPlan(c('bridge', {}))).toEqual({ network: { mode: 'none' }, connect: [] });
+    // Docker lists networks by name: the one it was made on comes first anyway.
+    expect(networkPlan(c('front', { back: {}, front: { Aliases: ['www'] } }))).toEqual({ network: { mode: 'front', endpoint: { Aliases: ['www'] } }, connect: [['back', {}]] });
+    // Disconnected from everything: made on its own mode and taken off it, so it can be connected again.
+    expect(networkPlan(c('bridge', {}))).toEqual({ connect: [], disconnect: 'bridge' });
+    expect(networkPlan(c('app', {}))).toEqual({ network: { mode: 'app' }, connect: [], disconnect: 'app' });
     expect(() => networkPlan(c('host', { host: {} }))).toThrow("host's network");
     expect(() => networkPlan(c('container:abc', {}))).toThrow("another container's network");
+  });
+});
+
+describe('review of round 3', () => {
+  const rowsOf = (rows: any[]) => ({ begin() {}, end(n: string) { const i = rows.findIndex(r => r.name === n); if (i >= 0) rows.splice(i, 1); }, all: () => rows.map(r => ({ at: Date.now() - 1000, ...r })) });
+  const asideOf = (d: FakeDocker, name: string) => {
+    const id = d.run(name, 'app:1');
+    const c = d.find(id);
+    c.Id = 'abcdef12' + c.Id.slice(8); d.containers.delete(id); d.containers.set(c.Id, c);
+    c.Name = `/${name}-old-abcdef12`;
+    c.State = { Running: false, Status: 'exited', ExitCode: 0 };
+    return c.Id;
+  };
+  test('a name whose lock is held is left alone', async () => {
+    const { d } = setup();
+    const old = asideOf(d, 'web');
+    const rows = [{ name: 'web', old_id: old, was_running: 1 }];
+    const { recoverInterrupted } = await import('../../src/update');
+    expect(await recoverInterrupted(d as any, () => {}, rowsOf(rows), () => null)).toEqual([]);
+    expect(d.find(`web-old-abcdef12`).Id).toBe(old);
+    expect(rows).toHaveLength(1);
+  });
+  test('a container under the name that is not the labelled replacement is never removed', async () => {
+    const { d } = setup();
+    const old = asideOf(d, 'web');
+    const mineNow = d.run('web', 'app:1'); // made with New container meanwhile: no kontainers.replaces label
+    d.find(mineNow).State = { Running: false, Status: 'created' };
+    const rows = [{ name: 'web', old_id: old, was_running: 1 }];
+    const { recoverInterrupted } = await import('../../src/update');
+    const r = await recoverInterrupted(d as any, () => {}, rowsOf(rows));
+    expect(r[0]).toMatchObject({ retry: true });
+    expect(d.containers.has(mineNow)).toBe(true);
+    const last = await recoverInterrupted(d as any, () => {}, rowsOf(rows), undefined, true);
+    expect(last[0].text).toContain('check them by hand');
+    expect(last[0].retry).toBeUndefined();
+    expect(rows).toHaveLength(0);
+  });
+  test('a replacement someone stopped on purpose stays as they left it', async () => {
+    const { d } = setup();
+    const old = asideOf(d, 'web');
+    const now = d.run('web', 'app:1');
+    d.find(now).Config.Labels['kontainers.replaces'] = old;
+    d.find(now).State = { Running: false, Status: 'exited', ExitCode: 143 };
+    d.pastEvents = async () => [{ Action: 'stop', Actor: { ID: now } }];
+    const kept: string[] = [];
+    const { recoverInterrupted } = await import('../../src/update');
+    await recoverInterrupted(d as any, (n, id) => kept.push(id), rowsOf([{ name: 'web', old_id: old, was_running: 1 }]));
+    expect(d.containers.has(old)).toBe(false);
+    expect(d.find('web').Id).toBe(now);
+    expect(kept).toEqual([now]);
+  });
+  test('stopped long before the replacement began: not started again', async () => {
+    const { d } = setup();
+    const id = d.run('web', 'app:1');
+    d.find(id).State = { Running: false, Status: 'exited', ExitCode: 0, FinishedAt: new Date(Date.now() - 86400_000).toISOString() };
+    const rows = [{ name: 'web', old_id: id, was_running: 1 }];
+    const { recoverInterrupted } = await import('../../src/update');
+    expect(await recoverInterrupted(d as any, () => {}, rowsOf(rows))).toEqual([]);
+    expect(d.find('web').State.Running).toBe(false);
+    expect(rows).toHaveLength(0);
+  });
+  test('adopt takes over only finished replacements', async () => {
+    const { d, auto } = setup();
+    const id = d.run('web', 'app:1');
+    await auto.set(id, true);
+    const fresh = d.run('web2', 'app:1');
+    d.find(fresh).Config.Labels['kontainers.replaces'] = id;
+    d.find(fresh).Name = '/web';
+    const list = await d.listContainers();
+    auto.adopt(list); // the old one is still there (set aside under its old name here)
+    expect(auto.get('web')!.container_id).toBe(id);
+    await d.remove(id);
+    const release = auto.busy.take('web')!;
+    auto.adopt(await d.listContainers()); // being replaced right now
+    expect(auto.get('web')!.container_id).toBe(id);
+    release();
+    auto.adopt(await d.listContainers());
+    expect(auto.get('web')!.container_id).toBe(fresh);
+  });
+  test('Update image, Edit and opt-in are refused for a container on the host network', async () => {
+    const { updatable } = await import('../../src/update');
+    const c = { Config: { Labels: { 'kontainers.managed': 'true' } }, HostConfig: { NetworkMode: 'host' } };
+    expect(updatable(c)).toContain("the host's network");
+    expect(updatable({ ...c, HostConfig: { NetworkMode: 'container:abc' } })).toContain("another container's network");
+    expect(updatable({ ...c, HostConfig: { NetworkMode: 'bridge' } })).toBeNull();
   });
 });

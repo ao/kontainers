@@ -19,7 +19,8 @@ export function brk(v: unknown): Html {
   const s = String(v ?? '');
   if (s.length <= 20) return raw(esc(s));
   const chunks: string[] = [];
-  for (const part of s.split(/(?<=[-_./:@,=])/)) for (let i = 0; i < part.length; i += 16) chunks.push(esc(part.slice(i, i + 16)));
+  // By code point, so a character outside the Basic Multilingual Plane is never cut in two.
+  for (const part of s.split(/(?<=[-_./:@,=])/)) { const cp = Array.from(part); for (let i = 0; i < cp.length; i += 16) chunks.push(esc(cp.slice(i, i + 16).join(''))); }
   return raw(chunks.join('<wbr>'));
 }
 export function html(strings: TemplateStringsArray, ...values: unknown[]): Html {
@@ -322,7 +323,7 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
 ${isSelf(c, me) || ctx.busy?.(name) ? '' : c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project']
     ? html`${post(ctx, `/containers/${urlId(c)}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' && !held ? 'primary' : '' })} <a class="button" href="/containers/${urlId(c)}/edit">Edit settings</a>`
     : c.Config?.Labels?.['com.docker.compose.project'] ? html`<small class="muted">Part of compose project ${c.Config.Labels['com.docker.compose.project']}: update it with <code>docker compose pull &amp;&amp; docker compose up -d</code>.</small>` : ''}</div>
-${auto && !isSelf(c, me) && c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project'] ? autoForm(ctx, urlId(c), auto) : ''}
+${auto && !isSelf(c, me) && !ctx.busy?.(name) && c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project'] ? autoForm(ctx, urlId(c), auto) : ''}
 ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
 <dl class="facts" id="stats" data-stats="/api/containers/${urlId(c)}/stats">
   <dt>CPU</dt><dd data-k="cpu">…</dd><dt>Memory</dt><dd data-k="mem">…</dd>
@@ -477,7 +478,7 @@ to route domains to containers with automatic HTTPS. See the README.</p>`);
     const addr = `${r.tls ? 'https' : 'http'}://${r.hostname}${r.path === '/' ? '' : r.path}`;
     // A wildcard is not an address to visit.
     return html`<tr data-state="${!r.enabled ? 'exited' : bad ? 'restarting' : 'running'}"><td class="addr">${r.hostname.startsWith('*') ? html`<span class="ref">${brk(addr)}</span>` : html`<a href="${addr}">${brk(addr)}</a>`}</td>
-<td><span class="ref">${brk(`${r.target_container}:${r.target_port}`)}</span></td><td>${ruleState(r, st)}</td>
+<td><span class="ref">${brk(`${r.target_container}:${r.target_port}`)}</span></td><td class="free">${ruleState(r, st)}</td>
 <td class="actions"><a class="button" href="/proxy/${r.id}/edit">Edit</a> ${post(ctx, `/proxy/${r.id}/toggle`, r.enabled ? 'Disable' : 'Enable')}
 ${post(ctx, `/proxy/${r.id}/remove`, 'Remove', { confirm: `Remove the rule for ${addr}?`, cls: 'danger' })}</td></tr>`;
   });
@@ -534,7 +535,7 @@ ${logins ? registrySection(ctx, logins) : ''}
 
 function registrySection(ctx: PageCtx, logins: RegistryLogin[]): Html {
   const rows = logins.map(l => html`<tr><td><span class="ref">${brk(l.registry)}</span></td><td>${brk(l.username)}</td>
-<td>${l.last_used_at ? html`${l.last_result} <small class="muted">${ago(l.last_used_at)}</small>` : html`<span class="muted">not used yet</span>`}</td>
+<td class="free">${l.last_used_at ? html`${l.last_result} <small class="muted">${ago(l.last_used_at)}</small>` : html`<span class="muted">not used yet</span>`}</td>
 <td class="actions">${post(ctx, `/settings/registries/${l.id}/remove`, 'Remove', { confirm: `Remove the login for ${l.registry}?`, cls: 'danger' })}</td></tr>`);
   return html`<h2>Registry logins</h2>
 <p>For private images: kontainers gives the login to Docker for each pull and update check of an image on that registry. Logins made with <code>docker login</code> on the host are not visible to kontainers. Passwords are stored encrypted and never shown again; a token with read access is enough.</p>
@@ -549,7 +550,7 @@ ${rows.length ? html`<table><thead><tr><th>Registry</th><th>Username</th><th>Las
 
 function notifySection(ctx: PageCtx, targets: Target[], watch: { connected: boolean; error: string | null } | null): Html {
   const rows = targets.map(t => html`<tr><td>${t.kind}</td><td><code>${brk(maskUrl(t.url))}</code>${t.token ? html` <small class="muted">with a token</small>` : ''}</td>
-<td>${t.events.join(', ')}</td><td>${t.last_at ? html`${t.last_result} <small class="muted">${ago(t.last_at)}</small>` : html`<span class="muted">nothing sent yet</span>`}</td>
+<td>${t.events.join(', ')}</td><td class="free">${t.last_at ? html`${t.last_result} <small class="muted">${ago(t.last_at)}</small>` : html`<span class="muted">nothing sent yet</span>`}</td>
 <td class="actions">${post(ctx, `/settings/notify/${t.id}/test`, 'Send test')} ${post(ctx, `/settings/notify/${t.id}/remove`, 'Remove', { confirm: 'Remove this notification target?', cls: 'danger' })}</td></tr>`);
   const boxes = EVENT_KINDS.map(k => html`<label class="check"><input type="checkbox" name="ev_${k}" checked> ${EVENTS[k]}</label>`);
   return html`<h2>Notifications</h2>

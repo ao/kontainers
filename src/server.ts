@@ -62,6 +62,12 @@ export function dockerApiHost(dockerHost: string): string | null {
   return m ? m[1].replace(/^\[|\]$/g, '') : null;
 }
 
+// The Docker API's host and port, as "host:port" (2375 when none is given).
+export function dockerApiAddress(dockerHost: string): string | null {
+  const m = /^(?:tcp|http):\/\/(\[[^\]]+\]|[^:/]+)(?::(\d+))?/.exec(dockerHost);
+  return m ? `${m[1]}:${m[2] || '2375'}` : null;
+}
+
 // The client address for rate limiting. X-Forwarded-For is believed only when the socket peer is a
 // configured proxy, and then the right-most address that is not itself a trusted proxy is used.
 export function clientIp(socketIp: string, xff: string | null, trusted: string[]): string {
@@ -131,10 +137,11 @@ const text = (body: string, status = 200, headers: Record<string, string> = {}) 
   new Response(body, { status, headers: { 'content-type': 'text/plain; charset=utf-8', ...headers } });
 const redirect = (to: string, headers: Record<string, string> = {}) => new Response(null, { status: 303, headers: { location: to, ...headers } });
 
-// The most a form may be. The server itself takes up to 4 MB (main.ts), so a bigger form gets a
+// The most a form may be. The server itself takes up to 16 MB (main.ts), so a bigger form gets a
 // page that says what happened instead of a bare 413.
 export const MAX_FORM = 1024 * 1024;
-const tooLarge = (n: number) => Object.assign(new v.ValidationError(`the form was ${Math.ceil(n / 1024)} KB; kontainers accepts at most ${MAX_FORM / 1024} KB (a very large environment paste?). Go back and shorten it`), { status: 413 });
+// exact: the size is known (Content-Length); otherwise reading stopped at the limit.
+const tooLarge = (n: number, exact = true) => Object.assign(new v.ValidationError(`the form was ${exact ? '' : 'more than '}${Math.ceil((exact ? n : MAX_FORM) / 1024)} KB; kontainers accepts at most ${MAX_FORM / 1024} KB (a very large environment paste?). Go back and shorten it`), { status: 413 });
 
 async function readForm(req: Request): Promise<Record<string, string>> {
   const ct = req.headers.get('content-type') || '';
@@ -150,7 +157,7 @@ async function readForm(req: Request): Promise<Record<string, string>> {
       const { value, done } = await reader.read();
       if (done) break;
       size += value.length;
-      if (size > MAX_FORM) { await reader.cancel().catch(() => {}); throw tooLarge(size); }
+      if (size > MAX_FORM) { await reader.cancel().catch(() => {}); throw tooLarge(size, false); }
       parts.push(value);
     }
   }
@@ -357,7 +364,16 @@ export function createHandler(d: Deps): Handler {
   const locks = d.autoUpdates?.busy ?? new NameLocks();
   // The container set aside while <name> is replaced, <name>-old-<id>: starting or removing it
   // meanwhile would leave two instances on the same data, or nothing to put back.
-  const setAsideOf = (name: string) => { const m = /^(.+)-old-[0-9a-f]{8}$/.exec(name); return m && locks.has(m[1]) ? m[1] : null; };
+  // Also while a replacement a restart interrupted is not tidied up yet (its journal entry is open),
+  // and for a name shortened to fit Docker's 128 characters.
+  const setAsideOf = (name: string) => {
+    const m = /^(.+)-old-([0-9a-f]{8})$/.exec(name);
+    if (!m) return null;
+    if (locks.has(m[1])) return m[1];
+    if (name.length >= 128) { const long = locks.names().find(n => n.startsWith(m[1])); if (long) return long; }
+    try { const row = d.journal?.all().find(r => String(r.old_id).startsWith(m[2])); if (row) return row.name; } catch { /* no record */ }
+    return null;
+  };
   function refuseSetAside(name: string): void {
     const base = setAsideOf(name);
     if (base) throw new v.ValidationError(`${name} is the old container, set aside while ${base} is updated or edited; it is removed or put back when that finishes`);
@@ -685,6 +701,9 @@ export function createHandler(d: Deps): Handler {
     if (p === '/settings/notify') {
       return act(s, ip, '/settings', 'notify-add', null, async () => {
         if (!d.notifier) throw new v.ValidationError('notifications are not available');
+        // Checked by address now too, so a target that would never be sent to is refused at once.
+        const no = typeof f.url === 'string' && /^https?:\/\//i.test(f.url.trim()) ? await d.notifier.refusal(f.url.trim()).catch(() => null) : null;
+        if (no) throw new v.ValidationError(`notifications cannot be sent there: ${no}`);
         const t = d.notifier.add({ kind: f.kind, url: f.url, token: f.token, events: EVENT_KINDS.filter(k => f[`ev_${k}`]) });
         return `Added the ${t.kind} target. Send a test to check that it works.`;
       });
@@ -886,6 +905,12 @@ export function createHandler(d: Deps): Handler {
     const p = url.pathname;
     const ip = clientIp(socketIp, req.headers.get('x-forwarded-for'), cfg.trustedProxies);
 
+    // A body over the form limit is refused before anything else, logged in or not, and without
+    // reading it; a logged-in user's form gets the page that says why (in routes).
+    const declared = Number(req.headers.get('content-length') || 0);
+    if (declared > MAX_FORM && !auth.getSession(parseCookies(req.headers.get('cookie'))[cookieName])) {
+      return text(`${errorMessage(tooLarge(declared))}.\n`, 413, { connection: 'close' });
+    }
     if (p === '/healthz') return text('ok\n');
     if (p === '/readyz') {
       let dbOk = false;

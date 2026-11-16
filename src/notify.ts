@@ -43,7 +43,7 @@ export function validateTarget(input: { kind?: unknown; url?: unknown; token?: u
   if (url.length > MAX_URL) throw new v.ValidationError(`the URL is longer than ${MAX_URL} characters`);
   if (/[\s\u0000-\u001f]/.test(url)) throw new v.ValidationError('the URL contains spaces or control characters');
   const host = hostOf(u);
-  if (blocked.map(hostOf).includes(host)) throw new v.ValidationError(`${host} serves kontainers' Docker API; notifications cannot be sent there`);
+  if (blocked.some(b => { const x = splitHostPort(b); return x.host === host && (x.port === null || x.port === portOf(u)); })) throw new v.ValidationError(`${host} serves kontainers' Docker API; notifications cannot be sent there`);
   if (isIP(host) && linkLocal(host)) throw new v.ValidationError('link-local addresses (169.254.0.0/16, fe80::/10) cannot be notification targets');
   const token = String(input.token ?? '').trim();
   if (token.length > 500 || !/^[\x21-\x7e]*$/.test(token)) throw new v.ValidationError('the token must be one word of at most 500 printable ASCII characters');
@@ -57,6 +57,21 @@ export function hostOf(u: URL | string): string {
   const h = typeof u === 'string' ? u : u.hostname;
   return h.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
 }
+
+export const portOf = (u: URL) => Number(u.port || (u.protocol === 'https:' ? 443 : 80));
+
+// "host:port", "[v6]:port" or "host" (port null: any port).
+export function splitHostPort(b: string): { host: string; port: number | null } {
+  const m = /^(\[[^\]]+\]|[^:]+|[0-9a-f:]+)(?::(\d+))?$/i.exec(b.includes('[') || (b.match(/:/g) || []).length <= 1 ? b : `[${b}]`);
+  return m ? { host: hostOf(m[1]), port: m[2] ? Number(m[2]) : null } : { host: hostOf(b), port: null };
+}
+
+// Loopback in any spelling (127.0.0.0/8, ::1, and 0.0.0.0 or ::, which reach this machine on Linux)
+// compares as one address.
+const sameAddr = (a: string, b: string) => {
+  const lo = (x: string) => /^127\./.test(x) || x === '::1' || x === '0.0.0.0' || x === '::';
+  return a === b || (lo(a) && lo(b));
+};
 
 // An IPv4 address written inside IPv6 (::ffff:a.b.c.d, or as the URL parser writes it,
 // ::ffff:a9fe:a9fe) as plain IPv4.
@@ -100,15 +115,21 @@ export class Notifier {
     private lookupImpl: typeof lookup = lookup,
   ) {}
 
-  // Checked again before every delivery, by address: a name with a trailing dot, the socket proxy's
-  // container name or its IP address reach the Docker API as well as its compose name does.
-  private async refusal(url: string): Promise<string | null> {
-    const host = hostOf(new URL(url));
+  // Checked when a target is added and again before every delivery, by address and port: a name
+  // with a trailing dot, the socket proxy's container name or its IP address reach the Docker API
+  // as well as its compose name does. The name is resolved here and again by fetch, so a name whose
+  // answer changes between the two (DNS rebinding) is not caught; every account is root on the host
+  // anyway, so this guards against mistakes, not against the people who use kontainers.
+  async refusal(url: string): Promise<string | null> {
+    const u = new URL(url);
+    const host = hostOf(u);
     const addrs = await addressesOf(host, this.lookupImpl);
     if (addrs.some(linkLocal)) return 'the address is link-local (a cloud metadata service)';
     for (const b of this.blocked) {
-      const theirs = await addressesOf(hostOf(b), this.lookupImpl);
-      if (hostOf(b) === host || addrs.some(a => theirs.includes(a))) return `it reaches ${b}, which serves kontainers' Docker API`;
+      const x = splitHostPort(b);
+      if (x.port !== null && x.port !== portOf(u)) continue;
+      const theirs = await addressesOf(x.host, this.lookupImpl);
+      if (x.host === host || addrs.some(a => theirs.some(t => sameAddr(a, t)))) return `it reaches ${b}, which serves kontainers' Docker API`;
     }
     return null;
   }

@@ -28,6 +28,9 @@ export class EventWatcher {
   // Names whose container was renamed to <name>-old-<id>: a replacement is under way, by this
   // kontainers or another one on the same host, and judges its new container itself.
   private replacing = new Map<string, number>();
+  // How long a rename to <name>-old-<id> keeps <name> quiet: a replacement's settle and health wait,
+  // with a margin (main.ts sets it from the configuration).
+  replaceWindowMs = 10 * 60_000;
   private since: number;
   connected = false;
   lastError: string | null = null;
@@ -140,12 +143,12 @@ export class EventWatcher {
     }
   }
 
-  // For at most 10 minutes: a set-aside container left behind (a kontainers killed meanwhile)
-  // must not silence its name for good.
+  // For replaceWindowMs at most: a set-aside container left behind (a kontainers killed meanwhile,
+  // an old container that could not be removed) must not silence its name for long.
   private inReplacement(name: string, at: number): boolean {
     const t = this.replacing.get(name);
     if (t === undefined) return false;
-    if (at - t < 10 * 60_000) return true;
+    if (at - t < this.replaceWindowMs) return true;
     this.replacing.delete(name);
     return false;
   }
