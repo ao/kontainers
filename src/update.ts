@@ -75,8 +75,11 @@ export interface UpdateOptions {
 
 export interface Journal {
   begin(name: string, oldId: string, wasRunning: boolean): void;
+  // kontainers is putting the old container back: what follows (its own kills) is not a stop
+  // someone asked for.
+  rollingBack?(name: string): void;
   end(name: string): void;
-  all(): { name: string; old_id: string; was_running: number; at: number }[];
+  all(): { name: string; old_id: string; was_running: number; at: number; rollback?: number }[];
 }
 
 export interface UpdateResult { changed: boolean; message: string; oldImage: string; newImage: string; held?: boolean; id: string; note?: string | null; running?: boolean }
@@ -307,6 +310,7 @@ export async function replaceContainer(docker: Docker, c: any, spec: CreateSpec,
     // be true.
     const wrong: string[] = [];
     const why = (err: unknown) => (err as Error)?.message || String(err);
+    try { opts.journal?.rollingBack?.(name); } catch { /* the entry stays as it was */ }
     if (newId) await docker.remove(newId, true).catch(err => wrong.push(`the new container could not be removed (${why(err)})`));
     const renamed = await docker.rename(c.Id, name).then(() => true, err => { wrong.push(`the old container could not get its name back and is still ${aside} (${why(err)})`); return false; });
     if (wasRunning) await docker.start(c.Id).catch(err => wrong.push(`the old container could not be started again (${why(err)})`));
@@ -322,143 +326,134 @@ export async function replaceContainer(docker: Docker, c: any, spec: CreateSpec,
 }
 
 // After a restart in the middle of a replacement (kontainers stopped while an update or an edit
-// ran), things can be left half done. The journal says which containers were being replaced and
-// whether they were running. For each, under that name's lock (so nothing else replaces it now):
-//   - the old one set aside as <name>-old-<id> and nothing with the name: it is put back (and
-//     started if it was running);
-//   - set aside, and its replacement (labelled kontainers.replaces=<old ID>) runs, or was stopped
-//     on purpose: the old one goes;
-//   - set aside, and its replacement never started, or stopped once nobody watched it: the
-//     replacement goes and the old one is put back;
-//   - not set aside but stopped since the replacement began, though it was running: it was
-//     stopped for the replacement, which never got further, so it is started again.
+// ran), things can be left half done. The journal says which containers were being replaced,
+// whether they were running, and whether kontainers was already putting the old one back. Each
+// name is handled under its own lock (so nothing else replaces it meanwhile), from a fresh listing.
+// With the old container set aside as <name>-old-<id>:
+//   - nothing has the name: the old one is put back (and started if it was running);
+//   - its replacement (labelled kontainers.replaces=<old ID>) exists: the old one is stopped first,
+//     so the two never run on the same data, and then the replacement is judged. It stays if it
+//     runs (watched as the update would have, when the update began recently), was stopped or
+//     paused by someone, or is the stopped result of editing a stopped container. It goes, and the
+//     old one comes back, if it never started, stopped on its own, keeps restarting, is dead, fails
+//     the watch, or kontainers was already rolling back. Docker still removing it: tried later.
+// Without the old container set aside, a container that was stopped for the replacement and then
+// nothing happened (it stopped after the replacement began) is started again.
 // Without a journal entry (another kontainers on the same host may be in the middle of its own
-// update, or the entry could not be written), only the first case is acted on.
-// What cannot be settled now (Docker still busy with a container) keeps its journal entry and comes
-// back with retry set, unless `final`: then the entry goes and the note says to check by hand.
-// take(name): the name's lock, or null when a replacement of it runs now (it is left alone).
-// kept(name, id): the container that stays under the name, whose ID the automatic-update row takes.
-// more.watch(id): watches a replacement that runs, as an update would have (null if it is good, or
-// why not); more.held(name, image): the image of a replacement that failed, to hold back.
+// update, or the entry could not be written), only "nothing has the name" is acted on.
+// A journal entry is crossed out only once its name is settled; anything else comes back with
+// retry set (and is said to need a look by hand on the final attempt, the entry kept for the
+// next start). take(name): the name's lock, or null while a replacement of it runs now.
+// kept(name, id): the container that stays under the name. more.watch(id): watches a running
+// replacement (null if good, else why not); more.held(name, image): an image to hold back;
+// more.windowMs: how recent an update must be for its replacement to be watched now.
 export interface Recovered { name: string; text: string; trouble: boolean; retry?: boolean }
 export async function recoverInterrupted(docker: Docker, kept: (name: string, id: string) => void = () => {}, journal?: Journal, take: (name: string) => (() => void) | null = () => () => {}, final = false,
-  more: { watch?: (id: string) => Promise<string | null>; held?: (name: string, image: string) => void } = {}): Promise<Recovered[]> {
+  more: { watch?: (id: string) => Promise<string | null>; held?: (name: string, image: string) => void; windowMs?: number } = {}): Promise<Recovered[]> {
   const out: Recovered[] = [];
   const ASIDE = /^(.+)-old-([0-9a-f]{8})$/;
-  const allRows = (() => { try { return journal?.all() ?? []; } catch { return []; } })();
   const nameOf = (c: any) => String(c.Names?.[0] || '').replace(/^\//, '');
-  // The names to look at, each under its lock.
-  const first = await docker.listContainers();
-  const bases = new Set(allRows.map(r => r.name));
-  for (const c of first) { const m = ASIDE.exec(nameOf(c)); if (m && c.Labels?.['kontainers.managed'] === 'true' && String(c.Id).startsWith(m[2])) bases.add(allRows.find(r => String(r.old_id).startsWith(m[2]))?.name ?? m[1]); }
-  const releases: (() => void)[] = [];
-  const mine = new Set<string>();
-  for (const b of bases) { const r = take(b); if (r) { releases.push(r); mine.add(b); } }
-  try {
-    // Listed again now that the names are held.
-    const list = await docker.listContainers();
-    const byName = new Map(list.map(c => [nameOf(c), c]));
-    const rows = allRows.filter(r => mine.has(r.name));
-    const settled = new Set<string>();
-    const open = new Set<string>();
-    const endRow = (n: string) => { try { journal?.end(n); } catch { /* written again at the next replacement */ } };
-    const stillOpen = (base: string, text: string) => {
-      if (final) { out.push({ name: base, trouble: true, text: `${text}; kontainers gave up trying, so check them by hand` }); return; }
-      out.push({ name: base, trouble: true, retry: true, text: `${text}; kontainers tries again shortly` });
-      open.add(base);
-    };
-    for (const [name, c] of byName) {
-      const m = ASIDE.exec(name);
-      if (!m || c.Labels?.['kontainers.managed'] !== 'true' || !String(c.Id).startsWith(m[2])) continue;
-      const row = rows.find(r => String(r.old_id).startsWith(m[2]));
-      const base = row?.name ?? m[1];
-      if (!mine.has(base)) continue;
-      // At Docker's 128-character limit the set-aside name was shortened, so it no longer says the name.
-      if (name.length >= 128 && !row) { out.push({ name, trouble: true, text: `${name} looks set aside by an interrupted update, but its name was shortened; check it by hand` }); continue; }
+  const asideOf = (c: any) => { const m = ASIDE.exec(nameOf(c)); return m && c.Labels?.['kontainers.managed'] === 'true' && String(c.Id).startsWith(m[2]) ? m : null; };
+  const rows = (() => { try { return journal?.all() ?? []; } catch { return []; } })();
+  const endRow = (n: string) => { try { journal?.end(n); } catch { /* written again at the next replacement */ } };
+  const later = (base: string, text: string) => out.push(final
+    ? { name: base, trouble: true, text: `${text}; kontainers gave up trying for now (it looks again at its next start), so check them by hand` }
+    : { name: base, trouble: true, retry: true, text: `${text}; kontainers tries again shortly` });
+
+  const bases = new Set(rows.map(r => r.name));
+  for (const c of await docker.listContainers()) { const m = asideOf(c); if (m) bases.add(rows.find(r => String(r.old_id).startsWith(m[2]))?.name ?? m[1]); }
+
+  for (const base of bases) {
+    const row = rows.find(r => r.name === base) ?? null;
+    const release = take(base);
+    if (!release) {
+      if (row) out.push({ name: base, trouble: false, retry: true, text: `${base} is being updated or edited now; its interrupted update is looked at again shortly` });
+      continue;
+    }
+    try {
+      const list = await docker.listContainers();
+      const now = list.find(x => nameOf(x) === base);
+      const c = list.find(x => { const m = asideOf(x); return m && (row ? String(x.Id) === row.old_id : m[1] === base); });
       const wasRunning = row ? !!row.was_running : true;
-      const now = byName.get(base);
-      const replacement = !!now && now.Labels?.['kontainers.replaces'] === c.Id;
       try {
+        if (!c) {
+          if (!row) continue;
+          // Stopped for the replacement, and then nothing: started again, if it stopped after the
+          // replacement began (one stopped since, by someone, stays stopped).
+          if (now && String(now.Id) === row.old_id && wasRunning && now.State !== 'running') {
+            const info = await docker.inspect(now.Id);
+            const finished = Date.parse(info?.State?.FinishedAt || '') || 0;
+            if (finished >= row.at - 5000 && finished <= row.at + 120_000) {
+              await docker.start(now.Id);
+              out.push({ name: base, trouble: false, text: `started ${base} again: kontainers stopped while it was stopped for an update or edit, before anything else changed` });
+            }
+          } else if (now && now.Labels?.['kontainers.replaces'] === row.old_id) {
+            kept(base, now.Id); // the replacement finished; only the journal entry was left
+          }
+          endRow(base);
+          continue;
+        }
+        const name = nameOf(c);
+        if (name.length >= 128 && !row) { out.push({ name, trouble: true, text: `${name} looks set aside by an interrupted update, but its name was shortened; check it by hand` }); continue; }
         if (!now) {
           await docker.rename(c.Id, base);
           if (wasRunning && c.State !== 'running') await docker.start(c.Id);
           kept(base, c.Id);
           out.push({ name: base, trouble: false, text: `put ${base} back: an update or edit was interrupted, and no container had its name` });
-          if (row) settled.add(base);
-        } else if (!row) {
-          // Another kontainers on this host may be in the middle of its own update: looked at again
-          // for a few minutes before anyone is told.
+          if (row) endRow(base);
+          continue;
+        }
+        if (!row) {
+          // Another kontainers on this host may be in the middle of its own update.
           if (final) out.push({ name: base, trouble: true, text: `${name} and ${base} both exist, and kontainers has no record of replacing ${base} (another kontainers on this host may have been updating it); check them by hand` });
           else out.push({ name: base, trouble: true, retry: true, text: `${name} and ${base} both exist, and kontainers has no record of replacing ${base}; it looks again shortly` });
-        } else if (!replacement) {
-          stillOpen(base, `${name} and ${base} both exist, and ${base} is not the container that replaced it`);
-        } else if (now.State === 'running' && more.watch && row.was_running && await (async () => {
-          // Nobody watched it to the end: it is watched now, as the update would have. A crash loop
-          // (a restart policy) shows at once as restarts.
-          const problem = await more.watch!(now.Id);
-          if (!problem) return false;
-          await docker.remove(now.Id, true);
-          await docker.rename(c.Id, base);
-          if (c.State !== 'running') await docker.start(c.Id);
-          kept(base, c.Id);
-          if (now.ImageID) more.held?.(base, now.ImageID);
-          out.push({ name: base, trouble: true, text: `put ${base} back: an update or edit was interrupted, and when kontainers watched the new container it ${problem.replace(/^the new container /, '')}; that image is held back` });
-          settled.add(base);
-          return true;
-        })()) {
-          // put back above
-        } else if (now.State === 'running' || (now.State !== 'created' && await stoppedOnPurposeSince(docker, now.Id, row.at))) {
-          if (c.State === 'running') await docker.stop(c.Id);
-          await docker.remove(c.Id, false);
-          kept(base, now.Id);
-          out.push({ name: base, trouble: false, text: `removed ${name}, left over from an interrupted update of ${base}; the new ${base} was not watched to the end, so check that it works` });
-          settled.add(base);
-        } else if (row.was_running && (now.State === 'created' || now.State === 'exited' || now.State === 'dead')) {
-          // It never started, or it stopped once nobody watched it: the old one is what ran.
-          const why = now.State === 'created' ? 'before the new container started' : `and the new container then stopped (${now.Status || now.State})`;
-          await docker.remove(now.Id, false);
-          await docker.rename(c.Id, base);
-          if (c.State !== 'running') await docker.start(c.Id);
-          kept(base, c.Id);
-          out.push({ name: base, trouble: now.State !== 'created', text: `put ${base} back: an update or edit was interrupted ${why}` });
-          settled.add(base);
-        } else if (!row.was_running && now.State === 'created') {
-          // It was stopped before the edit, and the new one is too: only the old one is left to go.
-          await docker.remove(c.Id, false);
-          kept(base, now.Id);
-          out.push({ name: base, trouble: false, text: `removed ${name}, left over from an interrupted edit of ${base}` });
-          settled.add(base);
-        } else {
-          stillOpen(base, `${name} and ${base} both exist, and ${base} is ${now.State}`);
+          continue;
         }
+        if (now.Labels?.['kontainers.replaces'] !== c.Id) { later(base, `${name} and ${base} both exist, and ${base} is not the container that replaced it`); continue; }
+        if (now.State === 'removing') { later(base, `${name} and ${base} both exist, and Docker is still removing ${base}`); continue; }
+
+        // One at a time on the same data: the old one stops while the replacement is judged.
+        if (!['exited', 'created', 'dead'].includes(c.State)) await docker.stop(c.Id);
+        const recent = Date.now() - row.at < (more.windowMs ?? 10 * 60_000);
+        let back: string | null = null; // why the old one comes back
+        let hold = false;
+        if (row.rollback) back = 'kontainers was already putting the old container back';
+        else if (now.State === 'dead') { back = 'the new container is dead'; hold = true; }
+        else if (now.State === 'created') back = wasRunning ? 'before the new container started' : null;
+        else if (now.State === 'restarting') { back = 'the new container keeps restarting'; hold = true; }
+        else if (now.State === 'exited') {
+          if (!wasRunning || await stoppedOnPurposeSince(docker, now.Id, row.at)) back = null;
+          else { back = `and the new container then stopped (${now.Status || 'exited'})`; hold = true; }
+        } else if (now.State === 'running' && recent && more.watch) {
+          const problem = await more.watch(now.Id);
+          if (problem) { back = `and when kontainers watched the new container it ${problem.replace(/^the new container /, '')}`; hold = true; }
+        }
+        if (back === null) {
+          await docker.remove(c.Id, false);
+          kept(base, now.Id);
+          const how = now.State === 'running' ? `the new ${base} was not watched to the end, so check that it works` : `the new ${base} is ${now.State} and left as it is`;
+          out.push({ name: base, trouble: false, text: `removed ${name}, left over from an interrupted update or edit of ${base}; ${how}` });
+          endRow(base);
+          continue;
+        }
+        // Held before anything is removed, and only when the image changed (an edit that kept the
+        // image says nothing against it).
+        if (hold && now.ImageID && now.ImageID !== c.ImageID) more.held?.(base, now.ImageID);
+        try { (journal as any)?.rollingBack?.(base); } catch { /* the entry stays as it was */ }
+        if (now.State === 'running' || now.State === 'restarting' || now.State === 'paused') await docker.stop(now.Id).catch(() => {});
+        await docker.remove(now.Id, now.State === 'dead');
+        await docker.rename(c.Id, base);
+        if (wasRunning) await docker.start(c.Id);
+        kept(base, c.Id);
+        out.push({ name: base, trouble: hold, text: `put ${base} back: an update or edit was interrupted ${back}${hold && now.ImageID !== c.ImageID ? '; that image is held back' : ''}` });
+        endRow(base);
       } catch (e) {
-        if (row) stillOpen(base, `could not tidy up ${name}: ${(e as Error).message}`);
-        else out.push({ name: base, trouble: true, text: `could not tidy up ${name}: ${(e as Error).message}` });
+        if (row) later(base, `could not tidy up ${base} yet: ${(e as Error).message}`);
+        else out.push({ name: base, trouble: true, text: `could not tidy up ${base}: ${(e as Error).message}` });
       }
+    } finally {
+      release();
     }
-    for (const r of rows) {
-      if (open.has(r.name)) continue;
-      if (!settled.has(r.name)) {
-        const c = byName.get(r.name);
-        // Stopped for the replacement, and then nothing: started again. Only if it stopped after
-        // the replacement began: one stopped since, by someone, stays stopped.
-        if (c && String(c.Id) === r.old_id && r.was_running && c.State !== 'running') {
-          const finished = Date.parse((await docker.inspect(c.Id).catch(() => null))?.State?.FinishedAt || '') || 0;
-          if (finished >= r.at - 5000 && finished <= r.at + 120_000) {
-            try {
-              await docker.start(c.Id);
-              out.push({ name: r.name, trouble: false, text: `started ${r.name} again: kontainers stopped while it was stopped for an update or edit, before anything else changed` });
-            } catch (e) {
-              stillOpen(r.name, `could not start ${r.name} again after an interrupted update: ${(e as Error).message}`);
-              if (!final) continue;
-            }
-          }
-        }
-      }
-      endRow(r.name);
-    }
-  } finally {
-    for (const r of releases) r();
   }
   return out;
 }

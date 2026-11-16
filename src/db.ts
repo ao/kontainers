@@ -79,6 +79,8 @@ export const MIGRATIONS: string[] = [
      was_running INTEGER NOT NULL,
      at INTEGER NOT NULL
    );`,
+  // 5: v0.4.0: a replacement being rolled back
+  `ALTER TABLE replacing ADD COLUMN rollback INTEGER NOT NULL DEFAULT 0;`,
 ];
 
 // degraded: opened without the shared-memory file, because the data volume had no room for it.

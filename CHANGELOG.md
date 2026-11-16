@@ -234,6 +234,16 @@
   keeps at least 14rem on wide screens, and notes in the actions column wrap. International
   hostnames are shown as written on the Proxy page. A container being replaced does not say a
   newer image is available.
+- The tidy-up after a restart handles one container at a time under its lock, stops the old
+  container before judging the new one (so the two never run on the same data), puts the old one
+  back when the new one is dead or keeps restarting, never counts kontainers' own kills of a
+  container it was removing as a stop someone asked for (the journal records a rollback in
+  progress), watches a running replacement only when the update began recently, holds an image
+  back only when the image changed, and keeps its record for the next start when it gives up.
+  It no longer delays the proxy or the shutdown handling at start.
+- `DOCKER_HOST=tcp://host` without a port uses port 2375, as Docker does, and notifications are
+  kept off that port. The full-volume notice and the exclusive-mode notice are shown together.
+  A registry login's "Last used" is no longer flipped by every update check.
 
 ## 0.3.0
 

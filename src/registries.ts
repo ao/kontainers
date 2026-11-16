@@ -99,8 +99,10 @@ export class Registries {
     return Buffer.from(json).toString('base64').replace(/\+/g, '-').replace(/\//g, '_');
   }
 
-  noteResult(registry: string, result: string): void {
-    try { this.db.query('UPDATE registry_logins SET last_used_at = ?, last_result = ? WHERE registry = ?').run(this.now(), result.slice(0, 300), registry); } catch (e) { writeFailed(e, 'could not save the result of a registry login'); }
+  // overFailureOnly: a success that only replaces an earlier failure (or nothing).
+  noteResult(registry: string, result: string, overFailureOnly = false): void {
+    const where = overFailureOnly ? " AND (last_result IS NULL OR last_result LIKE 'failed%')" : '';
+    try { this.db.query(`UPDATE registry_logins SET last_used_at = ?, last_result = ? WHERE registry = ?${where}`).run(this.now(), result.slice(0, 300), registry); } catch (e) { writeFailed(e, 'could not save the result of a registry login'); }
   }
 
   // The key as it is on disk, or null when there is none. An empty file is what a write that
@@ -165,7 +167,7 @@ export class Registries {
 // saved, one saved and sent, or one saved that cannot be read (registry.key missing).
 export function loginHint(message: string, registry: string, login: 'none' | 'sent' | 'unreadable'): string {
   if (!/unauthorized|authentication required|no basic auth credentials|(?<!permission )\bdenied\b|may require 'docker login'|incorrect username or password/i.test(message)) return '';
-  if (login === 'sent') return `; the registry refused the login saved for ${registry}: check it on the Settings page`;
+  if (login === 'sent') return `; the registry refused the login saved for ${registry} for this image (a wrong login, no access to the image, or no such image): check it on the Settings page`;
   if (login === 'unreadable') return `; the login saved for ${registry} cannot be read (registry.key in the data volume is missing or different): save it again on the Settings page`;
   return `; if the image is private, add a login for ${registry} on the Settings page`;
 }

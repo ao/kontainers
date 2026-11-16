@@ -23,8 +23,13 @@ export function setDegraded(msg: string | null): void { degraded = msg; }
 
 // What every page says while writes fail: shown until ten minutes pass without a failed write.
 export function storageTrouble(now = Date.now()): string | null {
-  if (degraded) return degraded;
-  if (!lastAt || now - lastAt > SHOW_MS) return null;
+  const writes = !lastAt || now - lastAt > SHOW_MS ? null : 'x';
+  if (degraded) return writes ? `${degraded} ${failingNow()}` : degraded;
+  if (!writes) return null;
+  return failingNow();
+}
+
+function failingNow(): string {
   return `Since ${new Date(firstAt).toISOString().slice(11, 16)} UTC kontainers cannot write its database: the data volume is full or read-only. Actions still work, but the Activity log, automatic update results and the record of sent notifications are not being saved. Free space on the volume (/data in the image).`;
 }
 

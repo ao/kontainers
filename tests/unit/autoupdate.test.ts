@@ -323,7 +323,7 @@ describe('recoverInterrupted', () => {
     const { recoverInterrupted } = await import('../../src/update');
     const kept: string[] = [];
     const rows = [{ name: 'web', old_id: old, was_running: 1 }];
-    expect((await recoverInterrupted(d as any, (n, id) => kept.push(`${n}=${id}`), journalOf(rows))).map(r => r.text)).toEqual(['removed web-old-abcdef12, left over from an interrupted update of web; the new web was not watched to the end, so check that it works']);
+    expect((await recoverInterrupted(d as any, (n, id) => kept.push(`${n}=${id}`), journalOf(rows))).map(r => r.text)).toEqual(['removed web-old-abcdef12, left over from an interrupted update or edit of web; the new web was not watched to the end, so check that it works']);
     expect(kept.length).toBe(1);
     expect(d.containers.has(old)).toBe(false);
   });
@@ -534,7 +534,9 @@ describe('review of round 3', () => {
     const old = asideOf(d, 'web');
     const rows = [{ name: 'web', old_id: old, was_running: 1 }];
     const { recoverInterrupted } = await import('../../src/update');
-    expect(await recoverInterrupted(d as any, () => {}, rowsOf(rows), () => null)).toEqual([]);
+    const r = await recoverInterrupted(d as any, () => {}, rowsOf(rows), () => null);
+    expect(r).toHaveLength(1);
+    expect(r[0]).toMatchObject({ retry: true });
     expect(d.find(`web-old-abcdef12`).Id).toBe(old);
     expect(rows).toHaveLength(1);
   });
@@ -551,7 +553,7 @@ describe('review of round 3', () => {
     const last = await recoverInterrupted(d as any, () => {}, rowsOf(rows), undefined, true);
     expect(last[0].text).toContain('check them by hand');
     expect(last[0].retry).toBeUndefined();
-    expect(rows).toHaveLength(0);
+    expect(rows).toHaveLength(1); // kept for the next start
   });
   test('a replacement someone stopped on purpose stays as they left it', async () => {
     const { d } = setup();
@@ -640,5 +642,60 @@ describe('QA round 4', () => {
     await Promise.all([first, second, third]);
     expect(second).toBe(third);
     expect(calls).toBeGreaterThanOrEqual(3); // the check's own list, the first pass, and one more pass
+  });
+});
+
+describe('code review of round 4', () => {
+  const rowsOf = (rows: any[]) => ({ begin() {}, rollingBack(n: string) { const r = rows.find(x => x.name === n); if (r) r.rollback = 1; }, end(n: string) { const i = rows.findIndex(r => r.name === n); if (i >= 0) rows.splice(i, 1); }, all: () => rows.map(r => ({ at: Date.now() - 1000, ...r })) });
+  const pair = (d: FakeDocker, oldState: any, newState: any) => {
+    const id = d.run('web', 'app:1');
+    const c = d.find(id);
+    c.Id = 'abcdef12' + c.Id.slice(8); d.containers.delete(id); d.containers.set(c.Id, c);
+    c.Name = '/web-old-abcdef12'; c.State = oldState;
+    const now = d.run('web', 'app:1');
+    d.find(now).Config.Labels['kontainers.replaces'] = c.Id;
+    d.find(now).State = newState;
+    return { old: c.Id, now };
+  };
+  test('a dead replacement is not kept, even with a kill event (kontainers\'s own force removal)', async () => {
+    const { d } = setup();
+    const { old, now } = pair(d, { Running: false, Status: 'exited', ExitCode: 137 }, { Running: false, Status: 'dead', Dead: true });
+    d.pastEvents = async () => [{ Action: 'kill', Actor: { ID: now, Attributes: { signal: '9' } } }];
+    const { recoverInterrupted } = await import('../../src/update');
+    await recoverInterrupted(d as any, () => {}, rowsOf([{ name: 'web', old_id: old, was_running: 1 }]));
+    expect(d.find('web').Id).toBe(old);
+    expect(d.find('web').State.Running).toBe(true);
+  });
+  test('a replacement that keeps restarting goes; the old one, running beside it, was stopped first', async () => {
+    const { d } = setup();
+    const { old, now } = pair(d, { Running: true, Status: 'running' }, { Running: true, Restarting: true, Status: 'restarting' });
+    const order: string[] = [];
+    const stop = d.stop.bind(d);
+    d.stop = async (i: string) => { order.push(`stop ${i === old ? 'old' : 'new'}`); return stop(i); };
+    const { recoverInterrupted } = await import('../../src/update');
+    const r = await recoverInterrupted(d as any, () => {}, rowsOf([{ name: 'web', old_id: old, was_running: 1 }]));
+    expect(order[0]).toBe('stop old');
+    expect(r[0].text).toContain('keeps restarting');
+    expect(d.find('web').Id).toBe(old);
+    expect(d.containers.has(now)).toBe(false);
+  });
+  test('kontainers was already rolling back: the old one comes back whatever the replacement looks like', async () => {
+    const { d } = setup();
+    const { old } = pair(d, { Running: false, Status: 'exited', ExitCode: 0 }, { Running: false, Status: 'exited', ExitCode: 137 });
+    d.pastEvents = async (f: any) => f.container.map((id: string) => ({ Action: 'kill', Actor: { ID: id, Attributes: { signal: '9' } } }));
+    const { recoverInterrupted } = await import('../../src/update');
+    await recoverInterrupted(d as any, () => {}, rowsOf([{ name: 'web', old_id: old, was_running: 1, rollback: 1 }]));
+    expect(d.find('web').Id).toBe(old);
+  });
+  test('an inspect that fails keeps the entry for later instead of leaving the container stopped', async () => {
+    const { d } = setup();
+    const id = d.run('web', 'app:1');
+    d.find(id).State = { Running: false, Status: 'exited', ExitCode: 0, FinishedAt: new Date().toISOString() };
+    d.inspect = async () => { throw new Error('daemon busy'); };
+    const rows = [{ name: 'web', old_id: id, was_running: 1 }];
+    const { recoverInterrupted } = await import('../../src/update');
+    const r = await recoverInterrupted(d as any, () => {}, rowsOf(rows));
+    expect(r[0]).toMatchObject({ retry: true });
+    expect(rows).toHaveLength(1);
   });
 });

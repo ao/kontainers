@@ -81,8 +81,8 @@ describe.skipIf(!DOCKER)('registry logins', () => {
     expect(checked.flash).toContain('every container runs the newest image');
     const page = await c.page(`/containers/${NAME}`);
     expect(page).toContain('the newest image for this tag');
-    // The last use is the update check, which went through with the login too.
-    expect((await c.page('/settings'))).toContain(`checked ${REF} for updates`);
+    // The pull is what Settings shows: a successful update check replaces only an earlier failure.
+    expect((await c.page('/settings'))).toContain(`pulled ${REF}`);
   }, 120000);
 
   test('the database holds the password only encrypted; the key file is private and not in the backup', async () => {

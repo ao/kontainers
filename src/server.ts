@@ -62,10 +62,11 @@ export function dockerApiHost(dockerHost: string): string | null {
   return m ? m[1].replace(/^\[|\]$/g, '') : null;
 }
 
-// The Docker API's host and port, as "host:port" (2375 when none is given).
+// The Docker API's host and port, as "host:port": the port the Docker client connects to (2375 for
+// tcp:// and 80 for http:// when none is given).
 export function dockerApiAddress(dockerHost: string): string | null {
-  const m = /^(?:tcp|http):\/\/(\[[^\]]+\]|[^:/]+)(?::(\d+))?/.exec(dockerHost);
-  return m ? `${m[1]}:${m[2] || '2375'}` : null;
+  const m = /^(tcp|http):\/\/(\[[^\]]+\]|[^:/]+)(?::(\d+))?/.exec(dockerHost);
+  return m ? `${m[2]}:${m[3] || (m[1] === 'tcp' ? '2375' : '80')}` : null;
 }
 
 // The client address for rate limiting. X-Forwarded-For is believed only when the socket peer is a

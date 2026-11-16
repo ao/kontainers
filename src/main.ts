@@ -57,7 +57,7 @@ if (db.degraded) {
 const auth = new Auth(db);
 const docker = new Docker(cfg.dockerHost, { allowBindMounts: cfg.allowBindMounts });
 const registries = new Registries(db, join(cfg.dataDir, 'registry.key'));
-docker.auth = { header: ref => registries.header(ref), registry: registryOf, saved: r => registries.has(r), noteResult: (r, res) => registries.noteResult(r, res) };
+docker.auth = { header: ref => registries.header(ref), registry: registryOf, saved: r => registries.has(r), noteResult: (r, res, over) => registries.noteResult(r, res, over) };
 const journal = new ReplaceJournal(db);
 const rules = new RuleStore(db);
 const proxy = new ProxyManager(cfg, rules, docker);
@@ -108,7 +108,9 @@ const TIDY_ATTEMPTS = 10;
 const tidied = new Set<string>();
 // When Docker is not there yet (a daemon restarting with kontainers), the tidy-up starts 30 s later
 // and keeps trying.
-if (await docker.ping()) await tidyUp(1);
+// Not awaited: it can watch a replacement for a while, and the proxy and the signal handlers below
+// must not wait for that.
+if (await docker.ping()) void tidyUp(1);
 else {
   console.error(`kontainers: Docker is not reachable at ${cfg.dockerHost}; pages will show errors until it is`);
   setTimeout(() => void tidyUp(1), 30_000).unref?.();
@@ -119,13 +121,15 @@ else {
 // last attempt says what is left to check by hand. Each outcome is logged, recorded once on the
 // Activity page and sent as an automatic-update notification.
 async function tidyUp(attempt: number): Promise<void> {
+  if (stopping.signal.aborted) return;
   const kept = (name: string, id: string) => { if (autoUpdates.get(name)) autoUpdates.recreated(name, id); };
   let again = false;
   try {
     events.noteSetAside(await docker.listContainers());
     const watch = (id: string) => watchRunning(docker, id, { settleMs: cfg.autoUpdateSettle * 1000, healthTimeoutMs: cfg.autoUpdateHealthTimeout * 1000, signal: stopping.signal, wasStopped: cid => events.wasStopped(cid) });
     const held = (name: string, image: string) => { if (autoUpdates.get(name)) autoUpdates.hold(name, image); };
-    for (const r of await recoverInterrupted(docker, kept, journal, n => autoUpdates.busy.take(n), attempt >= TIDY_ATTEMPTS, { watch, held })) {
+    const windowMs = (cfg.autoUpdateSettle + cfg.autoUpdateHealthTimeout + 120) * 1000;
+    for (const r of await recoverInterrupted(docker, kept, journal, n => autoUpdates.busy.take(n), attempt >= TIDY_ATTEMPTS, { watch, held, windowMs })) {
       if (r.retry) { again = true; if (attempt === 1) console.log(`kontainers: ${r.text}`); continue; }
       const key = `${r.name}\n${r.text}`;
       if (tidied.has(key)) continue;

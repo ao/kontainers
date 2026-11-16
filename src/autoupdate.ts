@@ -97,6 +97,7 @@ export class AutoUpdates {
   private queued: Promise<void> | null = null;
   afterCheck(): Promise<void> {
     if (this.running) return (this.queued ??= this.running.catch(() => {}).then(() => { this.queued = null; return this.afterCheck(); }));
+    if (this.opts.signal?.aborted) return Promise.resolve();
     this.running = this.pass().finally(() => { this.running = null; });
     return this.running;
   }

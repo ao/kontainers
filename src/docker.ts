@@ -53,7 +53,9 @@ export class Docker {
       this.unix = dockerHost.slice('unix://'.length);
       this.base = 'http://docker';
     } else if (dockerHost.startsWith('tcp://')) {
-      this.base = 'http://' + dockerHost.slice('tcp://'.length);
+      // Docker's own default port for tcp:// without one.
+      const rest = dockerHost.slice('tcp://'.length).replace(/\/$/, '');
+      this.base = 'http://' + (/^(\[[^\]]+\]|[^:]+)$/.test(rest) ? `${rest}:2375` : rest);
     } else if (dockerHost.startsWith('http://')) {
       this.base = dockerHost.replace(/\/$/, '');
     } else {
@@ -63,7 +65,7 @@ export class Docker {
 
   // Registry logins (registries.ts): the X-Registry-Auth value for an image reference, or null for
   // none; the registry it is pulled from, for error hints; and where to note how a login fared.
-  auth: { header: (ref: string) => string | null; registry: (ref: string) => string; saved?: (registry: string) => boolean; noteResult?: (registry: string, result: string) => void } | null = null;
+  auth: { header: (ref: string) => string | null; registry: (ref: string) => string; saved?: (registry: string) => boolean; noteResult?: (registry: string, result: string, overFailureOnly?: boolean) => void } | null = null;
   private loginState(registry: string, sent: boolean): 'none' | 'sent' | 'unreadable' {
     return sent ? 'sent' : this.auth?.saved?.(registry) ? 'unreadable' : 'none';
   }
@@ -258,13 +260,15 @@ export class Docker {
     try {
       const res = await this.req('GET', `/distribution/${encodeURIComponent(img)}/json`, undefined, 30000, auth ? { 'X-Registry-Auth': auth } : {});
       const text = await res.text();
-      if (auth) this.auth?.noteResult?.(this.auth.registry(img), `checked ${img} for updates`);
+      // Only over an earlier failure: lookups run four at a time, and "checked" for each would hide
+      // a refusal seen a moment before.
+      if (auth) this.auth?.noteResult?.(this.auth.registry(img), `checked ${img} for updates`, true);
       return text ? JSON.parse(text) : null;
     } catch (e) {
       if (e instanceof DockerError && this.auth) {
         const r = this.auth.registry(img);
         const hint = loginHint(e.message, r, this.loginState(r, !!auth));
-        if (auth && hint) this.auth.noteResult?.(r, `failed: the registry refused the login when checking ${img} for updates`);
+        if (auth && hint) this.auth.noteResult?.(r, `failed: the registry refused ${img} for updates with this login (a wrong login, no access to that image, or no such image)`);
         e.message += hint;
       }
       throw e;
@@ -298,7 +302,7 @@ export class Docker {
     } catch (e) {
       if (e instanceof DockerError && this.auth) {
         const hint = loginHint(e.message, registry, this.loginState(registry, !!auth));
-        if (auth && hint) this.auth.noteResult?.(registry, `failed: the registry refused the login when pulling ${img}`);
+        if (auth && hint) this.auth.noteResult?.(registry, `failed: the registry refused ${img} with this login (a wrong login, no access to that image, or no such image)`);
         e.message += hint;
       }
       throw e;
