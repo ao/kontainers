@@ -17,8 +17,14 @@ one container that does the everyday part of both:
   a container that is stopped or gone.
 - `docker compose up` recreates containers with new IDs. kontainers notices within 10 seconds and
   reconnects them, so the routes keep working.
-- Update image pulls a container's image again and recreates it with the same settings. If the new
-  one does not start, the old one is put back.
+- Every 6 hours kontainers checks which containers have a newer image for their tag. Opt a
+  container in and it is updated on its own: the new container is watched while it settles,
+  and if it stops, restarts or turns unhealthy, the old one is put back and that image is held
+  back. (Watchtower, which did this, was archived in December 2025.)
+- Notifications to a webhook or an ntfy topic when a container crashes, runs out of memory,
+  turns unhealthy, has a newer image, is updated, or a certificate is about to expire.
+- Update image and Edit settings recreate a container with its settings, volumes and networks.
+  If the new one does not stay up, the old one is put back.
 
 It is also careful about the host, because access to Docker is root on it. It listens on
 127.0.0.1, has no default password, never force-removes a running container, and will not stop or
@@ -28,16 +34,19 @@ remove itself. The Security section below lists every default.
 
 ## What it costs to run
 
-Memory and start time were measured on the 0.2.1 build, in Docker 29.8.2 on an arm64 host with
-12 CPUs; the download size is the published 0.2.0 image's.
+Memory and start time were measured on the 0.4 development build, on an EC2 m7g.4xlarge (arm64,
+16 vCPUs, Ubuntu 24.04, Docker 29.9.3), by `scripts/test.sh screenshots` in two runs. The download
+size is the published 0.3.0 image's; 0.4 moves to a newer Bun base image that is about 17 MB larger
+compressed (oven/bun 1.3.1-slim is 67.8 MB on Docker Hub for arm64, 1.4.4-slim is 85.3 MB).
 
 | | |
 |---|---|
-| Download | 82.5 MB (arm64) and 85.0 MB (amd64), compressed layers on Docker Hub |
-| Memory at idle | 53 to 55 MiB, with Caddy serving two HTTPS rules and four other containers on the host (`docker stats` after 30 s, two runs) |
-| Start | 1.0 to 4.2 s from `docker start` to a healthy `/healthz` (ten starts over two runs) |
+| Download | 82.5 MB (arm64) and 85.0 MB (amd64) for 0.3.0, compressed layers on Docker Hub |
+| Memory at idle | 30 to 33 MiB, with Caddy serving two HTTPS rules and four other containers on the host (`docker stats` after 30 s, two runs) |
+| Start | 239 to 270 ms from `docker start` to a healthy `/healthz` (ten starts over two runs) |
 
-`scripts/test.sh screenshots` repeats these measurements and regenerates the screenshots.
+`scripts/test.sh screenshots` repeats these measurements and regenerates the screenshots. On a
+Mac under OrbStack the 0.2.1 build used 53 to 55 MiB and started in 1.0 to 4.2 s.
 
 ## Try it
 
@@ -51,7 +60,8 @@ SSH with `ssh -L 8080:127.0.0.1:8080 your-server`. To route domains, see
 
 ## Status
 
-Version 0.2 is a rewrite. Earlier releases (0.1.x) accepted any login and must not be used.
+Version 0.2 was a rewrite; 0.3 added update checks; 0.4 adds automatic updates, notifications,
+editing, clean up and an activity log. Releases 0.1.x accepted any login and must not be used.
 
 What works, and is covered by the test suites below:
 

@@ -71,7 +71,7 @@ form.row input { flex: 1; }
 .logbar { display: flex; flex-wrap: wrap; align-items: end; gap: .6rem 1rem; margin-bottom: .6rem; }
 .logbar label { display: grid; gap: .25rem; font-size: .85rem; font-weight: 550; color: var(--muted); }
 .logbar label.check { display: flex; align-items: center; gap: .4rem; }
-form.autoupdate { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin: 1rem 0; padding: .8rem 1rem; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+form.autoupdate { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin: 1rem 0; padding: .8rem 1rem; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; max-width: 46rem; box-sizing: border-box; }
 form.autoupdate small { flex-basis: 100%; }
 fieldset { border: 1px solid var(--line); border-radius: 6px; padding: .6rem .9rem; display: grid; gap: .45rem; margin: 0; }
 legend { font-weight: 550; padding: 0 .3rem; }

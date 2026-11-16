@@ -130,6 +130,7 @@ acme_stack() {
   docker pull -q "$PEBBLE" >/dev/null && docker pull -q "$CHALL" >/dev/null
   docker save "$IMG" "$PEBBLE" "$CHALL" | D load -q >/dev/null
   [ "$IMG" = kontainers:test ] || D tag "$IMG" kontainers:test
+  [ -z "${KIMG:-}" ] || D tag kontainers:test "$KIMG"
 
   D network create kt >/dev/null
   # A clean /work: in "all", proxy and renewal share one dind, and a second `docker cp tests`
@@ -152,7 +153,7 @@ acme_stack() {
     -e DOCKER_HOST=unix:///var/run/docker.sock -e KONTAINERS_PROXY=1 \
     -e KONTAINERS_HTTP_PORT=5002 -e KONTAINERS_HTTPS_PORT=5001 \
     -e KONTAINERS_ACME_CA=https://pebble:14000/dir -e KONTAINERS_ACME_CA_ROOT=/etc/pebble-ca.pem \
-    -e KONTAINERS_ACME_EMAIL=ci@kontainers-ci.dev -e KONTAINERS_PROXY_RECONCILE_MS=2000 ${ACME_ENV:-} kontainers:test >/dev/null
+    -e KONTAINERS_ACME_EMAIL=ci@kontainers-ci.dev -e KONTAINERS_PROXY_RECONCILE_MS=2000 ${ACME_ENV:-} "${KIMG:-kontainers:test}" >/dev/null
   docker exec "$DIND" chmod 644 /tmp/pebble.minica.pem
   D cp /tmp/pebble.minica.pem kontainers:/etc/pebble-ca.pem
   D start kontainers >/dev/null
@@ -250,7 +251,8 @@ fi
 # container created in kontainers, proxy rules with Pebble certificates) and measures the image.
 if [ "$SUITE" = screenshots ]; then
   PWIMG=mcr.microsoft.com/playwright:v1.56.1-noble
-  acme_stack
+  # Under its release name, as a reader would see it on their own host.
+  KIMG="ataiva/kontainers:$(sed -n 's/.*"version": "\(.*\)".*/\1/p' package.json)" acme_stack
   docker image inspect "$PWIMG" >/dev/null 2>&1 || docker pull -q "$PWIMG" >/dev/null
   docker exec "$DIND" mkdir -p /work/shots-src
   docker cp scripts/screenshots/. "$DIND:/work/shots-src/"
