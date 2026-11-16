@@ -11,6 +11,11 @@
 - Fixed: two updates of one container at once could leave the old one running beside the new
   one; the second is now refused. A 120-character name no longer makes Update stop and restart
   the container for nothing (the set-aside name is shortened to fit).
+- Fixed: with a full data volume, a Stop or Start that worked was reported as "internal error"
+  (writing the activity entry failed), a session could end, and a new login gave a 500. Now the
+  action's own outcome is shown with a note that it could not be recorded, logged-in users keep
+  working, and the login page says the data volume is full. The activity entry's target is cut
+  to 200 characters.
 - Changed: only kontainers itself and the container that serves its Docker API (found from
   `DOCKER_HOST`, by name, compose service or address, and looked up again every 30 s) are
   protected from Stop, Restart, Remove and Update. Before, every service in kontainers' compose

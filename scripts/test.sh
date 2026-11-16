@@ -75,6 +75,7 @@ fi
 
 # A fresh app container from the image, Docker API through the socket proxy as in compose.yaml.
 # No -p: test containers join the app's network namespace and use 127.0.0.1. Sets TOKEN.
+# $1: more docker run options for the app container.
 start_app() {
   if ! docker inspect "$SOCKPROXY" >/dev/null 2>&1; then
     docker build -q -t "$IMG" . >/dev/null
@@ -84,7 +85,7 @@ start_app() {
       -e ALLOW_START=1 -e ALLOW_STOP=1 -e ALLOW_RESTARTS=1 -e DISTRIBUTION=1 tecnativa/docker-socket-proxy:0.3.0 >/dev/null
   fi
   docker rm -f "$APP" >/dev/null 2>&1 || true
-  docker run -d --name "$APP" --network "$NET" -e DOCKER_HOST=tcp://docker-proxy:2375 "$IMG" >/dev/null
+  docker run -d --name "$APP" --network "$NET" -e DOCKER_HOST=tcp://docker-proxy:2375 ${1:-} "$IMG" >/dev/null
   i=0
   until docker logs "$APP" 2>&1 | grep -q 'setup token'; do
     i=$((i + 1)); [ $i -gt 30 ] && { docker logs "$APP"; exit 1; }; sleep 1
@@ -99,6 +100,11 @@ if [ "$SUITE" = all ] || [ "$SUITE" = image ]; then
     -e KONTAINERS_TEST_URL=http://127.0.0.1:8080 -e KONTAINERS_TEST_SETUP_TOKEN="$TOKEN" \
     -e KONTAINERS_TEST_SOCKET_PROXY=tcp://docker-proxy:2375 \
     "$BUN_IMAGE" bun test --timeout 120000 tests/image
+  # The same image with a data volume that fills up: 1 MB of tmpfs, owned by the image's user.
+  start_app "--tmpfs /data:rw,size=1m,mode=0700,uid=$(docker run --rm --entrypoint id "$IMG" -u)"
+  docker run --rm --network "container:$APP" -v "$CACHE":/cache -v "$PWD":/app -w /app \
+    -e KONTAINERS_TEST_URL=http://127.0.0.1:8080 -e KONTAINERS_TEST_SETUP_TOKEN="$TOKEN" \
+    "$BUN_IMAGE" bun test --timeout 180000 tests/diskfull
 fi
 
 if [ "$SUITE" = all ] || [ "$SUITE" = e2e ]; then

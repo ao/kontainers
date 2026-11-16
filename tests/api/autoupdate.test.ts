@@ -3,7 +3,7 @@
 // Set KONTAINERS_TEST_DOCKER_HOST=tcp://dind:2375 to run; skipped otherwise.
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { Client, DOCKER, readyServer, type Running } from './helpers';
+import { Client, DOCKER, PW, readyServer, type Running } from './helpers';
 
 const run = Math.random().toString(36).slice(2, 8);
 const REG = `k-areg-${run}`;
@@ -183,8 +183,15 @@ describe.skipIf(!DOCKER)('automatic updates and notifications', () => {
       const vol = before.Mounts.find((m: any) => m.Destination === '/data').Name;
       await build('VOLUME /data\nLABEL release=2');
       expect((await api(`/images/${v1}/tag?repo=${encodeURIComponent(VREPO)}&tag=1`, { method: 'POST' })).status).toBe(201);
-      const r = await c.submit(`/containers/${NAME}/update`, {});
-      expect(r.flash).toContain(`Updated ${NAME}`);
+      // Two people press Update image at once: one update runs, the other is refused.
+      const c2 = new Client(srv.base);
+      expect((await c2.post('/login', { username: 'admin', password: PW }, { csrf: false })).status).toBe(303);
+      await c2.page(`/containers/${NAME}`);
+      const [r, r2] = await Promise.all([c.submit(`/containers/${NAME}/update`, {}), c2.submit(`/containers/${NAME}/update`, {})]);
+      expect([r.flash, r2.flash].filter(f => f.includes(`Updated ${NAME}`))).toHaveLength(1);
+      expect([r.error, r2.error].filter(e => e.includes('already running'))).toHaveLength(1);
+      const all = (await (await api('/containers/json?all=1')).json()) as any[];
+      expect(all.filter(x => x.Names.some((n: string) => n.startsWith(`/${NAME}`)))).toHaveLength(1);
       const after = await inspect(NAME);
       expect(after.Id).not.toBe(before.Id);
       expect(after.Mounts.find((m: any) => m.Destination === '/data').Name).toBe(vol);

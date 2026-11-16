@@ -119,7 +119,10 @@ export class Auth {
       this.db.query('DELETE FROM sessions WHERE id_hash = ?').run(idHash);
       return null;
     }
-    if (t - row.last_seen > 60000) this.db.query('UPDATE sessions SET last_seen = ? WHERE id_hash = ?').run(t, idHash);
+    // A failed write (full data volume) must not log everyone out: the session is still valid.
+    if (t - row.last_seen > 60000) {
+      try { this.db.query('UPDATE sessions SET last_seen = ? WHERE id_hash = ?').run(t, idHash); } catch { /* noted by the next write that matters */ }
+    }
     return { user: { id: row.id, username: row.username }, csrf: row.csrf, idHash };
   }
 

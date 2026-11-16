@@ -197,7 +197,12 @@ export function containerSpec(f: Record<string, string>): CreateSpec {
   };
 }
 
+// SQLite cannot write: the data volume is full (or read-only).
+const diskFull = (e: unknown) => /SQLITE_FULL|database or disk is full|SQLITE_READONLY|readonly database/i.test(`${(e as { code?: string })?.code ?? ''} ${(e as Error)?.message ?? ''}`);
+const DISK_FULL = 'kontainers could not write its database: the data volume is full or read-only. Free space on it (/data in the image) and try again';
+
 function errorStatus(e: unknown): number {
+  if (diskFull(e)) return 507;
   if (e instanceof v.ValidationError) return e.status;
   if (e instanceof DockerError) return e.status;
   const s = (e as { status?: number })?.status;
@@ -205,6 +210,7 @@ function errorStatus(e: unknown): number {
 }
 
 function errorMessage(e: unknown): string {
+  if (diskFull(e)) return DISK_FULL;
   if (e instanceof v.ValidationError || e instanceof DockerError) return e.message;
   if ((e as { status?: number })?.status) return (e as Error).message;
   return 'internal error, see the kontainers log';
@@ -228,8 +234,12 @@ export function createHandler(d: Deps): Handler {
   const clearCookie = () => `${cookieName}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure ? '; Secure' : ''}`;
 
   // result: null for success, or what went wrong.
+  // target is what the request named, before validation: cut to 200 characters so a huge form
+  // field cannot bloat the log.
   const audit = (s: Session | null, action: string, target: string | null, ip: string, result: string | null = null) =>
-    db.query('INSERT INTO audit_log (at, username, action, target, ip, result) VALUES (?, ?, ?, ?, ?, ?)').run(Date.now(), s?.user.username ?? null, action, target, ip, result);
+    db.query('INSERT INTO audit_log (at, username, action, target, ip, result) VALUES (?, ?, ?, ?, ?, ?)').run(Date.now(), s?.user.username ?? null, action, target === null ? null : String(target).slice(0, 200), ip, result);
+  // For records that must not stop the request they belong to (a login, a logout).
+  const safeAudit = (...a: Parameters<typeof audit>) => { try { audit(...a); } catch (e) { console.error(`kontainers: could not record ${a[1]}: ${(e as Error).message}`); } };
 
   function ctx(s: Session): views.PageCtx {
     const f = flashes.get(s.idHash);
@@ -308,14 +318,25 @@ export function createHandler(d: Deps): Handler {
 
   // Runs a state change, stores the outcome as a flash message, redirects back.
   async function act(s: Session, ip: string, back: string | (() => string), action: string, target: string | null, fn: () => Promise<string | void> | string | void): Promise<Response> {
+    // The outcome shown is the action's own. Recording it comes after and cannot turn a stop that
+    // worked into an error (with a full data volume the record fails, and says so).
+    let result: string | null = null;
     try {
       const msg = await fn();
-      audit(s, action, target, ip);
       flashes.set(s.idHash, { flash: msg || 'Done.' });
     } catch (e) {
       if (errorStatus(e) >= 500 && !(e instanceof DockerError)) console.error(`kontainers: ${action} failed:`, e);
       flashes.set(s.idHash, { error: errorMessage(e) });
-      audit(s, action, target, ip, `failed: ${errorMessage(e)}`.slice(0, 500));
+      result = `failed: ${errorMessage(e)}`.slice(0, 500);
+    }
+    try {
+      audit(s, action, target, ip, result);
+    } catch (e) {
+      console.error(`kontainers: could not record ${action} in the activity log: ${(e as Error).message}`);
+      const f = flashes.get(s.idHash);
+      const note = ' (It could not be recorded in the activity log: the data volume is full or read-only.)';
+      if (f?.flash) f.flash += note;
+      else if (f?.error) f.error += note;
     }
     return redirect(typeof back === 'function' ? back() : back);
   }
@@ -332,15 +353,19 @@ export function createHandler(d: Deps): Handler {
     ipLimiter.fail(`ip:${ip}`);
     const u = await auth.verifyLogin(f.username, f.password);
     if (!u) {
-      audit(null, 'login-failed', user, ip);
+      safeAudit(null, 'login-failed', user, ip);
       return page(views.loginPage({ username: typed, error: 'Wrong username or password.' }), 401);
     }
     limiter.reset(`user:${user}`);
     ipLimiter.reset(`ip:${ip}`);
     const old = cookieId ? auth.getSession(cookieId) : null;
     if (old) auth.destroySession(old.idHash); // never reuse a session id across a login
-    const { id } = auth.createSession(u);
-    audit({ user: u, csrf: '', idHash: '' }, 'login', null, ip);
+    let id: string;
+    try { ({ id } = auth.createSession(u)); } catch (e) {
+      if (!diskFull(e)) throw e;
+      return page(views.loginPage({ username: typed, error: DISK_FULL + '.' }), 507);
+    }
+    safeAudit({ user: u, csrf: '', idHash: '' }, 'login', null, ip);
     return redirect('/containers', { 'set-cookie': setCookie(id) });
   }
 
@@ -351,7 +376,7 @@ export function createHandler(d: Deps): Handler {
     try {
       const u = await auth.setup(f.token, f.username, f.password);
       const { id } = auth.createSession(u);
-      audit({ user: u, csrf: '', idHash: '' }, 'setup', null, ip);
+      safeAudit({ user: u, csrf: '', idHash: '' }, 'setup', null, ip);
       console.log(`kontainers: first account "${u.username}" created; setup is closed`);
       return redirect('/containers', { 'set-cookie': setCookie(id) });
     } catch (e) {
@@ -442,7 +467,7 @@ export function createHandler(d: Deps): Handler {
         return rule ? page(views.editRulePage(ctx(s), rule)) : text('rule not found\n', 404);
       }
       if (p === '/settings') return page(views.settingsPage(ctx(s), auth.listUsers(), s.user.id, d.notifier ? d.notifier.list() : null, d.events ? { connected: d.events.connected, error: d.events.lastError } : null));
-      if (p === '/api/backup') { audit(s, 'backup', null, ip); return backup(); }
+      if (p === '/api/backup') { safeAudit(s, 'backup', null, ip); return backup(); }
       return text('not found\n', 404);
     }
 
@@ -453,7 +478,7 @@ export function createHandler(d: Deps): Handler {
 
     if (p === '/logout') {
       auth.destroySession(s.idHash);
-      audit(s, 'logout', null, ip);
+      safeAudit(s, 'logout', null, ip);
       return redirect('/login', { 'set-cookie': clearCookie() });
     }
 
