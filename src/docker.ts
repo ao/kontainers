@@ -2,6 +2,7 @@
 // request bodies are built here, never passed through from the client.
 
 import * as v from './validate';
+import { loginHint } from './registries';
 
 const API = '/v1.41';
 
@@ -49,10 +50,14 @@ export class Docker {
     }
   }
 
-  private async req(method: string, path: string, body?: unknown, timeoutMs = 30000): Promise<Response> {
+  // Registry logins (registries.ts): the X-Registry-Auth value for an image reference, or null for
+  // none; the registry it is pulled from, for error hints; and where to note how a login fared.
+  auth: { header: (ref: string) => string | null; registry: (ref: string) => string; noteResult?: (registry: string, result: string) => void } | null = null;
+
+  private async req(method: string, path: string, body?: unknown, timeoutMs = 30000, extra: Record<string, string> = {}): Promise<Response> {
     const init: RequestInit & { unix?: string } = {
       method,
-      headers: body === undefined ? {} : { 'content-type': 'application/json' },
+      headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...extra },
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
     };
@@ -218,7 +223,23 @@ export class Docker {
   inspectImage(ref: string) { return this.json<any>('GET', `/images/${encodeURIComponent(v.imageRef(ref))}/json`); }
   // The registry's current manifest for an image reference, asked by the daemon with its own
   // registry credentials. Nothing is downloaded.
-  distribution(ref: string) { return this.json<any>('GET', `/distribution/${encodeURIComponent(v.image(ref))}/json`, undefined, 30000); }
+  async distribution(ref: string) {
+    const img = v.image(ref);
+    const auth = this.auth?.header(img) ?? null;
+    try {
+      const res = await this.req('GET', `/distribution/${encodeURIComponent(img)}/json`, undefined, 30000, auth ? { 'X-Registry-Auth': auth } : {});
+      const text = await res.text();
+      return text ? JSON.parse(text) : null;
+    } catch (e) {
+      if (e instanceof DockerError && this.auth) e.message += loginHint(e.message, this.auth.registry(img), !!auth);
+      throw e;
+    }
+  }
+  // Asks the daemon to log in to a registry with these credentials, without saving them anywhere.
+  async checkLogin(registry: string, username: string, password: string): Promise<string> {
+    const r = await this.json<{ Status?: string }>('POST', '/auth', { username, password, serveraddress: registry === 'docker.io' ? 'https://index.docker.io/v1/' : registry }, 30000);
+    return r?.Status || 'Login Succeeded';
+  }
   async rename(id: string, name: string) {
     await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/rename?name=${encodeURIComponent(v.name(name))}`);
   }
@@ -228,12 +249,24 @@ export class Docker {
     const at = img.indexOf('@');
     const colon = img.lastIndexOf(':');
     if (at === -1 && colon > img.lastIndexOf('/')) { repo = img.slice(0, colon); tag = img.slice(colon + 1); }
-    const res = await this.req('POST', `/images/create?fromImage=${encodeURIComponent(repo)}${at === -1 ? `&tag=${encodeURIComponent(tag)}` : ''}`, undefined, 600000);
-    // The daemon streams progress and reports failures inside the stream.
-    const text = await res.text();
-    for (const line of text.split('\n')) {
-      if (!line.trim()) continue;
-      try { const m = JSON.parse(line); if (m.error) throw new DockerError(m.error, 400); } catch (e) { if (e instanceof DockerError) throw e; }
+    const auth = this.auth?.header(img) ?? null;
+    const registry = this.auth?.registry(img) ?? '';
+    try {
+      const res = await this.req('POST', `/images/create?fromImage=${encodeURIComponent(repo)}${at === -1 ? `&tag=${encodeURIComponent(tag)}` : ''}`, undefined, 600000, auth ? { 'X-Registry-Auth': auth } : {});
+      // The daemon streams progress and reports failures inside the stream.
+      const text = await res.text();
+      for (const line of text.split('\n')) {
+        if (!line.trim()) continue;
+        try { const m = JSON.parse(line); if (m.error) throw new DockerError(m.error, 400); } catch (e) { if (e instanceof DockerError) throw e; }
+      }
+      if (auth) this.auth?.noteResult?.(registry, `pulled ${img}`);
+    } catch (e) {
+      if (e instanceof DockerError && this.auth) {
+        const hint = loginHint(e.message, registry, !!auth);
+        if (auth && hint) this.auth.noteResult?.(registry, `failed: the registry refused the login when pulling ${img}`);
+        e.message += hint;
+      }
+      throw e;
     }
   }
   async removeImage(ref: string, force = false) {

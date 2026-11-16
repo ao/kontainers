@@ -4,6 +4,7 @@
 
 import { existsSync } from 'node:fs';
 import { hostname } from 'node:os';
+import { join } from 'node:path';
 import { bindProblem, loadConfig } from './config';
 import { openDb, snapshot } from './db';
 import { Auth } from './auth';
@@ -13,6 +14,7 @@ import { ProxyManager, RuleStore } from './proxy';
 import { createHandler, dockerApiHost } from './server';
 import { UpdateChecker } from './updates';
 import { Notifier } from './notify';
+import { Registries, registryOf } from './registries';
 import { AutoUpdates } from './autoupdate';
 import { EventWatcher, checkCertificates } from './events';
 
@@ -36,6 +38,8 @@ if (problem) { console.error(`kontainers: ${problem}`); process.exit(1); }
 const db = openDb(cfg.dataDir);
 const auth = new Auth(db);
 const docker = new Docker(cfg.dockerHost, { allowBindMounts: cfg.allowBindMounts });
+const registries = new Registries(db, join(cfg.dataDir, 'registry.key'));
+docker.auth = { header: ref => registries.header(ref), registry: registryOf, noteResult: (r, res) => registries.noteResult(r, res) };
 const rules = new RuleStore(db);
 const proxy = new ProxyManager(cfg, rules, docker);
 // In a container the hostname is the container ID, unless --hostname changed it.
@@ -50,7 +54,7 @@ const stopping = new AbortController();
 const autoUpdates = new AutoUpdates(db, docker, updates, notifier, { settleMs: cfg.autoUpdateSettle * 1000, healthTimeoutMs: cfg.autoUpdateHealthTimeout * 1000, signal: stopping.signal }, systemAudit);
 updates.onChecked = () => autoUpdates.afterCheck();
 const events = new EventWatcher(docker, notifier, Date.now, ms => Bun.sleep(ms), name => autoUpdates.busy.has(name));
-const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events, stopping: stopping.signal });
+const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries });
 updates.start();
 events.start();
 // Certificate trouble, hourly (first check after 5 minutes), when the proxy runs.

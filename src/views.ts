@@ -3,6 +3,7 @@
 import type { Rule } from './proxy';
 import { containerStatus, type UpdateState } from './updates';
 import { EVENTS, EVENT_KINDS, maskUrl, type Target } from './notify';
+import type { RegistryLogin } from './registries';
 
 export function esc(v: unknown): string {
   return String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -407,7 +408,7 @@ export function imagesPage(ctx: PageCtx, list: any[], pulls: { ref: string; stat
   const pending = pulls.map(p => html`<li>${p.ref}: ${p.state === 'pulling' ? 'pulling…' : html`<span class="error">failed: ${p.error}</span>`}</li>`);
   return layout('Images', ctx, html`
 <form method="post" action="/images/pull" class="row">${csrfField(ctx)}<input name="ref" required placeholder="alpine:3.20" aria-label="Image to pull"><button>Pull</button></form>
-<p class="muted">Public images only: registry logins are not supported.</p>
+<p class="muted">For a private image, add a registry login on the <a href="/settings">Settings</a> page first.</p>
 ${pending.length ? html`<ul class="pulls">${pending}</ul>` : ''}
 <table><thead><tr><th>Tags</th><th>ID</th><th>Size</th><th>Created (UTC)</th></tr></thead><tbody>${rows}</tbody></table>
 ${cleanup}`);
@@ -495,7 +496,7 @@ export function editRulePage(ctx: PageCtx, r: Rule): string {
 </form>`, 'Proxy');
 }
 
-export function settingsPage(ctx: PageCtx, users: { id: number; username: string }[], selfId: number, targets: Target[] | null = null, watch: { connected: boolean; error: string | null } | null = null): string {
+export function settingsPage(ctx: PageCtx, users: { id: number; username: string }[], selfId: number, targets: Target[] | null = null, watch: { connected: boolean; error: string | null } | null = null, logins: RegistryLogin[] | null = null): string {
   const rows = users.map(u => html`<tr><td>${u.username}</td>
 <td>${u.id === selfId ? html`<em>you</em>` : post(ctx, `/settings/users/${u.id}/remove`, 'Remove', { confirm: `Remove user ${u.username}?`, cls: 'danger' })}</td></tr>`);
   return layout('Settings', ctx, html`
@@ -514,8 +515,24 @@ export function settingsPage(ctx: PageCtx, users: { id: number; username: string
   <button>Add user</button>
 </form>
 ${targets ? notifySection(ctx, targets, watch) : ''}
+${logins ? registrySection(ctx, logins) : ''}
 <h2>Backup</h2>
-<p><a href="/api/backup">Download a database snapshot</a>. Certificates are in the data volume; see the README for a full backup.</p>`);
+<p><a href="/api/backup">Download a database snapshot</a>. Certificates are in the data volume; see the README for a full backup.${logins?.length ? ' The snapshot holds registry passwords encrypted; the key, registry.key, stays in the data volume, so after restoring on another host enter them again.' : ''}</p>`);
+}
+
+function registrySection(ctx: PageCtx, logins: RegistryLogin[]): Html {
+  const rows = logins.map(l => html`<tr><td><span class="ref">${l.registry}</span></td><td>${l.username}</td>
+<td>${l.last_used_at ? html`${l.last_result} <small class="muted">${ago(l.last_used_at)}</small>` : html`<span class="muted">not used yet</span>`}</td>
+<td class="actions">${post(ctx, `/settings/registries/${l.id}/remove`, 'Remove', { confirm: `Remove the login for ${l.registry}?`, cls: 'danger' })}</td></tr>`);
+  return html`<h2>Registry logins</h2>
+<p>For private images: kontainers gives the login to Docker for each pull and update check of an image on that registry. Logins made with <code>docker login</code> on the host are not visible to kontainers. Passwords are stored encrypted and never shown again; a token with read access is enough.</p>
+${rows.length ? html`<table><thead><tr><th>Registry</th><th>Username</th><th>Last used</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : html`<p class="muted">No registry logins.</p>`}
+<form method="post" action="/settings/registries" class="stack">${csrfField(ctx)}
+  <label>Registry <input name="registry" required placeholder="ghcr.io, docker.io or registry.example.com:5000" autocomplete="off"></label>
+  <label>Username <input name="username" required autocomplete="off"></label>
+  <label>Password or token <input name="password" type="password" required autocomplete="new-password"></label>
+  <button>Save login</button>
+</form>`;
 }
 
 function notifySection(ctx: PageCtx, targets: Target[], watch: { connected: boolean; error: string | null } | null): Html {
@@ -573,6 +590,7 @@ const ACTIONS: Record<string, string> = {
   'network-create': 'created the network', 'network-remove': 'removed the network', 'volume-create': 'created the volume', 'volume-remove': 'removed the volume',
   'proxy-create': 'added the proxy rule', 'proxy-edit': 'edited proxy rule', 'proxy-toggle': 'turned on or off proxy rule', 'proxy-remove': 'removed proxy rule',
   'notify-add': 'added a notification target', 'notify-test': 'tested notification target', 'notify-remove': 'removed notification target',
+  'registry-add': 'saved the registry login for', 'registry-remove': 'removed the registry login for',
   'project-start': 'started every container of', 'project-stop': 'stopped every container of', 'project-restart': 'restarted every container of',
   'cleanup-images': 'cleaned up images', 'cleanup-networks': 'cleaned up networks', 'cleanup-volumes': 'cleaned up anonymous volumes',
 };

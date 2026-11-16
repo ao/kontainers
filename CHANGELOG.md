@@ -162,6 +162,11 @@
   by "kontainers"; the event stream reconnects within 5 s; the live filter on the Containers page
   goes into the address, the attention link clears the search, and paused containers count as
   running; table text on a phone breaks inside long names and addresses only, not inside words.
+- Registry logins for private images, on the Settings page: Docker Hub, GHCR or any registry.
+  They are used for pulls (Images, New container, Edit settings, Update image, automatic updates)
+  and update checks, and checked when saved. Passwords are stored encrypted with a key kept in
+  the data volume (`registry.key`) and left out of the backup. A pull refused for want of a
+  login says which registry to add. `compose.yaml`: `AUTH=1` on the socket proxy, for the check.
 
 ## 0.3.0
 

@@ -23,6 +23,7 @@ import * as views from './views';
 import * as cleanup from './cleanup';
 import { NameLocks } from './locks';
 import { diskFull, DISK_FULL, storageTrouble, writeFailed } from './storage';
+import type { Registries } from './registries';
 
 export interface Deps {
   cfg: Config;
@@ -40,6 +41,7 @@ export interface Deps {
   events?: EventWatcher;
   // Aborted at shutdown: replacements being watched are undone instead of left half done.
   stopping?: AbortSignal;
+  registries?: Registries;
 }
 
 export type Handler = (req: Request, socketIp: string) => Promise<Response>;
@@ -520,7 +522,7 @@ export function createHandler(d: Deps): Handler {
         const rule = rules.get(Number(r[1]));
         return rule ? page(views.editRulePage(ctx(s), rule)) : text('rule not found\n', 404);
       }
-      if (p === '/settings') return page(views.settingsPage(ctx(s), auth.listUsers(), s.user.id, d.notifier ? d.notifier.list() : null, d.events ? { connected: d.events.connected, error: d.events.lastError } : null));
+      if (p === '/settings') return page(views.settingsPage(ctx(s), auth.listUsers(), s.user.id, d.notifier ? d.notifier.list() : null, d.events ? { connected: d.events.connected, error: d.events.lastError } : null, d.registries ? d.registries.list() : null));
       if (p === '/api/backup') { safeAudit(s, 'backup', null, ip); return backup(); }
       return text('not found\n', 404);
     }
@@ -657,6 +659,30 @@ export function createHandler(d: Deps): Handler {
         if (!d.notifier) throw new v.ValidationError('notifications are not available');
         const t = d.notifier.add({ kind: f.kind, url: f.url, token: f.token, events: EVENT_KINDS.filter(k => f[`ev_${k}`]) });
         return `Added the ${t.kind} target. Send a test to check that it works.`;
+      });
+    }
+    if (p === '/settings/registries') {
+      return act(s, ip, '/settings', 'registry-add', String(f.registry || '').slice(0, 200), async () => {
+        if (!d.registries) throw new v.ValidationError('registry logins are not available');
+        const l = d.registries.add({ registry: f.registry, username: f.username, password: f.password });
+        // Checked once, so a typo shows now rather than at the next pull.
+        try {
+          await docker.checkLogin(l.registry, l.username, f.password);
+          d.registries.noteResult(l.registry, 'accepted when it was saved');
+          return `Saved the login for ${l.registry}; the registry accepted it.`;
+        } catch (e) {
+          const m = errorMessage(e);
+          if (errorStatus(e) === 403 && !/denied|unauthorized/i.test(m)) return `Saved the login for ${l.registry}. It could not be checked: the Docker API refused the check (with docker-socket-proxy, set AUTH=1 on it). The next pull uses it.`;
+          d.registries.noteResult(l.registry, `failed: refused when it was saved: ${m}`);
+          return `Saved the login for ${l.registry}, but the registry refused it: ${m}. Correct it by saving the login again.`;
+        }
+      });
+    }
+    if ((r = /^\/settings\/registries\/(\d+)\/remove$/.exec(p))) {
+      const id = Number(r[1]);
+      return act(s, ip, '/settings', 'registry-remove', String(id), async () => {
+        if (!d.registries) throw new v.ValidationError('registry logins are not available');
+        return `Removed the login for ${d.registries.remove(id)}.`;
       });
     }
     if ((r = /^\/settings\/notify\/(\d+)\/(test|remove)$/.exec(p))) {

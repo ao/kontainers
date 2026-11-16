@@ -62,6 +62,16 @@ export const MIGRATIONS: string[] = [
    );
    ALTER TABLE audit_log ADD COLUMN result TEXT;
    CREATE INDEX audit_log_at ON audit_log (at);`,
+  // 3: v0.4.0: registry logins (secret: AES-256-GCM, key in registry.key beside the database)
+  `CREATE TABLE registry_logins (
+     id INTEGER PRIMARY KEY,
+     registry TEXT NOT NULL UNIQUE,
+     username TEXT NOT NULL,
+     secret BLOB NOT NULL,
+     created_at INTEGER NOT NULL,
+     last_used_at INTEGER,
+     last_result TEXT
+   );`,
 ];
 
 export function openDb(dataDir: string): Database {

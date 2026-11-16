@@ -38,6 +38,7 @@ services:
       ALLOW_STOP: 1
       ALLOW_RESTARTS: 1
       DISTRIBUTION: 1   # registry digests for update checks; reads only
+      AUTH: 1           # checks a registry login when one is saved on the Settings page
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks: [docker-api]

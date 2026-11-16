@@ -96,8 +96,10 @@ What works, and is covered by the test suites below:
   an automatic update and its result, a container that stopped on its own (a crash, an error
   exit, out of memory; not a stop someone asked for, and not exit code 0), a container that turned
   unhealthy and recovered, and an HTTPS rule with no certificate after 15 minutes or one that
-  expires in under 14 days. Settings has a test button and shows the last result per target.
-- images: list, pull (public images; registry logins are not supported), remove, per tag
+  is close to expiry. Settings has a test button and shows the last result per target.
+- registry logins for private images (Docker Hub, GHCR, your own registry), used for pulls and
+  update checks; passwords stored encrypted
+- images: list, pull, remove, per tag
 - networks and volumes: list, create, remove
 - clean up: untagged images, unused tagged images, unused networks and unused anonymous
   volumes, listed with sizes first; anything a container uses, running or stopped, stays, and
@@ -108,7 +110,7 @@ What works, and is covered by the test suites below:
 - an Activity page: every action and failed attempt, by whom and from where, kept for a year
 
 Not included: exec/terminal, compose stacks, multiple hosts, roles (every account is an
-administrator), private registry logins.
+administrator).
 
 ## Security
 
@@ -187,7 +189,7 @@ Docker Desktop the socket is owned by root; use the compose file there.
 
 kontainers checks every 6 hours (`KONTAINERS_UPDATE_CHECK_HOURS`), and when you press Check for
 updates, which image each container's tag points at on its registry. It asks the Docker daemon,
-which uses its own registry logins and fetches only the manifest. Containers on an older image are
+which fetches only the manifest. Containers on an older image are
 marked on the list and on their page. A digest the registry never served counts as a local build,
 not as an older image.
 
@@ -282,11 +284,24 @@ briefly unavailable; Caddy did not renew certificates in a process that started 
 `/healthz` returns 200 while the process runs. `/readyz` returns 200 when the database and the
 Docker API are reachable, 503 otherwise. Neither needs a login.
 
+## Private registries
+
+For private images, add a login on the Settings page: the registry (`ghcr.io`, `docker.io`,
+`registry.example.com:5000`), a username and a password or token; a token that can only read is
+enough. kontainers hands it to the Docker daemon with each pull and update check of an image on
+that registry (the `X-Registry-Auth` header). Logins made with `docker login` on the host are kept
+by the Docker CLI, not the daemon, so kontainers cannot see them. A login is checked when it is
+saved; with `compose.yaml` that needs `AUTH=1` on the socket proxy, which it sets.
+
+Passwords are stored encrypted (AES-256-GCM) with a key in the data volume, `registry.key`, which
+the database backup does not include. A backup on its own holds only the ciphertext; after
+restoring one on another host, enter the passwords again.
+
 ## Backup and restore
 
 The data volume holds `kontainers.db` (accounts, sessions, proxy rules, notification targets,
-automatic-update settings) and `caddy/` (ACME account and certificates). Notification URLs and
-tokens are stored as given, so treat a backup as a secret. A consistent copy of the database, while kontainers runs:
+automatic-update settings, registry logins), `registry.key` and `caddy/` (ACME account and
+certificates). Notification URLs and tokens are stored as given, so treat a backup as a secret. A consistent copy of the database, while kontainers runs:
 
     docker exec kontainers bun src/main.ts backup /data/backup.db
     docker cp kontainers:/data/backup.db .

@@ -120,7 +120,8 @@ export function lookupReason(e: unknown): string {
   const msg = String((e as Error)?.message || e);
   // docker-socket-proxy answers 403 for API sections it was not told to allow.
   if (status === 403 && !/denied|unauthorized/i.test(msg)) return 'the Docker API refused the registry lookup; with docker-socket-proxy, set DISTRIBUTION=1 on it';
-  if (/denied|unauthorized|not found|manifest unknown|name unknown|repository does not exist/i.test(msg)) return 'the registry has no such image, or it needs a login this host does not have';
+  if (/refused the login saved/.test(msg)) return 'the registry refused the login saved for it on the Settings page';
+  if (/denied|unauthorized|not found|manifest unknown|name unknown|repository does not exist/i.test(msg)) return 'the registry has no such image, or it needs a login: for a private image, add one on the Settings page';
   if (/deadline exceeded|timeout|timed out|no such host|connection refused|i\/o timeout|unreachable/i.test(msg)) return `the registry did not answer (${msg.slice(0, 120)})`;
   return msg.slice(0, 200);
 }
