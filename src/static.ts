@@ -122,10 +122,19 @@ dl.facts dd { margin: 0; }
 pre#logs { background: #0f1418; color: #d7dee2; padding: .9rem 1rem; max-height: 32rem; overflow: auto; font: .82rem/1.5 var(--mono); white-space: pre-wrap; border-radius: 6px; }
 
 @media (max-width: 720px) {
-  header { gap: .5rem; } nav a { padding: .55rem .45rem; }
-  th:nth-child(4), td:nth-child(4) { display: none; }
+  header { gap: 0 .5rem; padding: 0 .75rem; }
+  .brand { flex-basis: 100%; padding: .65rem 0 .15rem; }
+  nav { gap: 0; }
+  nav a { padding: .55rem .5rem; }
+  nav .spacer { display: none; }
+  nav .who { margin-left: auto; }
+  #containers th:nth-child(4), #containers td:nth-child(4) { display: none; }
   .actions { white-space: normal; }
+  form.filters input[type=search] { min-width: 0; width: 100%; }
+  form.filters label:first-child { flex-basis: 100%; }
 }
+dl.facts dd small { display: block; }
+table + form.stack { margin-top: 1rem; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 `;
 
@@ -174,7 +183,7 @@ document.addEventListener('submit', function (e) {
     var q = filter ? filter.value.trim().toLowerCase() : '';
     var kept = q ? all.filter(function (l) { return l.toLowerCase().indexOf(q) !== -1; }) : all;
     pre.textContent = kept.length ? kept.join('\\n') : (q ? '(no line contains that)' : '(no output)');
-    if (count) count.textContent = q ? kept.length + ' of ' + all.length + ' lines' : all.length + ' lines';
+    if (count) count.textContent = q ? kept.length + ' of ' + all.length + ' lines' : all.length + (all.length === 1 ? ' line' : ' lines');
     if (atEnd) pre.scrollTop = pre.scrollHeight;
   }
   function load() {

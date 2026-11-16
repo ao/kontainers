@@ -23,6 +23,10 @@
   is refused before the old container is stopped. Host paths it already has may stay; new ones
   follow `KONTAINERS_ALLOW_BIND_MOUNTS`.
 - New container: an option to update it automatically.
+- Phones: the header puts the name on its own line and the navigation below; only the
+  Containers table drops its ports column on a narrow screen (before, every table lost its fourth
+  column). A browser test runs axe-core (WCAG 2 A and AA) on every page at desktop and phone
+  size and checks that no page is wider than a 390-pixel screen.
 - An Activity page: who did what and when, from which address, newest first, 100 a page, with a
   search. Failed attempts are recorded too, with the error, and so is what kontainers does on its
   own (automatic updates). Entries older than a year are removed.
