@@ -244,3 +244,14 @@ describe('RuleStore edge cases', () => {
     expect(long.length).toBeGreaterThan(253);
   });
 });
+
+test('one hostname is all HTTPS or all plain HTTP', () => {
+  const s = store();
+  s.create({ hostname: 'plain.example.net', path: '/', targetContainer: 'web', targetPort: 80, tls: false });
+  expect(() => s.create({ hostname: 'plain.example.net', path: '/secure', targetContainer: 'api', targetPort: 80, tls: true })).toThrow('every rule for one hostname must use the same, so turn HTTPS off here too');
+  const b = s.create({ hostname: 'plain.example.net', path: '/api', targetContainer: 'api', targetPort: 80, tls: false });
+  expect(() => s.update(b.id, { hostname: 'plain.example.net', path: '/api', targetContainer: 'api', targetPort: 80, tls: true })).toThrow('already has a rule over plain HTTP');
+  // The only rule for a hostname can switch.
+  const only = s.create({ hostname: 'solo.example.net', targetContainer: 'web', targetPort: 80, tls: false });
+  expect(s.update(only.id, { hostname: 'solo.example.net', targetContainer: 'web', targetPort: 80, tls: true }).tls).toBe(true);
+});

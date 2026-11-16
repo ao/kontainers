@@ -69,8 +69,16 @@ export class RuleStore {
     return r;
   }
 
+  // One hostname is served over HTTPS or over plain HTTP, not both: with a mix, each rule answered
+  // only on its own scheme, and the HTTPS one's redirect from HTTP was taken by the plain one.
+  private sameScheme(hostname: string, tls: boolean, exceptId: number | null): void {
+    const other = this.db.query('SELECT tls, path FROM proxy_rules WHERE hostname = ? AND tls != ? AND id IS NOT ?').get(hostname, tls ? 1 : 0, exceptId) as { tls: number; path: string } | null;
+    if (other) throw new v.ValidationError(`${hostname} already has a rule over ${other.tls ? 'HTTPS' : 'plain HTTP'} (path ${other.path}); every rule for one hostname must use the same, so turn HTTPS ${other.tls ? 'on' : 'off'} here too`);
+  }
+
   create(input: RuleInput, now = Date.now()): Rule {
     const r = this.validate(input);
+    this.sameScheme(r.hostname, r.tls, null);
     try {
       return toRule(this.db.query(
         'INSERT INTO proxy_rules (hostname, path, target_container, target_port, tls, enabled, created_at) VALUES (?, ?, ?, ?, ?, 1, ?) RETURNING *'
@@ -83,6 +91,7 @@ export class RuleStore {
 
   update(id: number, input: RuleInput): Rule {
     const r = this.validate(input);
+    this.sameScheme(r.hostname, r.tls, id);
     let row: unknown;
     try {
       row = this.db.query(
