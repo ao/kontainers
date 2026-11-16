@@ -11,7 +11,7 @@ import { Auth, RateLimiter, safeEqual, type Session } from './auth';
 import { Docker, DockerError, summarizeStats, type CreateSpec } from './docker';
 import type { ProxyManager, RuleStore } from './proxy';
 import { snapshot } from './db';
-import { updateContainerDetailed } from './update';
+import { recreateSpec, replaceContainer, updatable, updateContainerDetailed } from './update';
 import type { Notifier } from './notify';
 import { EVENT_KINDS } from './notify';
 import type { AutoUpdates } from './autoupdate';
@@ -287,7 +287,7 @@ export function createHandler(d: Deps): Handler {
   }
 
   // Runs a state change, stores the outcome as a flash message, redirects back.
-  async function act(s: Session, ip: string, back: string, action: string, target: string | null, fn: () => Promise<string | void> | string | void): Promise<Response> {
+  async function act(s: Session, ip: string, back: string | (() => string), action: string, target: string | null, fn: () => Promise<string | void> | string | void): Promise<Response> {
     try {
       const msg = await fn();
       audit(s, action, target, ip);
@@ -296,7 +296,7 @@ export function createHandler(d: Deps): Handler {
       if (errorStatus(e) >= 500 && !(e instanceof DockerError)) console.error(`kontainers: ${action} failed:`, e);
       flashes.set(s.idHash, { error: errorMessage(e) });
     }
-    return redirect(back);
+    return redirect(typeof back === 'function' ? back() : back);
   }
 
   async function login(req: Request, ip: string, cookieId: string | undefined): Promise<Response> {
@@ -360,7 +360,16 @@ export function createHandler(d: Deps): Handler {
     if (m === 'GET') {
       if (p === '/') return redirect('/containers');
       if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainers(), await self(), updateView(), views.parseFilter(url.searchParams)));
-      if (p === '/containers/new') return page(views.newContainerPage(ctx(s), cfg.allowBindMounts));
+      if (p === '/containers/new') return page(views.newContainerPage(ctx(s), cfg.allowBindMounts, !!d.autoUpdates));
+      if ((r = /^\/containers\/([^/]+)\/edit$/.exec(p))) {
+        const c = await docker.inspect(r[1]);
+        const me = await self();
+        if (me && views.isSelf(c, me)) throw new v.ValidationError('this is kontainers itself, or part of its compose project; change it on the host');
+        const refusal = updatable(c);
+        if (refusal) throw new v.ValidationError(refusal.replace('can be updated here', 'can be edited here').replace('update it with', 'change it in the compose file and run'));
+        const spec = recreateSpec(c, await docker.inspectImage(c.Image).catch(() => null));
+        return page(views.editContainerPage(ctx(s), c, spec, cfg.allowBindMounts));
+      }
       if ((r = /^\/containers\/([^/]+)$/.exec(p))) {
         const c = await docker.inspect(r[1]);
         const name = String(c.Name || '').replace(/^\//, '');
@@ -421,7 +430,33 @@ export function createHandler(d: Deps): Handler {
             throw new v.ValidationError(`could not start the container, so it was not kept: ${errorMessage(e)}`);
           }
         }
-        return `Created ${spec.name || Id.slice(0, 12)}.`;
+        if (f.autoupdate && d.autoUpdates) await d.autoUpdates.set(Id, true);
+        return `Created ${spec.name || Id.slice(0, 12)}${f.autoupdate && d.autoUpdates ? '; it is updated automatically when a check finds a newer image' : ''}.`;
+      });
+    }
+    if ((r = /^\/containers\/([^/]+)\/edit$/.exec(p))) {
+      const id = r[1];
+      // Back to the form on a failure; to the new container's page once it is saved.
+      let back = `/containers/${encodeURIComponent(id)}/edit`;
+      return act(s, ip, () => back, 'container-edit', id, async () => {
+        await refuseSelf(id);
+        const c = await docker.inspect(id);
+        const refusal = updatable(c);
+        if (refusal) throw new v.ValidationError(refusal.replace('can be updated here', 'can be edited here').replace('update it with', 'change it in the compose file and run'));
+        const name = String(c.Name || '').replace(/^\//, '');
+        if (d.autoUpdates?.busy.has(name)) throw new v.ValidationError(`an update of ${name} is running; try again in a minute`);
+        const spec = containerSpec(f);
+        if (f.pull) await docker.pull(spec.image);
+        // Host paths the container already has may stay; new ones follow KONTAINERS_ALLOW_BIND_MOUNTS.
+        const binds = (c.HostConfig?.Mounts || []).filter((m: any) => m.Type === 'bind').map((m: any) => m.Source);
+        d.autoUpdates?.busy.add(name);
+        try {
+          const newId = await replaceContainer(docker, c, spec, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, allowedBindSources: binds }, 'saving the settings');
+          d.autoUpdates?.recreated(name, newId);
+          back = `/containers/${encodeURIComponent(newId)}`;
+        } finally { d.autoUpdates?.busy.delete(name); }
+        if (d.updates && v.image(spec.image)) await d.updates.check(spec.image).catch(() => {});
+        return `Saved the settings of ${name}; it was recreated.`;
       });
     }
     if ((r = /^\/containers\/([^/]+)\/update$/.exec(p))) {

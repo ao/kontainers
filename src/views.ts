@@ -274,7 +274,7 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
 </dl>
 <div class="actions">${isSelf(c, me) ? selfNote(c, me) : containerActions(ctx, c.Id, name, c.State?.Status || '', true)}
 ${isSelf(c, me) ? '' : c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project']
-    ? post(ctx, `/containers/${c.Id}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' ? 'primary' : '' })
+    ? html`${post(ctx, `/containers/${c.Id}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' ? 'primary' : '' })} <a class="button" href="/containers/${c.Id}/edit">Edit settings</a>`
     : c.Config?.Labels?.['com.docker.compose.project'] ? html`<small class="muted">Part of compose project ${c.Config.Labels['com.docker.compose.project']}: update it with <code>docker compose pull &amp;&amp; docker compose up -d</code>.</small>` : ''}</div>
 ${auto && !isSelf(c, me) && c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project'] ? autoForm(ctx, c.Id, auto) : ''}
 ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
@@ -290,7 +290,7 @@ ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
 <pre id="logs" data-logs="/api/containers/${c.Id}/logs?tail=300">loading…</pre>`, 'Containers');
 }
 
-export function newContainerPage(ctx: PageCtx, allowBind: boolean): string {
+export function newContainerPage(ctx: PageCtx, allowBind: boolean, autoUpdates = false): string {
   return layout('New container', ctx, html`
 <form method="post" action="/containers" class="stack">${csrfField(ctx)}
   <label>Image <input name="image" required placeholder="nginx:1.27-alpine"></label>
@@ -304,10 +304,44 @@ export function newContainerPage(ctx: PageCtx, allowBind: boolean): string {
     <textarea name="volumes" rows="2"></textarea></label>
   <label>Restart policy <select name="restart"><option>no</option><option>unless-stopped</option><option>always</option><option>on-failure</option></select></label>
   <label class="check"><input type="checkbox" name="start" checked> Start after creating</label>
-  <button>Create</button>
+${autoUpdates ? html`  <label class="check"><input type="checkbox" name="autoupdate"> Update automatically when a check finds a newer image</label>\n` : ''}  <button>Create</button>
 </form>`, 'Containers');
 }
 
+
+// Shell-style quoting that splitArgs in server.ts reads back to the same list.
+export function quoteArgs(args: string[]): string {
+  return args.map(a => (/^[A-Za-z0-9_\-./:=@%+,]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`)).join(' ');
+}
+
+export interface EditSpec {
+  image: string; cmd?: string[]; env?: string[]; restart?: string;
+  ports?: { container: number; host: number; hostIp?: string; protocol?: string }[];
+  volumes?: { source: string; target: string; readOnly?: boolean }[];
+}
+
+// Change the settings of a container kontainers created; saving recreates it.
+export function editContainerPage(ctx: PageCtx, c: any, spec: EditSpec, allowBind: boolean): string {
+  const name = String(c.Name || '').replace(/^\//, '');
+  const ports = (spec.ports || []).map(p => `${p.hostIp ? (p.hostIp.includes(':') ? `[${p.hostIp}]` : p.hostIp) + ':' : ''}${p.host}:${p.container}${p.protocol === 'udp' ? '/udp' : ''}`).join('\n');
+  const vols = (spec.volumes || []).map(m => `${m.source}:${m.target}${m.readOnly ? ':ro' : ''}`).join('\n');
+  const opt = (v: string) => html`<option${v === (spec.restart || 'no') ? raw(' selected') : raw('')}>${v}</option>`;
+  return layout(`Edit ${name}`, ctx, html`
+<p><a href="/containers/${c.Id}">Back to ${name}</a></p>
+<p>Saving recreates ${name} with these settings: it is stopped, a new container is made and started, and if the new one cannot start or stops within a few seconds, the old one is put back. The name and networks stay. Environment values are shown here so they can be edited.</p>
+<form method="post" action="/containers/${c.Id}/edit" class="stack">${csrfField(ctx)}
+  <label>Image <input name="image" required value="${spec.image}"></label>
+  <label class="check"><input type="checkbox" name="pull"> Pull the image first</label>
+  <label>Command <input name="cmd" value="${spec.cmd ? quoteArgs(spec.cmd) : ''}" placeholder="empty: the image's own command"></label>
+  <label>Ports, one per line: <code>[host-ip:]host:container[/udp]</code>. Without a host IP the port is published on 127.0.0.1.
+    <textarea name="ports" rows="3">${ports}</textarea></label>
+  <label>Environment, one <code>KEY=value</code> per line <textarea name="env" rows="4">${(spec.env || []).join('\n')}</textarea></label>
+  <label>Volumes, one per line: <code>volume-name:/path[:ro]</code>${allowBind ? raw(' or <code>/host/path:/path[:ro]</code>') : raw('. Host paths are disabled, except ones the container already has.')}
+    <textarea name="volumes" rows="2">${vols}</textarea></label>
+  <label>Restart policy <select name="restart">${opt('no')}${opt('unless-stopped')}${opt('always')}${opt('on-failure')}</select></label>
+  <button class="primary">Save and recreate</button>
+</form>`, 'Containers');
+}
 export function imagesPage(ctx: PageCtx, list: any[], pulls: { ref: string; state: string; error?: string }[] = []): string {
   // One Remove per tag: removing a tag leaves the image while other tags point at it.
   const remove = (ref: string, label: string, what: string) => post(ctx, '/images/remove', label, { confirm: `Remove ${what}?`, cls: 'danger', fields: { ref } });

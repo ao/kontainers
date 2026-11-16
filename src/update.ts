@@ -110,21 +110,36 @@ export async function updateContainerDetailed(docker: Docker, id: string, opts: 
   }
 
   const oldImage = await docker.inspectImage(c.Image).catch(() => null);
-  const spec = recreateSpec(c, oldImage);
+  try {
+    const newId = await replaceContainer(docker, c, recreateSpec(c, oldImage), { ...opts, keepBindMounts: true }, 'update');
+    return { changed: true, message: `Updated ${name} to the newest ${ref}.`, oldImage: c.Image, newImage: fresh.Id, id: newId };
+  } catch (e) {
+    throw new UpdateFailed((e as Error).message, fresh.Id);
+  }
+}
+
+// Replaces container `c` (inspected) with a new one made from `spec`, under the same name and on
+// the same networks: stop, set the old one aside under another name, create, connect, start and
+// watch. On any failure the new container is removed and the old one is put back and started
+// again. Returns the new container's ID. `what` names the operation in error messages.
+export async function replaceContainer(docker: Docker, c: any, spec: CreateSpec, opts: UpdateOptions & { keepBindMounts?: boolean; allowedBindSources?: string[] }, what: string): Promise<string> {
+  const name = String(c.Name).replace(/^\//, '');
   const networks = Object.keys(c.NetworkSettings?.Networks || {}).filter(n => n !== 'bridge');
   const wasRunning = !!c.State?.Running;
   const aside = `${name}-old-${String(c.Id).slice(0, 8)}`;
+  // Bad input fails here, before the old container is touched.
+  docker.createBody({ ...spec, name }, { keepBindMounts: opts.keepBindMounts, allowedBindSources: opts.allowedBindSources });
 
   if (wasRunning) await docker.stop(c.Id);
   try {
     await docker.rename(c.Id, aside);
   } catch (e) {
     if (wasRunning) await docker.start(c.Id).catch(() => {});
-    throw new v.ValidationError(`update failed before anything changed (could not rename the old container to ${aside}): ${(e as Error).message}`);
+    throw new v.ValidationError(`${what} failed before anything changed (could not rename the old container to ${aside}): ${(e as Error).message}`);
   }
   let newId: string | null = null;
   try {
-    newId = (await docker.create(spec, { keepBindMounts: true })).Id;
+    newId = (await docker.create({ ...spec, name }, { keepBindMounts: opts.keepBindMounts, allowedBindSources: opts.allowedBindSources })).Id;
     for (const n of networks) await docker.connect(n, newId);
     if (wasRunning) {
       await docker.start(newId);
@@ -136,8 +151,8 @@ export async function updateContainerDetailed(docker: Docker, id: string, opts: 
     await docker.rename(c.Id, name).catch(() => {});
     if (wasRunning) await docker.start(c.Id).catch(() => {});
     const msg = e instanceof DockerError || e instanceof v.ValidationError ? e.message : 'internal error';
-    throw new UpdateFailed(`update failed, so the old container was put back: ${msg}`, fresh.Id);
+    throw new v.ValidationError(`${what} failed, so the old container was put back: ${msg}`);
   }
   await docker.remove(c.Id, false).catch(err => console.error(`kontainers: could not remove ${aside}: ${(err as Error).message}`));
-  return { changed: true, message: `Updated ${name} to the newest ${ref}.`, oldImage: c.Image, newImage: fresh.Id, id: newId! };
+  return newId;
 }

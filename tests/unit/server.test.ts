@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { loadConfig } from '../../src/config';
 import { clientIp, containerSpec, dockerApiHost, splitArgs, hostAllowed, normalizeIp, parseCookies, parsePort, parseVolume, sameOrigin } from '../../src/server';
 import { demux } from '../../src/docker';
-import { esc, html, raw, formatPorts, isSelf, containersPage, containerPage, imagesPage, proxyPage, loginPage, setupPage } from '../../src/views';
+import { esc, html, raw, formatPorts, isSelf, containersPage, containerPage, editContainerPage, imagesPage, proxyPage, loginPage, quoteArgs, setupPage } from '../../src/views';
 import type { Rule } from '../../src/proxy';
 
 const local = loadConfig({});
@@ -210,5 +210,31 @@ describe('container page', () => {
     expect(page).toContain('KEY=…');
     expect(page).toContain('MODE=…');
     expect(page).not.toContain('secret-line');
+  });
+});
+
+describe('quoteArgs', () => {
+  test('splitArgs reads back what quoteArgs writes', () => {
+    const cases = [['sleep', '600'], ['sh', '-c', "echo it's up; sleep 600"], ['a b', '', '"q"', '$HOME', 'back\\slash', 'new\nline', 'tab\there'], ['--flag=x/y:z@1%2+3,4']];
+    for (const args of cases) expect(splitArgs(quoteArgs(args))).toEqual(args);
+    expect(quoteArgs(['sleep', '600'])).toBe('sleep 600');
+    expect(quoteArgs(["it's"])).toBe(`'it'\\''s'`);
+  });
+});
+
+describe('editContainerPage', () => {
+  test('fills the form from the settings and escapes them', () => {
+    const page = editContainerPage({ user: 'admin', csrf: 't' }, { Id: 'e'.repeat(64), Name: '/web' }, {
+      image: 'nginx:1.27', cmd: ['sh', '-c', 'echo <b>'], env: ['A=1', 'X=</textarea><script>'],
+      ports: [{ host: 8080, container: 80, hostIp: '127.0.0.1' }, { host: 53, container: 53, hostIp: '::1', protocol: 'udp' }, { host: 9000, container: 9000, hostIp: '0.0.0.0' }],
+      volumes: [{ source: 'data', target: '/data' }, { source: 'conf', target: '/etc/app', readOnly: true }], restart: 'always',
+    }, false);
+    expect(page).toContain('value="sh -c &#39;echo &lt;b&gt;&#39;"');
+    expect(page).toContain('127.0.0.1:8080:80\n[::1]:53:53/udp\n0.0.0.0:9000:9000</textarea>');
+    expect(page).toContain('A=1\nX=&lt;/textarea&gt;&lt;script&gt;</textarea>');
+    expect(page).toContain('data:/data\nconf:/etc/app:ro</textarea>');
+    expect(page).toContain('<option selected>always</option>');
+    expect(page).toContain('except ones the container already has');
+    expect(page).not.toContain('<script>');
   });
 });

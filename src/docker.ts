@@ -128,7 +128,18 @@ export class Docker {
     return demux(buf);
   }
 
-  async create(spec: CreateSpec, opts: { keepBindMounts?: boolean } = {}): Promise<{ Id: string }> {
+  // keepBindMounts: an update recreating a container that already has them. allowedBindSources: an
+  // edit, which may keep the host paths the container had but not add new ones.
+  async create(spec: CreateSpec, opts: { keepBindMounts?: boolean; allowedBindSources?: string[] } = {}): Promise<{ Id: string }> {
+    const body = this.createBody(spec, opts);
+    const q = spec.name ? `?name=${encodeURIComponent(v.name(spec.name))}` : '';
+    return this.json('POST', `/containers/create${q}`, body);
+  }
+
+  // The request body for create, after every check; throws a ValidationError for bad input. Called
+  // on its own before a container is replaced, so bad input never stops the old one.
+  createBody(spec: CreateSpec, opts: { keepBindMounts?: boolean; allowedBindSources?: string[] } = {}): Record<string, unknown> {
+    if (spec.name) v.name(spec.name);
     const image = v.image(spec.image);
     const body: Record<string, unknown> = { Image: image, Env: (spec.env || []).map(v.envVar), Labels: { 'kontainers.managed': 'true' } };
     if (spec.cmd && spec.cmd.length) {
@@ -147,7 +158,7 @@ export class Docker {
       const target = typeof m.target === 'string' && /^\/[^\0:]*$/.test(m.target) ? m.target : null;
       if (!target) throw new v.ValidationError('invalid mount target');
       if (typeof m.source === 'string' && m.source.startsWith('/')) {
-        if (!this.opts.allowBindMounts && !opts.keepBindMounts) throw new v.ValidationError('host bind mounts are disabled (KONTAINERS_ALLOW_BIND_MOUNTS)');
+        if (!this.opts.allowBindMounts && !opts.keepBindMounts && !(opts.allowedBindSources || []).includes(m.source)) throw new v.ValidationError('host bind mounts are disabled (KONTAINERS_ALLOW_BIND_MOUNTS)');
         if (/[\0:]/.test(m.source)) throw new v.ValidationError('invalid mount source');
         return { Type: 'bind', Source: m.source, Target: target, ReadOnly: !!m.readOnly };
       }
@@ -157,8 +168,7 @@ export class Docker {
     body.ExposedPorts = exposed;
     // Only these HostConfig fields are ever sent. No Privileged, CapAdd, host network/PID/IPC, devices.
     body.HostConfig = { PortBindings: bindings, Mounts: mounts, RestartPolicy: { Name: restart } };
-    const q = spec.name ? `?name=${encodeURIComponent(v.name(spec.name))}` : '';
-    return this.json('POST', `/containers/create${q}`, body);
+    return body;
   }
 
   // Images

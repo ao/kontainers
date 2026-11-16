@@ -17,6 +17,12 @@
   certificate missing or about to expire. Each fact is sent once (crash loops: once per 10
   minutes). Settings lists targets with their last result and has a test button.
 - The container page says when a container was stopped for running out of memory.
+- Edit settings, for containers created in kontainers: image, command, ports, environment, volumes
+  and restart policy, shown filled in. Saving recreates the container under the same name and on
+  the same networks, watched for 5 s, with the old one put back if the new one fails. Bad input
+  is refused before the old container is stopped. Host paths it already has may stay; new ones
+  follow `KONTAINERS_ALLOW_BIND_MOUNTS`.
+- New container: an option to update it automatically.
 
 ## 0.3.0
 

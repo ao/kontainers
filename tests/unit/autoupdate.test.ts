@@ -62,6 +62,7 @@ class FakeDocker {
     return { Id: id };
   }
   async connect() {}
+  createBody() { return {}; }
   async remove(id: string) { this.containers.delete(this.find(id).Id); }
 }
 

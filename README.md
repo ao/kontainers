@@ -63,6 +63,9 @@ What works, and is covered by the test suites below:
   recreate the container with the same name, command, environment, ports, volumes, restart policy
   and networks. The old container is stopped and set aside first and is put back if the new one
   cannot be created or started. Compose containers are left to `docker compose pull && docker compose up -d`.
+- edit settings, for containers created in kontainers: change the image, command, ports,
+  environment, volumes or restart policy; saving recreates the container the same way, with the
+  old one put back if the new one does not stay up. Bad input is refused before anything stops.
 - update checks: every 6 hours, and on "Check for updates", kontainers asks the registry which
   image each container's tag points at now (through the Docker daemon, which downloads only the
   manifest) and marks containers that run an older one, including containers left on an old image
