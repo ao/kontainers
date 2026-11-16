@@ -81,14 +81,33 @@ export const MIGRATIONS: string[] = [
    );`,
 ];
 
-export function openDb(dataDir: string): Database {
+// degraded: opened without the shared-memory file, because the data volume had no room for it.
+export function openDb(dataDir: string): Database & { degraded?: string } {
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const file = join(dataDir, 'kontainers.db');
-  const db = new Database(file, { create: true, strict: true });
-  try { chmodSync(file, 0o600); } catch { /* not fatal on odd filesystems */ }
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
-  migrate(db);
-  return db;
+  const open = (exclusive: boolean) => {
+    const db = new Database(file, { create: true, strict: true });
+    try {
+      try { chmodSync(file, 0o600); } catch { /* not fatal on odd filesystems */ }
+      // In exclusive locking mode, set before WAL is first used, SQLite keeps the WAL index in
+      // memory and never needs the -shm file, which a full volume cannot grow.
+      if (exclusive) db.exec('PRAGMA locking_mode = EXCLUSIVE;');
+      db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+      migrate(db);
+      // SQLite can fall back to a read-only shared-memory file it could not open for writing; then
+      // every write fails later. Taking the write lock once finds that out now.
+      db.exec('BEGIN IMMEDIATE; ROLLBACK;');
+      return db;
+    } catch (e) { db.close(); throw e; }
+  };
+  try {
+    return open(false);
+  } catch (e) {
+    if (!/SHMSIZE|SHMOPEN|SHMMAP|READONLY|readonly database|disk I\/O error|database or disk is full|SQLITE_FULL|ENOSPC/i.test(`${(e as { code?: string }).code ?? ''} ${(e as Error).message}`)) throw e;
+    const db: Database & { degraded?: string } = open(true);
+    db.degraded = `${(e as Error).message}`;
+    return db;
+  }
 }
 
 export function schemaVersion(db: Database): number {

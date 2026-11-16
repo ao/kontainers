@@ -25,8 +25,21 @@ async function check(page: Page, path: string, label: string) {
   expect(found, `${label} ${path}`).toEqual([]);
 }
 
-test('a container to look at', async ({ page }) => {
+// Things that made pages wider than a phone on a busy host: an anonymous volume (a 64-character
+// name), a long network and image name, a notification target with a long URL.
+const API = 'http://docker-proxy:2375/v1.41';
+const NET = 'a-network-with-a-rather-long-name-for-a-phone';
+const TAG = 'registry.example.com/some-team/a-very-long-image-name';
+
+test('a container to look at', async ({ page, request }) => {
+  expect((await request.post(`${API}/networks/create`, { data: { Name: NET } })).status()).toBe(201);
+  expect((await request.post(`${API}/images/busybox:1.36/tag?repo=${encodeURIComponent(TAG)}&tag=2026.11.16-build.1234`)).status()).toBe(201);
+  expect((await request.post(`${API}/containers/create?name=a11y-anon`, { data: { Image: 'busybox:1.36', Cmd: ['true'], Volumes: { '/data': {} }, HostConfig: { NetworkMode: NET } } })).status()).toBe(201);
   await login(page);
+  await page.goto('/settings');
+  await page.getByLabel('URL').fill('https://hooks.example.net/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX');
+  await page.getByRole('button', { name: 'Add target' }).click();
+  await expect(page.getByRole('status')).toContainText('Added the webhook target');
   await page.goto('/containers/new');
   await page.getByLabel('Image', { exact: true }).fill('busybox:1.36');
   await page.getByLabel('Pull the image first').uncheck();
@@ -68,8 +81,22 @@ test('on a phone: no violations, and nothing wider than the screen', async ({ br
   await ctx.close();
 });
 
-test('clean up after', async ({ page }) => {
+test('the image column keeps a short reference on one line on a desktop', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
   await login(page);
+  const lines = await page.locator('#containers span.ref', { hasText: 'busybox:1.36' }).first().evaluate(e => e.getClientRects().length);
+  expect(lines).toBe(1);
+});
+
+test('clean up after', async ({ page, request }) => {
+  await request.delete(`${API}/containers/a11y-anon?force=1&v=1`);
+  await request.delete(`${API}/networks/${NET}`);
+  await request.delete(`${API}/images/${encodeURIComponent(TAG)}:2026.11.16-build.1234`);
+  await login(page);
+  await page.goto('/settings');
+  page.once('dialog', d => d.accept());
+  await page.getByRole('button', { name: 'Remove' }).last().click();
+  await expect(page.getByRole('status')).toContainText('Removed the notification target');
   for (const n of ['a11y-web', LONG]) {
     await page.goto(`/containers/${n}`);
     await page.getByRole('button', { name: 'Stop' }).click();

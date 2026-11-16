@@ -29,6 +29,17 @@ export interface CreateSpec {
   restart?: 'no' | 'always' | 'unless-stopped' | 'on-failure';
 }
 
+// keepBindMounts: an update recreating a container that already has them. allowedBinds: an edit,
+// which may keep the host paths the container had. replaces: the container this one replaces (a
+// label, so the replacement is recognised after a restart). network: the network it is made on,
+// when not the default bridge.
+export interface CreateOptions {
+  keepBindMounts?: boolean;
+  allowedBinds?: { source: string; readOnly: boolean }[];
+  replaces?: string;
+  network?: { mode: string; endpoint?: { Aliases?: string[]; IPAMConfig?: Record<string, string> } };
+}
+
 export interface DockerOptions {
   allowBindMounts: boolean;
 }
@@ -176,7 +187,7 @@ export class Docker {
 
   // keepBindMounts: an update recreating a container that already has them. allowedBindSources: an
   // edit, which may keep the host paths the container had but not add new ones.
-  async create(spec: CreateSpec, opts: { keepBindMounts?: boolean; allowedBinds?: { source: string; readOnly: boolean }[] } = {}): Promise<{ Id: string }> {
+  async create(spec: CreateSpec, opts: CreateOptions = {}): Promise<{ Id: string }> {
     const body = this.createBody(spec, opts);
     const q = spec.name ? `?name=${encodeURIComponent(v.name(spec.name))}` : '';
     return this.json('POST', `/containers/create${q}`, body);
@@ -184,10 +195,12 @@ export class Docker {
 
   // The request body for create, after every check; throws a ValidationError for bad input. Called
   // on its own before a container is replaced, so bad input never stops the old one.
-  createBody(spec: CreateSpec, opts: { keepBindMounts?: boolean; allowedBinds?: { source: string; readOnly: boolean }[] } = {}): Record<string, unknown> {
+  createBody(spec: CreateSpec, opts: CreateOptions = {}): Record<string, unknown> {
     if (spec.name) v.name(spec.name);
     const image = v.image(spec.image);
-    const body: Record<string, unknown> = { Image: image, Env: (spec.env || []).map(v.envVar), Labels: { 'kontainers.managed': 'true' } };
+    const labels: Record<string, string> = { 'kontainers.managed': 'true' };
+    if (opts.replaces) labels['kontainers.replaces'] = v.ref(opts.replaces);
+    const body: Record<string, unknown> = { Image: image, Env: (spec.env || []).map(v.envVar), Labels: labels };
     if (spec.cmd && spec.cmd.length) {
       if (!Array.isArray(spec.cmd) || spec.cmd.some(c => typeof c !== 'string' || c.length > 4096)) throw new v.ValidationError('invalid command');
       body.Cmd = spec.cmd;
@@ -219,7 +232,17 @@ export class Docker {
     const restart = ['no', 'always', 'unless-stopped', 'on-failure'].includes(spec.restart || '') ? spec.restart : 'no';
     body.ExposedPorts = exposed;
     // Only these HostConfig fields are ever sent. No Privileged, CapAdd, host network/PID/IPC, devices.
-    body.HostConfig = { PortBindings: bindings, Mounts: mounts, RestartPolicy: { Name: restart } };
+    const host: Record<string, unknown> = { PortBindings: bindings, Mounts: mounts, RestartPolicy: { Name: restart } };
+    // A recreated container keeps the network it was made on: a user network or none, never the
+    // host's or another container's.
+    if (opts.network) {
+      if (opts.network.mode !== 'none') v.ref(opts.network.mode, 'network');
+      host.NetworkMode = opts.network.mode;
+      if (opts.network.mode !== 'none' && opts.network.endpoint && (opts.network.endpoint.Aliases?.length || opts.network.endpoint.IPAMConfig)) {
+        body.NetworkingConfig = { EndpointsConfig: { [opts.network.mode]: opts.network.endpoint } };
+      }
+    }
+    body.HostConfig = host;
     return body;
   }
 

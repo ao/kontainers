@@ -43,8 +43,8 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; background: v
 th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid var(--line); vertical-align: middle; overflow-wrap: break-word; }
 /* Names, image references, hostnames and addresses can be one very long word: those may break
    anywhere, so the table fits the screen. Ordinary words (headers, states, buttons) stay whole. */
-td a, td code, td .ref, td small { overflow-wrap: anywhere; }
-td .ref.addr { overflow-wrap: break-word; }
+/* Long names, references and addresses carry <wbr> break points (views.ts brk); IDs stay whole. */
+code.id { white-space: nowrap; }
 tr:last-child td { border-bottom: 0; }
 th { font-weight: 600; font-size: .85rem; color: var(--muted); background: var(--ground); }
 tbody tr:hover td { background: color-mix(in srgb, var(--panel) 92%, var(--marine)); }
@@ -137,6 +137,8 @@ pre#logs { background: #0f1418; color: #d7dee2; padding: .9rem 1rem; max-height:
   nav .spacer { display: none; }
   nav .who { margin-left: auto; }
   #containers th:nth-child(4), #containers td:nth-child(4) { display: none; }
+  th.wide, td.wide { display: none; }
+  td.actions form, td.actions a.button, td > form.inline { display: inline-block; margin-bottom: .25rem; }
   .actions { white-space: normal; }
   form.filters input[type=search] { min-width: 0; width: 100%; }
   form.filters label:first-child { flex-basis: 100%; }

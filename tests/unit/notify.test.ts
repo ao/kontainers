@@ -197,7 +197,7 @@ describe('EventWatcher', () => {
   test('a flapping healthcheck: one "unhealthy" and one "healthy again" an hour, not one per cycle', async () => {
     const titles: string[] = [];
     let now = 10_000_000;
-    const n = new Notifier(db(), async (_u, init) => { titles.push(JSON.parse(String(init.body)).title); return new Response(null, { status: 204 }); }, () => now);
+    const n = new Notifier(db(), async (_u, init) => { titles.push(JSON.parse(String(init.body)).title); return new Response(null, { status: 204 }); }, () => now, [], (async () => []) as any);
     n.add({ kind: 'webhook', url: 'https://hooks.example.net/a', events: ['health'] });
     const w = new EventWatcher({} as any, n, () => now);
     for (let i = 0; i < 6; i++) {
@@ -230,6 +230,17 @@ describe('EventWatcher', () => {
     await ev('destroy', 'old', 'web-old-12345678'); // destroyed under its set-aside name
     await ev('health_status: unhealthy', 'new', 'web');
     expect(sent).toEqual(['web is unhealthy', 'web is unhealthy']);
+  });
+
+  test('while a container is set aside as <name>-old-<id> (by any kontainers), its replacement is not reported', async () => {
+    const { sent, ev } = watcher();
+    await ev('rename', 'web-old-12345678', { oldName: '/web' });
+    await ev('die', 'web', { exitCode: '1' });
+    await ev('health_status: unhealthy', 'web');
+    expect(sent).toEqual([]);
+    await ev('destroy', 'web-old-12345678');
+    await ev('die', 'web', { exitCode: '1' });
+    expect(sent.map(s => s.title)).toEqual(['web stopped']);
   });
 
   test('events of other types and unknown actions are ignored', async () => {
@@ -348,5 +359,29 @@ describe('the Docker API through a socket proxy that refuses a section', () => {
       expect(lookupReason(e)).toContain('DISTRIBUTION=1');
       expect((await d.checkLogin('ghcr.io', 'me', 'x').catch(x => x)).status).toBe(403);
     } finally { srv.stop(true); }
+  });
+});
+
+describe('the Docker API by any other name', () => {
+  const names: Record<string, string[]> = { 'docker-proxy': ['172.18.0.2'], 'kontainers-docker-proxy-1': ['172.18.0.2'], 'meta.example.net': ['169.254.169.254'], 'hooks.example.net': ['203.0.113.5'] };
+  const fakeLookup = (async (h: string) => (names[h] || []).map(address => ({ address, family: 4 }))) as any;
+  test('a trailing dot and an IPv4-mapped metadata address are refused when added', () => {
+    const ok = { kind: 'webhook', events: ['update'] };
+    expect(() => validateTarget({ ...ok, url: 'http://docker-proxy.:2375/' }, ['docker-proxy'])).toThrow("Docker API");
+    expect(() => validateTarget({ ...ok, url: 'http://[::ffff:169.254.169.254]/' })).toThrow('link-local');
+    expect(() => validateTarget({ ...ok, url: 'http://[fe90::1]/' })).toThrow('link-local');
+  });
+  test('the socket proxy by container name or address, and a name for the metadata address, are not sent to', async () => {
+    let calls = 0;
+    const n = new Notifier(db(), async () => { calls++; return new Response(null, { status: 204 }); }, Date.now, ['docker-proxy'], fakeLookup);
+    for (const url of ['http://kontainers-docker-proxy-1:2375/containers/x/kill', 'http://172.18.0.2:2375/containers/x/kill', 'http://meta.example.net/latest']) {
+      const t = n.add({ kind: 'webhook', url, events: ['exit'] });
+      expect(await n.test(t.id)).toMatch(/^failed: not sent: /);
+      n.remove(t.id);
+    }
+    expect(calls).toBe(0);
+    const ok = n.add({ kind: 'webhook', url: 'https://hooks.example.net/a', events: ['exit'] });
+    expect(await n.test(ok.id)).toBe('sent (HTTP 204)');
+    expect(calls).toBe(1);
   });
 });

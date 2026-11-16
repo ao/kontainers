@@ -11,6 +11,7 @@ import { Auth } from './auth';
 import { Docker } from './docker';
 import { recoverInterrupted } from './update';
 import { ReplaceJournal } from './journal';
+import { diskFull, writeFailed } from './storage';
 import { ProxyManager, RuleStore } from './proxy';
 import { createHandler, dockerApiHost } from './server';
 import { UpdateChecker } from './updates';
@@ -36,7 +37,17 @@ if (cmd === 'backup') {
 const problem = bindProblem(cfg);
 if (problem) { console.error(`kontainers: ${problem}`); process.exit(1); }
 
-const db = openDb(cfg.dataDir);
+let db: ReturnType<typeof openDb>;
+try {
+  db = openDb(cfg.dataDir);
+} catch (e) {
+  console.error(`kontainers: cannot open its database in ${cfg.dataDir}: ${(e as Error).message}${diskFull(e) || /disk I\/O|SHM/i.test((e as Error).message) ? '. The data volume is probably full or read-only: free space on it and start kontainers again' : ''}`);
+  process.exit(1);
+}
+if (db.degraded) {
+  console.error(`kontainers: the data volume has no room for the database's shared-memory file (${db.degraded}); opened it in exclusive mode, so \`kontainers backup\` cannot run until kontainers restarts with space free`);
+  writeFailed(new Error('database or disk is full'), 'opened the database in exclusive mode');
+}
 const auth = new Auth(db);
 const docker = new Docker(cfg.dockerHost, { allowBindMounts: cfg.allowBindMounts });
 const registries = new Registries(db, join(cfg.dataDir, 'registry.key'));
@@ -70,8 +81,9 @@ const auditTimer = setInterval(pruneAudit, 86400_000);
 const server = Bun.serve({
   hostname: cfg.host,
   port: cfg.port,
-  // Forms are limited to 1 MB in the handler, which says so; above 4 MB the server refuses alone.
-  maxRequestBodySize: 4 * 1024 * 1024,
+  // Forms are limited to 1 MB in the handler, which says so on a page; only above 64 MB does the
+  // server itself refuse, with an empty 413.
+  maxRequestBodySize: 64 * 1024 * 1024,
   // Bun's default of 10 s drops the connection while a Docker call is still waiting (an unreachable
   // daemon, a 20 s image pull); the longest, 255 s, lets those finish with a page instead.
   idleTimeout: 255,
@@ -86,13 +98,26 @@ const setupToken = auth.issueSetupToken();
 if (setupToken) console.log(`kontainers: no accounts yet. Open /setup and enter this one-time setup token: ${setupToken}`);
 if (!(await docker.ping())) console.error(`kontainers: Docker is not reachable at ${cfg.dockerHost}; pages will show errors until it is`);
 else {
+  await tidyUp(1);
+  try { autoUpdates.adopt(await docker.listContainers()); } catch (e) { console.error(`kontainers: ${(e as Error).message}`); }
+}
+
+// Finishes replacements a restart interrupted (update.ts recoverInterrupted). What Docker is still
+// busy with (a daemon that restarted with kontainers, removing a container) is tried again every
+// 30 s, five times. Each outcome is logged, recorded on the Activity page and sent as an
+// automatic-update notification.
+async function tidyUp(attempt: number): Promise<void> {
   const kept = (name: string, id: string) => { if (autoUpdates.get(name)) autoUpdates.recreated(name, id); };
+  let again = false;
   try {
-    for (const r of await recoverInterrupted(docker, kept, journal)) {
+    for (const r of await recoverInterrupted(docker, kept, journal, n => autoUpdates.busy.has(n))) {
       console.log(`kontainers: ${r.text}`);
-      try { systemAudit('recover', r.name, r.trouble ? `failed: ${r.text}`.slice(0, 500) : undefined); } catch { /* the log line is enough */ }
+      if (r.retry && attempt < 5) { again = true; continue; }
+      try { systemAudit('recover', r.name, `${r.trouble ? 'failed' : 'note'}: ${r.text}`.slice(0, 500)); } catch { /* the log line is enough */ }
+      void notifier.send({ kind: 'autoupdate', title: `Interrupted update of ${r.name}`, message: `${r.text}.`, container: r.name }, `recover:${r.name}:${Bun.hash(r.text).toString(36)}`, 3600_000).catch(() => {});
     }
-  } catch (e) { console.error(`kontainers: could not look for interrupted updates: ${(e as Error).message}`); }
+  } catch (e) { console.error(`kontainers: could not look for interrupted updates: ${(e as Error).message}`); again = attempt < 5; }
+  if (again && !stopping.signal.aborted) setTimeout(() => void tidyUp(attempt + 1), 30_000).unref?.();
 }
 
 try {

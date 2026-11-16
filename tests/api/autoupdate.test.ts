@@ -77,7 +77,7 @@ describe.skipIf(!DOCKER)('automatic updates and notifications', () => {
     for (const k of ['update', 'autoupdate', 'exit', 'health', 'cert']) form[`ev_${k}`] = 'on';
     const added = await c.submit('/settings/notify', form);
     expect(added.error).toBe('');
-    expect(added.body).toContain(`http://127.0.0.1:${hook.port}/…`);
+    expect(added.body.replace(/<wbr>/g, '')).toContain(`http://127.0.0.1:${hook.port}/…`);
     expect(added.body).not.toContain('secret-part');
     const id = /action="\/settings\/notify\/(\d+)\/test"/.exec(added.body)![1];
     const t = await c.submit(`/settings/notify/${id}/test`, {});
@@ -324,6 +324,25 @@ describe.skipIf(!DOCKER)('automatic updates and notifications', () => {
     }
   }, 60000);
 
+  test('a container taken off the default bridge stays off it after Edit settings', async () => {
+    const NAME = `au-nobridge-${run}`, NET = `au-int-${run}`;
+    expect((await post('/networks/create', { Name: NET, Internal: true })).status).toBe(201);
+    expect((await c.submit('/containers', { image: 'busybox:1.36', name: NAME, pull: '', cmd: quick(), start: 'on' })).error).toBe('');
+    try {
+      expect((await post(`/networks/${NET}/connect`, { Container: NAME })).status).toBe(200);
+      expect((await post(`/networks/bridge/disconnect`, { Container: NAME })).status).toBe(200);
+      await c.page(`/containers/${NAME}/edit`);
+      const r = await c.submit(`/containers/${NAME}/edit`, { image: 'busybox:1.36', pull: '', cmd: quick('sleep 606'), ports: '', env: '', volumes: '', restart: 'no' });
+      expect(r.error).toBe('');
+      const now = await inspect(NAME);
+      expect(Object.keys(now.NetworkSettings.Networks)).toEqual([NET]);
+      expect(now.Config.Labels['kontainers.replaces']).toMatch(/^[0-9a-f]{64}$/);
+    } finally {
+      await api(`/containers/${NAME}?force=1`, { method: 'DELETE' });
+      await api(`/networks/${NET}`, { method: 'DELETE' });
+    }
+  }, 60000);
+
   test('Activity: a search for "kontainers" finds what it did on its own', async () => {
     expect(await c.page('/activity?q=kontainers')).toContain('updated automatically');
   });
@@ -332,7 +351,11 @@ describe.skipIf(!DOCKER)('automatic updates and notifications', () => {
     await c.page('/containers/new');
     const res = await c.post('/containers', { image: 'busybox:1.36', name: 'big', env: 'A=' + 'x'.repeat(1_200_000) });
     expect(res.status).toBe(413);
-    expect(await res.text()).toContain('kontainers accepts at most 1 MB');
+    expect(await res.text()).toMatch(/the form was 117\d KB; kontainers accepts at most 1024 KB/);
+    // A much bigger one too, not the server's own empty refusal.
+    const big = await c.post('/containers', { image: 'busybox:1.36', name: 'big', env: 'A=' + 'x'.repeat(6_000_000) });
+    expect(big.status).toBe(413);
+    expect(await big.text()).toContain('kontainers accepts at most 1024 KB');
   });
 
   test('the container list shows the unhealthy and exited containers as needing attention', async () => {

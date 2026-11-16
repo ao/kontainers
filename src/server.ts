@@ -134,15 +134,27 @@ const redirect = (to: string, headers: Record<string, string> = {}) => new Respo
 // The most a form may be. The server itself takes up to 4 MB (main.ts), so a bigger form gets a
 // page that says what happened instead of a bare 413.
 export const MAX_FORM = 1024 * 1024;
-const tooLarge = (n: number) => Object.assign(new v.ValidationError(`the form was ${(n / 1048576).toFixed(1)} MB; kontainers accepts at most 1 MB (a very large environment paste?). Go back and shorten it`), { status: 413 });
+const tooLarge = (n: number) => Object.assign(new v.ValidationError(`the form was ${Math.ceil(n / 1024)} KB; kontainers accepts at most ${MAX_FORM / 1024} KB (a very large environment paste?). Go back and shorten it`), { status: 413 });
 
 async function readForm(req: Request): Promise<Record<string, string>> {
   const ct = req.headers.get('content-type') || '';
   if (!ct.startsWith('application/x-www-form-urlencoded')) throw new v.ValidationError('expected a form submission');
   const len = Number(req.headers.get('content-length') || 0);
   if (len > MAX_FORM) throw tooLarge(len);
-  const body = await req.text();
-  if (body.length > MAX_FORM) throw tooLarge(body.length);
+  // Read as a stream and given up past the limit, so a body without a length is never held whole.
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  if (req.body) {
+    const reader = req.body.getReader();
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.length;
+      if (size > MAX_FORM) { await reader.cancel().catch(() => {}); throw tooLarge(size); }
+      parts.push(value);
+    }
+  }
+  const body = new TextDecoder().decode(parts.length === 1 ? parts[0] : Buffer.concat(parts));
   const out: Record<string, string> = {};
   for (const [k, val] of new URLSearchParams(body)) if (!(k in out)) out[k] = val;
   return out;
@@ -272,7 +284,8 @@ export function createHandler(d: Deps): Handler {
   function ctx(s: Session): views.PageCtx {
     const f = flashes.get(s.idHash);
     flashes.delete(s.idHash);
-    return { user: s.user.username, csrf: s.csrf, flash: f?.flash, error: f?.error, form: f?.form, proxyEnabled: cfg.proxy.enabled, alert: storageTrouble() };
+    return { user: s.user.username, csrf: s.csrf, flash: f?.flash, error: f?.error, form: f?.form, proxyEnabled: cfg.proxy.enabled, alert: storageTrouble(),
+      busy: (name: string) => locks.has(name) ? 'being updated or edited' : setAsideOf(name) ? `old container of ${setAsideOf(name)}, kept until its update or edit finishes` : null };
   }
 
   // kontainers' own container and, under compose, the rest of its project (the socket proxy):

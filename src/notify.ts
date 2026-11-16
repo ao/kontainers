@@ -9,6 +9,8 @@
 import type { Database } from 'bun:sqlite';
 import * as v from './validate';
 import { writeFailed } from './storage';
+import { isIP } from 'node:net';
+import { lookup } from 'node:dns/promises';
 
 export const EVENTS = {
   update: 'a container has a newer image',
@@ -40,15 +42,45 @@ export function validateTarget(input: { kind?: unknown; url?: unknown; token?: u
   if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new v.ValidationError('the URL must start with https:// or http://');
   if (url.length > MAX_URL) throw new v.ValidationError(`the URL is longer than ${MAX_URL} characters`);
   if (/[\s\u0000-\u001f]/.test(url)) throw new v.ValidationError('the URL contains spaces or control characters');
-  const host = u.hostname.replace(/^\[|\]$/g, '').toLowerCase();
-  if (blocked.map(b => b.toLowerCase()).includes(host)) throw new v.ValidationError(`${host} serves kontainers' Docker API; notifications cannot be sent there`);
-  // Link-local addresses are cloud metadata services, never a notification receiver.
-  if (/^169\.254\./.test(host) || /^fe80:/.test(host) || host === 'fd00:ec2::254') throw new v.ValidationError('link-local addresses (169.254.0.0/16, fe80::/10) cannot be notification targets');
+  const host = hostOf(u);
+  if (blocked.map(hostOf).includes(host)) throw new v.ValidationError(`${host} serves kontainers' Docker API; notifications cannot be sent there`);
+  if (isIP(host) && linkLocal(host)) throw new v.ValidationError('link-local addresses (169.254.0.0/16, fe80::/10) cannot be notification targets');
   const token = String(input.token ?? '').trim();
   if (token.length > 500 || !/^[\x21-\x7e]*$/.test(token)) throw new v.ValidationError('the token must be one word of at most 500 printable ASCII characters');
   const events = [...new Set((input.events || []).map(String))].filter((e): e is EventKind => (EVENT_KINDS as string[]).includes(e));
   if (!events.length) throw new v.ValidationError('choose at least one event');
   return { kind, url, token: token || null, events };
+}
+
+// A host name as compared: lower case, without brackets or a trailing dot.
+export function hostOf(u: URL | string): string {
+  const h = typeof u === 'string' ? u : u.hostname;
+  return h.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
+}
+
+// An IPv4 address written inside IPv6 (::ffff:a.b.c.d, or as the URL parser writes it,
+// ::ffff:a9fe:a9fe) as plain IPv4.
+export function plainIp(a: string): string {
+  const m = /^::ffff:(?:(\d+\.\d+\.\d+\.\d+)|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/i.exec(a);
+  if (!m) return a.toLowerCase();
+  if (m[1]) return m[1];
+  const hi = parseInt(m[2], 16), lo = parseInt(m[3], 16);
+  return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+}
+
+// Link-local addresses are cloud metadata services (169.254.169.254, fd00:ec2::254), never a
+// notification receiver.
+export function linkLocal(a: string): boolean {
+  const p = plainIp(a);
+  return /^169\.254\./.test(p) || /^fe[89ab][0-9a-f]:/i.test(p) || p === 'fd00:ec2::254';
+}
+
+// The addresses a host name stands for, for comparing what a URL reaches.
+async function addressesOf(host: string, lookupImpl: typeof lookup): Promise<string[]> {
+  if (isIP(host)) return [plainIp(host)];
+  // A name that does not resolve within 3 s is let through to fetch, which then fails on it.
+  const found = await Promise.race([lookupImpl(host, { all: true }).catch(() => []), Bun.sleep(3000).then(() => [])]) as { address: string }[];
+  return found.map(a => plainIp(a.address));
 }
 
 // What the Settings page shows of a URL: scheme, host and port. Paths and queries often carry a
@@ -65,7 +97,21 @@ export class Notifier {
     private fetchImpl: (url: string, init: RequestInit) => Promise<Response> = (u, i) => fetch(u, i),
     private now: () => number = Date.now,
     private blocked: string[] = [],
+    private lookupImpl: typeof lookup = lookup,
   ) {}
+
+  // Checked again before every delivery, by address: a name with a trailing dot, the socket proxy's
+  // container name or its IP address reach the Docker API as well as its compose name does.
+  private async refusal(url: string): Promise<string | null> {
+    const host = hostOf(new URL(url));
+    const addrs = await addressesOf(host, this.lookupImpl);
+    if (addrs.some(linkLocal)) return 'the address is link-local (a cloud metadata service)';
+    for (const b of this.blocked) {
+      const theirs = await addressesOf(hostOf(b), this.lookupImpl);
+      if (hostOf(b) === host || addrs.some(a => theirs.includes(a))) return `it reaches ${b}, which serves kontainers' Docker API`;
+    }
+    return null;
+  }
 
   list(): Target[] { return this.db.query('SELECT * FROM notify_targets ORDER BY id').all().map(row); }
   get(id: number): Target | null { const r = this.db.query('SELECT * FROM notify_targets WHERE id = ?').get(id); return r ? row(r) : null; }
@@ -151,6 +197,8 @@ export class Notifier {
         const text = `${note.title}: ${note.message}`;
         body = JSON.stringify({ event: note.kind, title: note.title, message: note.message, container: note.container ?? null, at: new Date(at).toISOString(), text, content: text });
       }
+      const no = await this.refusal(t.url);
+      if (no) throw new Error(`not sent: ${no}`);
       // Redirects are not followed: the body and the token would go to an address nobody chose.
       const res = await this.fetchImpl(t.url, { method: 'POST', headers, body, redirect: 'manual', signal: AbortSignal.timeout(10000) });
       result = res.status >= 300 && res.status < 400

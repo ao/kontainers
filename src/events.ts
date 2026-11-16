@@ -25,6 +25,9 @@ export class EventWatcher {
   // Containers whose "unhealthy" note went out: only they get a "healthy again" one, so a
   // healthcheck that flaps does not send one every cycle.
   private reported = new Set<string>();
+  // Names whose container was renamed to <name>-old-<id>: a replacement is under way, by this
+  // kontainers or another one on the same host, and judges its new container itself.
+  private replacing = new Map<string, number>();
   private since: number;
   connected = false;
   lastError: string | null = null;
@@ -78,19 +81,31 @@ export class EventWatcher {
     const action = String(ev.Action ?? ev.status ?? '');
     const at = ev.timeNano ? Math.floor(ev.timeNano / 1e6) : ev.time ? ev.time * 1000 : this.now();
 
+    if (action === 'rename') {
+      const to = /^(.+)-old-[0-9a-f]{8}$/.exec(String(attrs.name || '').replace(/^\//, ''));
+      const from = /^(.+)-old-[0-9a-f]{8}$/.exec(String(attrs.oldName || '').replace(/^\//, ''));
+      if (to) this.replacing.set(to[1], at);
+      if (from) this.replacing.delete(from[1]);
+      return;
+    }
     // A kill with a signal that does not end a process (HUP for a reload) is not a stop.
     if (action === 'kill' && !endingSignal(attrs.signal)) return;
     if (action === 'kill' || action === 'stop') { this.killedAt.set(id, at); this.trim(at); return; }
     // An oom event can come from any process in the container; it explains a die only if close to it.
     if (action === 'oom') { this.oomAt.set(id, at); return; }
     if (action === 'start') { this.oomAt.delete(id); return; }
-    if (action === 'destroy') { this.killedAt.delete(id); this.oomAt.delete(id); this.unhealthy.delete(id); this.reported.delete(id); return; }
+    if (action === 'destroy') {
+      this.killedAt.delete(id); this.oomAt.delete(id); this.unhealthy.delete(id); this.reported.delete(id);
+      const aside = /^(.+)-old-[0-9a-f]{8}$/.exec(name);
+      if (aside) this.replacing.delete(aside[1]);
+      return;
+    }
 
     if (action === 'die') {
       const oomAt = this.oomAt.get(id);
       this.oomAt.delete(id);
       const oom = oomAt !== undefined && at - oomAt <= KILL_WINDOW_MS;
-      if (this.quiet(name)) return;
+      if (this.quiet(name) || this.inReplacement(name, at)) return;
       const killed = this.killedAt.get(id);
       const code = attrs.exitCode ?? '?';
       if (!oom && killed !== undefined && at - killed <= KILL_WINDOW_MS) return;
@@ -112,7 +127,7 @@ export class EventWatcher {
 
     if (action.startsWith('health_status')) {
       // A container being replaced is judged by the update itself.
-      if (this.quiet(name)) return;
+      if (this.quiet(name) || this.inReplacement(name, at)) return;
       const status = action.split(':')[1]?.trim();
       if (status === 'unhealthy' && !this.unhealthy.has(id)) {
         this.unhealthy.add(id);
@@ -123,6 +138,16 @@ export class EventWatcher {
           `health-ok:${name}`, HEALTH_REPEAT_MS);
       }
     }
+  }
+
+  // For at most 10 minutes: a set-aside container left behind (a kontainers killed meanwhile)
+  // must not silence its name for good.
+  private inReplacement(name: string, at: number): boolean {
+    const t = this.replacing.get(name);
+    if (t === undefined) return false;
+    if (at - t < 10 * 60_000) return true;
+    this.replacing.delete(name);
+    return false;
   }
 
   // going: called at once if the note goes out (it is not a repeat, and some target takes this kind).

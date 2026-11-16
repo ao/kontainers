@@ -90,11 +90,24 @@ export class AutoUpdates {
     return this.running;
   }
 
+  // A container kontainers made to replace an opted-in one carries kontainers.replaces=<old ID>.
+  // If the new ID could not be saved (a full data volume, then a restart), this finds it again.
+  adopt(list: any[]): void {
+    for (const c of list) {
+      const name = nameOf(c);
+      const row = this.get(name);
+      const prev = c.Labels?.['kontainers.replaces'];
+      if (row && prev && this.idOf(row) !== c.Id && (prev === row.container_id || prev === this.unsaved.get(name))) this.recreated(name, c.Id);
+    }
+  }
+
   private async pass(): Promise<void> {
     for (const [name, id] of [...this.unsaved]) this.recreated(name, id);
     // "Newer image" notes go out once per image, naming every container that uses it.
     const newer = new Map<string, { ref: string; names: string[] }>();
-    for (const c of await this.docker.listContainersWithRefs()) {
+    const list = await this.docker.listContainersWithRefs();
+    try { this.adopt(list); } catch (e) { console.error(`kontainers: ${(e as Error).message}`); }
+    for (const c of list) {
       const name = nameOf(c);
       // One container's trouble (a full data volume, a daemon error) must not stop the others.
       try {
@@ -143,7 +156,8 @@ export class AutoUpdates {
         held = null;
         this.recreated(name, r.id);
         quietly('could not record the automatic update', () => this.audit('auto-update', name));
-        note = { n: { kind: 'autoupdate', title: `Updated ${name}`, message: `${name} now runs the newest ${ref}${r.note ? `; ${r.note}` : ''}.`, container: name } };
+        const what = r.running === false ? `${name} was recreated from the newest ${ref}; it was stopped before and is left stopped` : `${name} now runs the newest ${ref}`;
+        note = { n: { kind: 'autoupdate', title: `Updated ${name}`, message: `${what}${r.note ? `; ${r.note}` : ''}.`, container: name } };
       }
     } catch (e) {
       result = (e as Error).message;

@@ -322,9 +322,50 @@ describe('recoverInterrupted', () => {
     d.run('web', 'app:1');
     const { recoverInterrupted } = await import('../../src/update');
     const kept: string[] = [];
-    expect((await recoverInterrupted(d as any, (n, id) => kept.push(`${n}=${id}`))).map(r => r.text)).toEqual(['removed web-old-abcdef12, left over from an interrupted update of web; the new web was not watched to the end, so check that it works']);
+    const rows = [{ name: 'web', old_id: old, was_running: 1 }];
+    expect((await recoverInterrupted(d as any, (n, id) => kept.push(`${n}=${id}`), journalOf(rows))).map(r => r.text)).toEqual(['removed web-old-abcdef12, left over from an interrupted update of web; the new web was not watched to the end, so check that it works']);
     expect(kept.length).toBe(1);
     expect(d.containers.has(old)).toBe(false);
+  });
+  test('without a journal entry a running replacement is left alone (another kontainers may be updating it)', async () => {
+    const { d } = setup();
+    aside(d, 'web', false);
+    d.run('web', 'app:1');
+    const { recoverInterrupted } = await import('../../src/update');
+    const r = await recoverInterrupted(d as any);
+    expect(r[0].text).toContain('no record of replacing web');
+    expect(d.containers.size).toBe(2);
+  });
+  test('with the journal: a new container that stopped once nobody watched it goes, and the old one is back', async () => {
+    const { d } = setup();
+    const old = aside(d, 'web', false);
+    const now = d.run('web', 'app:1');
+    d.find(now).State = { Running: false, Status: 'exited', ExitCode: 1 };
+    const rows = [{ name: 'web', old_id: old, was_running: 1 }];
+    const { recoverInterrupted } = await import('../../src/update');
+    const r = await recoverInterrupted(d as any, () => {}, journalOf(rows));
+    expect(r[0]).toMatchObject({ trouble: true });
+    expect(r[0].text).toContain('the new container then stopped');
+    expect(d.find('web').Id).toBe(old);
+    expect(d.find('web').State.Running).toBe(true);
+  });
+  test('with the journal: what cannot be settled yet keeps its entry, to be tried again', async () => {
+    const { d } = setup();
+    const old = aside(d, 'web', false);
+    const now = d.run('web', 'app:1');
+    d.find(now).State = { Running: false, Status: 'exited', ExitCode: 1 };
+    const remove = d.remove.bind(d);
+    d.remove = async (i: string) => { if (i === now) throw new Error('removal of container is already in progress'); return remove(i); };
+    const rows = [{ name: 'web', old_id: old, was_running: 1 }];
+    const { recoverInterrupted } = await import('../../src/update');
+    const r = await recoverInterrupted(d as any, () => {}, journalOf(rows));
+    expect(r[0]).toMatchObject({ retry: true });
+    expect(rows).toHaveLength(1);
+    d.remove = remove;
+    await d.remove(now);
+    await recoverInterrupted(d as any, () => {}, journalOf(rows));
+    expect(d.find('web').Id).toBe(old);
+    expect(rows).toHaveLength(0);
   });
   const journalOf = (rows: { name: string; old_id: string; was_running: number }[]) => ({ begin() {}, end(n: string) { const i = rows.findIndex(r => r.name === n); if (i >= 0) rows.splice(i, 1); }, all: () => [...rows] });
   test('with the journal: a new one that never started goes, and the old one is back and running', async () => {
@@ -364,7 +405,7 @@ describe('recoverInterrupted', () => {
     const now = d.run('web', 'app:1');
     d.find(now).State = { Running: false, Status: 'created' };
     const { recoverInterrupted } = await import('../../src/update');
-    expect((await recoverInterrupted(d as any))[0].text).toContain('not running or not its replacement');
+    expect((await recoverInterrupted(d as any))[0].text).toContain('no record of replacing web');
     expect(d.containers.size).toBe(2);
   });
   test('names that only look like it are ignored', async () => {
@@ -453,5 +494,19 @@ describe('replacing a container, when things go wrong', () => {
     const { replaceContainer } = await import('../../src/update');
     const r = await replaceContainer(d as any, d.find(id), { name: 'web', image: 'bad:1' }, { wasStopped: () => true }, 'update');
     expect(r.note).toContain('stopped by someone');
+  });
+});
+
+describe('networks of a replacement', () => {
+  test('made on the network the old one was made on; bridge only if it was on bridge; host refused', async () => {
+    const { networkPlan } = await import('../../src/update');
+    const c = (mode: string, nets: Record<string, any>) => ({ Id: 'a'.repeat(64), Name: '/web', HostConfig: { NetworkMode: mode }, NetworkSettings: { Networks: nets } });
+    expect(networkPlan(c('bridge', { bridge: {}, app: { Aliases: ['api'] } }))).toEqual({ connect: [['app', { Aliases: ['api'] }]] });
+    expect(networkPlan(c('bridge', { internal_only: {} }))).toEqual({ network: { mode: 'internal_only', endpoint: {} }, connect: [] });
+    expect(networkPlan(c('front', { front: { IPAMConfig: { IPv4Address: '10.1.0.5' } }, back: {} }))).toEqual({ network: { mode: 'front', endpoint: { IPAMConfig: { IPv4Address: '10.1.0.5' } } }, connect: [['back', {}]] });
+    expect(networkPlan(c('none', { none: {} }))).toEqual({ network: { mode: 'none' }, connect: [] });
+    expect(networkPlan(c('bridge', {}))).toEqual({ network: { mode: 'none' }, connect: [] });
+    expect(() => networkPlan(c('host', { host: {} }))).toThrow("host's network");
+    expect(() => networkPlan(c('container:abc', {}))).toThrow("another container's network");
   });
 });

@@ -183,6 +183,29 @@
   crash right after is reported.
 - With docker-socket-proxy, a refused API section (HTTP 403) is reported as such again, with the
   setting to turn on; it was reported as a bad request.
+- Fixed: Update image, Edit settings and automatic updates put every container on Docker's
+  default bridge network, so a container kept on an internal network could reach the internet
+  afterwards. A replacement is made on the network the old one was made on (or none) and joins
+  the rest; a container on the host's network is refused before anything stops. Replacements
+  carry `kontainers.replaces=<old ID>`, so an opted-in container stays opted in after a restart
+  even when its new ID could not be saved.
+- Interrupted replacements: acted on only when kontainers' own record says it was replacing that
+  container, so a second kontainers on the same host leaves the first one's updates alone; a new
+  container that stopped once nobody watched it is removed and the old one put back; what Docker
+  is still busy with (a daemon restarted at the same time) is tried again every 30 s, five times.
+  Each outcome is on the Activity page and sent as an automatic-update notification.
+- Notifications are checked by address before every delivery, not only by the host name typed:
+  the socket proxy reached by container name, address or a name with a trailing dot, and names
+  or IPv4-mapped addresses that lead to a link-local address, are not sent to.
+- kontainers starts with a full data volume: the database is opened without its shared-memory
+  file when that cannot be made, and a database that cannot be opened gets a plain message.
+- Phones: long names, image references, hashes and addresses get break points instead of every
+  cell breaking anywhere, so words and short names stay whole and Volumes, Settings, Networks,
+  Images and Activity fit a 390-pixel screen; secondary columns (driver, scope, created) are
+  left out there. A container being replaced shows "being updated or edited" instead of its
+  buttons, and its set-aside old container says what it is.
+- An automatic update of a stopped container says it is left stopped. A form over 1 MB, at any
+  size up to 64 MB, gets a page that gives the size in KB.
 
 ## 0.3.0
 

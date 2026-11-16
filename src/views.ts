@@ -11,6 +11,17 @@ export function esc(v: unknown): string {
 
 type Html = { __html: string };
 export const raw = (s: string): Html => ({ __html: s });
+
+// Long names, image references, addresses and hashes get places where a line may break (after
+// - _ . / : @ , = and every 16 characters of an unbroken run), so a table fits a narrow screen
+// without breaking ordinary words or short names. Up to 20 characters are left whole.
+export function brk(v: unknown): Html {
+  const s = String(v ?? '');
+  if (s.length <= 20) return raw(esc(s));
+  const chunks: string[] = [];
+  for (const part of s.split(/(?<=[-_./:@,=])/)) for (let i = 0; i < part.length; i += 16) chunks.push(esc(part.slice(i, i + 16)));
+  return raw(chunks.join('<wbr>'));
+}
 export function html(strings: TemplateStringsArray, ...values: unknown[]): Html {
   let out = strings[0];
   values.forEach((val, i) => {
@@ -26,6 +37,7 @@ export interface PageCtx {
   username?: string; token?: string; // re-filled after a failed login or setup (never the password)
   form?: Record<string, string>; // a failed form, to fill in again
   alert?: string | null; // trouble with kontainers itself, shown on every page
+  busy?: (name: string) => string | null; // what is being done to a container right now, if anything
 }
 
 const csrfField = (ctx: PageCtx) => html`<input type="hidden" name="_csrf" value="${ctx.csrf}">`;
@@ -223,9 +235,9 @@ export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = 
     const name = nameOf(c);
     const project = projectOf(c);
     return html`<tr data-name="${name}" data-state="${c.State}"${/\(unhealthy\)/.test(c.Status || '') ? raw(' data-health="unhealthy"') : raw('')} data-search="${searchText(c)}"${needsAttention(c) ? raw(' data-attention="1"') : raw('')}${matchesFilter(c, f) ? raw('') : raw(' hidden')}>
-  <td><a href="/containers/${urlId(c)}">${name}</a>${project && !f.group ? html`<small>compose project ${project}</small>` : ''}</td><td><span class="ref">${refOf(c)}</span>${updateBadge(updates, refOf(c), c.ImageID, name, c.Id)}</td>
-  <td><span class="state ${c.State}">${c.State}</span><small>${c.Status}</small></td><td><span class="ref">${formatPorts(c.Ports)}</span></td>
-  <td class="actions">${isSelf(c, me) ? selfNote(c, me) : containerActions(ctx, urlId(c), name, c.State)}</td></tr>`;
+  <td><a href="/containers/${urlId(c)}">${brk(name)}</a>${project && !f.group ? html`<small>compose project ${brk(project)}</small>` : ''}</td><td><span class="ref">${brk(refOf(c))}</span>${ctx.busy?.(name) ? '' : updateBadge(updates, refOf(c), c.ImageID, name, c.Id)}</td>
+  <td><span class="state ${c.State}">${c.State}</span><small>${c.Status}</small></td><td><span class="ref">${brk(formatPorts(c.Ports))}</span></td>
+  <td class="actions">${isSelf(c, me) ? selfNote(c, me) : ctx.busy?.(name) ? html`<small class="muted">${ctx.busy(name)}</small>` : containerActions(ctx, urlId(c), name, c.State)}</td></tr>`;
   };
   const sorted = [...list].sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
   const shown = sorted.filter(c => matchesFilter(c, f)).length;
@@ -306,8 +318,8 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
   ${[...(c.Config?.Entrypoint || []), ...(c.Config?.Cmd || [])].length ? html`<dt>Command</dt><dd><code>${quoteArgs([...(c.Config?.Entrypoint || []), ...(c.Config?.Cmd || [])])}</code></dd>` : ''}
   ${inspectPorts(c) ? html`<dt>Ports</dt><dd><span class="ref">${inspectPorts(c)}</span></dd>` : ''}
 </dl>
-<div class="actions">${isSelf(c, me) ? selfNote(c, me) : containerActions(ctx, urlId(c), name, c.State?.Status || '', true)}
-${isSelf(c, me) ? '' : c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project']
+<div class="actions">${isSelf(c, me) ? selfNote(c, me) : ctx.busy?.(name) ? html`<p class="muted">${ctx.busy(name)}; reload in a moment.</p>` : containerActions(ctx, urlId(c), name, c.State?.Status || '', true)}
+${isSelf(c, me) || ctx.busy?.(name) ? '' : c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project']
     ? html`${post(ctx, `/containers/${urlId(c)}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' && !held ? 'primary' : '' })} <a class="button" href="/containers/${urlId(c)}/edit">Edit settings</a>`
     : c.Config?.Labels?.['com.docker.compose.project'] ? html`<small class="muted">Part of compose project ${c.Config.Labels['com.docker.compose.project']}: update it with <code>docker compose pull &amp;&amp; docker compose up -d</code>.</small>` : ''}</div>
 ${auto && !isSelf(c, me) && c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project'] ? autoForm(ctx, urlId(c), auto) : ''}
@@ -400,40 +412,40 @@ export function imagesPage(ctx: PageCtx, list: any[], pulls: { ref: string; stat
   const rows = list.map(i => {
     const tags: string[] = i.RepoTags?.filter((t: string) => t !== '<none>:<none>') || [];
     const tagCells = tags.length
-      ? tags.map(t => html`<div>${t} ${remove(t, 'Remove', tags.length > 1 ? `the tag ${t}` : `image ${t}`)}</div>`)
+      ? tags.map(t => html`<div>${brk(t)} ${remove(t, 'Remove', tags.length > 1 ? `the tag ${t}` : `image ${t}`)}</div>`)
       : html`<em>untagged</em> ${remove(i.Id, 'Remove', `untagged image ${shortId(i.Id)}`)}`;
-    return html`<tr><td>${tagCells}</td><td><code>${shortId(i.Id)}</code></td>
-<td>${fmtSize(i.Size)}</td><td>${fmtTime(i.Created)}</td></tr>`;
+    return html`<tr><td>${tagCells}</td><td><code class="id">${shortId(i.Id)}</code></td>
+<td>${fmtSize(i.Size)}</td><td class="wide">${fmtTime(i.Created)}</td></tr>`;
   });
   const pending = pulls.map(p => html`<li>${p.ref}: ${p.state === 'pulling' ? 'pulling…' : html`<span class="error">failed: ${p.error}</span>`}</li>`);
   return layout('Images', ctx, html`
 <form method="post" action="/images/pull" class="row">${csrfField(ctx)}<input name="ref" required placeholder="alpine:3.20" aria-label="Image to pull"><button>Pull</button></form>
 <p class="muted">For a private image, add a registry login on the <a href="/settings">Settings</a> page first.</p>
 ${pending.length ? html`<ul class="pulls">${pending}</ul>` : ''}
-<table><thead><tr><th>Tags</th><th>ID</th><th>Size</th><th>Created (UTC)</th></tr></thead><tbody>${rows}</tbody></table>
+<table><thead><tr><th>Tags</th><th>ID</th><th>Size</th><th class="wide">Created (UTC)</th></tr></thead><tbody>${rows}</tbody></table>
 ${cleanup}`);
 }
 
 // users: container names per network or volume name, from the container list.
 const usedBy = (names: string[] | undefined) => names?.length
-  ? html`${names.slice(0, 3).map((n, i) => html`${i ? ', ' : ''}<a href="/containers/${n}">${n}</a>`)}${names.length > 3 ? ` and ${names.length - 3} more` : ''}`
+  ? html`${names.slice(0, 3).map((n, i) => html`${i ? ', ' : ''}<a href="/containers/${n}">${brk(n)}</a>`)}${names.length > 3 ? ` and ${names.length - 3} more` : ''}`
   : html`<span class="muted">none</span>`;
 
 export function networksPage(ctx: PageCtx, list: any[], users: Map<string, string[]> = new Map()): string {
   const builtin = new Set(['bridge', 'host', 'none']);
-  const rows = [...list].sort((a, b) => String(a.Name).localeCompare(String(b.Name))).map(n => html`<tr><td>${n.Name}</td><td>${n.Driver}</td><td>${n.Scope}</td><td>${usedBy(users.get(n.Name))}</td>
+  const rows = [...list].sort((a, b) => String(a.Name).localeCompare(String(b.Name))).map(n => html`<tr><td>${brk(n.Name)}</td><td class="wide">${n.Driver}</td><td class="wide">${n.Scope}</td><td>${usedBy(users.get(n.Name))}</td>
 <td>${builtin.has(n.Name) ? '' : post(ctx, `/networks/${n.Id}/remove`, 'Remove', { confirm: `Remove network ${n.Name}?`, cls: 'danger' })}</td></tr>`);
   return layout('Networks', ctx, html`
 <form method="post" action="/networks" class="row">${csrfField(ctx)}<input name="name" required placeholder="network name" aria-label="Network name"><button>Create</button></form>
-<table><thead><tr><th>Name</th><th>Driver</th><th>Scope</th><th>Containers</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+<table><thead><tr><th>Name</th><th class="wide">Driver</th><th class="wide">Scope</th><th>Containers</th><th></th></tr></thead><tbody>${rows}</tbody></table>
 <p><a href="/cleanup">Clean up</a> networks no container uses.</p>`);
 }
 export function volumesPage(ctx: PageCtx, list: any[], users: Map<string, string[]> = new Map()): string {
-  const rows = [...list].sort((a, b) => String(a.Name).localeCompare(String(b.Name))).map(vol => html`<tr><td>${vol.Name}</td><td>${vol.Driver}</td><td>${vol.CreatedAt || ''}</td><td>${usedBy(users.get(vol.Name))}</td>
+  const rows = [...list].sort((a, b) => String(a.Name).localeCompare(String(b.Name))).map(vol => html`<tr><td>${brk(vol.Name)}</td><td class="wide">${vol.Driver}</td><td class="wide">${vol.CreatedAt || ''}</td><td>${usedBy(users.get(vol.Name))}</td>
 <td>${post(ctx, `/volumes/${vol.Name}/remove`, 'Remove', { confirm: `Remove volume ${vol.Name} and its data?`, cls: 'danger' })}</td></tr>`);
   return layout('Volumes', ctx, html`
 <form method="post" action="/volumes" class="row">${csrfField(ctx)}<input name="name" required placeholder="volume name" aria-label="Volume name"><button>Create</button></form>
-<table><thead><tr><th>Name</th><th>Driver</th><th>Created</th><th>Mounted by</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+<table><thead><tr><th>Name</th><th class="wide">Driver</th><th class="wide">Created</th><th>Mounted by</th><th></th></tr></thead><tbody>${rows}</tbody></table>
 <p><a href="/cleanup">Clean up</a> anonymous volumes no container mounts.</p>`);
 }
 
@@ -464,8 +476,8 @@ to route domains to containers with automatic HTTPS. See the README.</p>`);
     const bad = r.enabled && (!!st.refused || !!st.port || st.target === 'missing' || (st.target && st.target !== 'running') || (r.tls && (!st.cert || st.cert.notAfter.getTime() < Date.now())));
     const addr = `${r.tls ? 'https' : 'http'}://${r.hostname}${r.path === '/' ? '' : r.path}`;
     // A wildcard is not an address to visit.
-    return html`<tr data-state="${!r.enabled ? 'exited' : bad ? 'restarting' : 'running'}"><td class="addr">${r.hostname.startsWith('*') ? html`<span class="ref">${addr}</span>` : html`<a href="${addr}">${addr}</a>`}</td>
-<td><span class="ref">${r.target_container}:${r.target_port}</span></td><td>${ruleState(r, st)}</td>
+    return html`<tr data-state="${!r.enabled ? 'exited' : bad ? 'restarting' : 'running'}"><td class="addr">${r.hostname.startsWith('*') ? html`<span class="ref">${brk(addr)}</span>` : html`<a href="${addr}">${brk(addr)}</a>`}</td>
+<td><span class="ref">${brk(`${r.target_container}:${r.target_port}`)}</span></td><td>${ruleState(r, st)}</td>
 <td class="actions"><a class="button" href="/proxy/${r.id}/edit">Edit</a> ${post(ctx, `/proxy/${r.id}/toggle`, r.enabled ? 'Disable' : 'Enable')}
 ${post(ctx, `/proxy/${r.id}/remove`, 'Remove', { confirm: `Remove the rule for ${addr}?`, cls: 'danger' })}</td></tr>`;
   });
@@ -521,7 +533,7 @@ ${logins ? registrySection(ctx, logins) : ''}
 }
 
 function registrySection(ctx: PageCtx, logins: RegistryLogin[]): Html {
-  const rows = logins.map(l => html`<tr><td><span class="ref">${l.registry}</span></td><td>${l.username}</td>
+  const rows = logins.map(l => html`<tr><td><span class="ref">${brk(l.registry)}</span></td><td>${brk(l.username)}</td>
 <td>${l.last_used_at ? html`${l.last_result} <small class="muted">${ago(l.last_used_at)}</small>` : html`<span class="muted">not used yet</span>`}</td>
 <td class="actions">${post(ctx, `/settings/registries/${l.id}/remove`, 'Remove', { confirm: `Remove the login for ${l.registry}?`, cls: 'danger' })}</td></tr>`);
   return html`<h2>Registry logins</h2>
@@ -536,7 +548,7 @@ ${rows.length ? html`<table><thead><tr><th>Registry</th><th>Username</th><th>Las
 }
 
 function notifySection(ctx: PageCtx, targets: Target[], watch: { connected: boolean; error: string | null } | null): Html {
-  const rows = targets.map(t => html`<tr><td>${t.kind}</td><td><code>${maskUrl(t.url)}</code>${t.token ? html` <small class="muted">with a token</small>` : ''}</td>
+  const rows = targets.map(t => html`<tr><td>${t.kind}</td><td><code>${brk(maskUrl(t.url))}</code>${t.token ? html` <small class="muted">with a token</small>` : ''}</td>
 <td>${t.events.join(', ')}</td><td>${t.last_at ? html`${t.last_result} <small class="muted">${ago(t.last_at)}</small>` : html`<span class="muted">nothing sent yet</span>`}</td>
 <td class="actions">${post(ctx, `/settings/notify/${t.id}/test`, 'Send test')} ${post(ctx, `/settings/notify/${t.id}/remove`, 'Remove', { confirm: 'Remove this notification target?', cls: 'danger' })}</td></tr>`);
   const boxes = EVENT_KINDS.map(k => html`<label class="check"><input type="checkbox" name="ev_${k}" checked> ${EVENTS[k]}</label>`);
@@ -556,7 +568,7 @@ ${rows.length ? html`<table><thead><tr><th>Kind</th><th>Address</th><th>Events</
 // What can be removed safely, with the size of each group.
 export function cleanupPage(ctx: PageCtx, p: { dangling: { id: string; size: number }[]; unusedTagged: { id: string; tags: string[]; size: number }[]; localUnused?: { id: string; tags: string[]; size: number }[]; networks: { name: string }[]; volumes: { name: string; created?: string | null }[]; namedUnused: number }): string {
   const total = (items: { size: number }[]) => fmtSize(items.reduce((s, i) => s + i.size, 0));
-  const tagged = p.unusedTagged.map(i => html`<tr><td>${i.tags.map((t, k) => html`${k ? html`<br>` : ''}<span class="ref">${t}</span>`)}</td><td><code>${shortId(i.id)}</code></td><td>${fmtSize(i.size)}</td></tr>`);
+  const tagged = p.unusedTagged.map(i => html`<tr><td>${i.tags.map((t, k) => html`${k ? html`<br>` : ''}<span class="ref">${brk(t)}</span>`)}</td><td><code class="id">${shortId(i.id)}</code></td><td>${fmtSize(i.size)}</td></tr>`);
   return layout('Clean up', ctx, html`
 <p>Only things no container uses are listed. A stopped container still uses its image and volumes, so they stay. Sizes count each image's shared layers in full, so less space may be freed than shown; the result says how much was.</p>
 <h2>Images without a tag</h2>
@@ -599,8 +611,10 @@ export interface AuditRow { id: number; at: number; username: string | null; act
 
 export function activityPage(ctx: PageCtx, rows: AuditRow[], q: string, older: number | null): string {
   const who = (r: AuditRow) => r.username ?? (r.ip ? html`<span class="muted">not logged in</span>` : html`<span class="muted">kontainers</span>`);
-  const list = rows.map(r => html`<tr${r.result ? raw(' class="failed"') : raw('')}><td>${new Date(r.at).toISOString().slice(0, 19).replace('T', ' ')}</td><td>${who(r)}</td>
-<td>${ACTIONS[r.action] || r.action}${r.target ? html` <span class="ref">${r.target}</span>` : ''}${r.result ? html`<br><small class="error">${r.result}</small>` : ''}</td><td><span class="ref addr">${r.ip || ''}</span></td></tr>`);
+  // A result that starts with "note: " is something kontainers did and says more about, not a failure.
+  const failed = (r: AuditRow) => !!r.result && !r.result.startsWith('note: ');
+  const list = rows.map(r => html`<tr${failed(r) ? raw(' class="failed"') : raw('')}><td>${new Date(r.at).toISOString().slice(0, 19).replace('T', ' ')}</td><td>${who(r)}</td>
+<td>${ACTIONS[r.action] || r.action}${r.target ? html` <span class="ref">${brk(r.target)}</span>` : ''}${r.result ? html`<br><small class="${failed(r) ? 'error' : 'muted'}">${failed(r) ? r.result : r.result.slice(6)}</small>` : ''}</td><td><span class="ref addr">${brk(r.ip || '')}</span></td></tr>`);
   return layout('Activity', ctx, html`
 <p>Who did what, newest first, including failed attempts and what kontainers did on its own. Entries older than a year are removed.</p>
 <form method="get" action="/activity" class="filters" role="search"><label>Search <input type="search" name="q" value="${q}" placeholder="user, action or name"></label><button>Apply</button>${q ? html` <a href="/activity">Clear</a>` : ''}</form>
