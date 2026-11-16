@@ -110,9 +110,12 @@ export class Registries {
     if (!existsSync(this.keyFile)) return null;
     const k = readFileSync(this.keyFile);
     if (k.length === 0) return null;
-    if (k.length !== 32) throw new Error(`${this.keyFile} is not a 32-byte key; move it away to start again (saved registry passwords then have to be entered again)`);
+    if (k.length !== 32) throw Object.assign(new v.ValidationError(`${this.keyFile} in the data volume is not a 32-byte key, so no login can be saved; move it away to start again (saved registry passwords then have to be entered again)`), { status: 500 });
     return (this.key = k);
   }
+
+  // Throws (with the reason) if the key file exists but cannot be used.
+  ready(): void { this.existingKey(); }
 
   // Made on first use: written to a temporary file, flushed to disk, then linked into place, so the
   // key file is never half written and an existing key is never replaced.
@@ -161,7 +164,7 @@ export class Registries {
 // What to add to a pull or lookup error that looks like a missing or wrong login. login: none
 // saved, one saved and sent, or one saved that cannot be read (registry.key missing).
 export function loginHint(message: string, registry: string, login: 'none' | 'sent' | 'unreadable'): string {
-  if (!/unauthorized|authentication required|no basic auth credentials|access to the resource is denied|pull access denied|may require 'docker login'|incorrect username or password/i.test(message)) return '';
+  if (!/unauthorized|authentication required|no basic auth credentials|(?<!permission )\bdenied\b|may require 'docker login'|incorrect username or password/i.test(message)) return '';
   if (login === 'sent') return `; the registry refused the login saved for ${registry}: check it on the Settings page`;
   if (login === 'unreadable') return `; the login saved for ${registry} cannot be read (registry.key in the data volume is missing or different): save it again on the Settings page`;
   return `; if the image is private, add a login for ${registry} on the Settings page`;

@@ -716,6 +716,8 @@ export function createHandler(d: Deps): Handler {
       return act(s, ip, '/settings', 'registry-add', target, async () => {
         if (!d.registries) throw new v.ValidationError('registry logins are not available');
         const l = d.registries.validate({ registry: f.registry, username: f.username, password: f.password });
+        // A key file that cannot be used is said before the registry is asked.
+        d.registries.ready();
         // Checked before it is saved: a wrong Docker Hub login would make every pull from Docker
         // Hub fail, public images too.
         let note: string;
@@ -724,7 +726,9 @@ export function createHandler(d: Deps): Handler {
           note = '; the registry accepted it';
         } catch (e) {
           const m = errorMessage(e);
-          if (errorStatus(e) === 401 || /unauthorized|incorrect username or password|authentication required/i.test(m)) {
+          // A 403 from the daemon that carries the registry's own words ("denied: denied", as GHCR
+          // answers a bad token) is the registry refusing; docker-socket-proxy's 403 is a bare page.
+          if (errorStatus(e) === 401 || /unauthorized|incorrect username or password|authentication required|(?<!permission )\bdenied\b/i.test(m)) {
             throw new v.ValidationError(`the registry refused this login, so it was not saved: ${m}`);
           }
           note = errorStatus(e) === 403

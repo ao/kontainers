@@ -258,9 +258,15 @@ export class Docker {
     try {
       const res = await this.req('GET', `/distribution/${encodeURIComponent(img)}/json`, undefined, 30000, auth ? { 'X-Registry-Auth': auth } : {});
       const text = await res.text();
+      if (auth) this.auth?.noteResult?.(this.auth.registry(img), `checked ${img} for updates`);
       return text ? JSON.parse(text) : null;
     } catch (e) {
-      if (e instanceof DockerError && this.auth) { const r = this.auth.registry(img); e.message += loginHint(e.message, r, this.loginState(r, !!auth)); }
+      if (e instanceof DockerError && this.auth) {
+        const r = this.auth.registry(img);
+        const hint = loginHint(e.message, r, this.loginState(r, !!auth));
+        if (auth && hint) this.auth.noteResult?.(r, `failed: the registry refused the login when checking ${img} for updates`);
+        e.message += hint;
+      }
       throw e;
     }
   }

@@ -76,6 +76,12 @@ export class AutoUpdates {
     }
   }
 
+  // Holds an image back for a container (a replacement that failed when the tidy-up after a restart
+  // watched it).
+  hold(name: string, image: string): void {
+    try { this.db.query('UPDATE auto_update SET held_image = ? WHERE container = ?').run(image, name); } catch (e) { writeFailed(e, `could not hold back the image of ${name}`); }
+  }
+
   private idOf(row: AutoRow): string { return this.unsaved.get(row.container) ?? row.container_id; }
 
   // Opted in, and still the same container: a container removed outside kontainers and replaced
@@ -86,8 +92,11 @@ export class AutoUpdates {
   heldImage(name: string): string | null { return this.get(name)?.held_image ?? null; }
 
   // After a check: update opted-in containers, notify about the others. One pass at a time.
+  // A check that finishes while a pass runs (a long settle) gets a pass of its own after it, so what
+  // it found is not left until the next check.
+  private queued: Promise<void> | null = null;
   afterCheck(): Promise<void> {
-    if (this.running) return this.running;
+    if (this.running) return (this.queued ??= this.running.catch(() => {}).then(() => { this.queued = null; return this.afterCheck(); }));
     this.running = this.pass().finally(() => { this.running = null; });
     return this.running;
   }
@@ -119,10 +128,13 @@ export class AutoUpdates {
       // One container's trouble (a full data volume, a daemon error) must not stop the others.
       try {
         if (setAside(c, name)) continue;
+        // Never recreated by kontainers; reported like any container that is not opted in.
+        const mode = String(c.HostConfig?.NetworkMode || '');
+        const recreatable = mode !== 'host' && !mode.startsWith('container:');
         const st = this.checker.get(c.Ref);
         if (containerStatus(st, c.ImageID)?.status !== 'available') continue;
         const row = this.get(name);
-        if (!row || this.idOf(row) !== c.Id) {
+        if (!row || this.idOf(row) !== c.Id || !recreatable) {
           const k = `${c.Ref}|${st?.remoteDigest || st?.imageId || ''}`;
           const g = newer.get(k) ?? { ref: String(c.Ref), names: [] as string[] };
           g.names.push(name);

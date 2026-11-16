@@ -143,6 +143,15 @@ export class EventWatcher {
     }
   }
 
+  // Containers already set aside when kontainers starts (another kontainers on this host may be in
+  // the middle of an update) count as a replacement under way from now.
+  noteSetAside(list: any[]): void {
+    for (const c of list) {
+      const m = /^(.+)-old-([0-9a-f]{8})$/.exec(String(c.Names?.[0] || '').replace(/^\//, ''));
+      if (m && c.Labels?.['kontainers.managed'] === 'true' && String(c.Id).startsWith(m[2]) && !this.replacing.has(m[1])) this.replacing.set(m[1], this.now());
+    }
+  }
+
   // For replaceWindowMs at most: a set-aside container left behind (a kontainers killed meanwhile,
   // an old container that could not be removed) must not silence its name for long.
   private inReplacement(name: string, at: number): boolean {

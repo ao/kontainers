@@ -218,6 +218,22 @@
 - Notifications compare the Docker API by address and port, so a receiver on another port of the
   same host works, and 0.0.0.0, `::` and `localhost` count as loopback; a target is checked when
   it is added too. A body over the form limit is refused before the login check, unread.
+- The tidy-up after a restart watches a replacement that is running, as the update would have:
+  one that crash-loops under a restart policy is removed, the old container is put back and the
+  image is held back (it was kept, and the working old container removed). A second kontainers
+  on the same host waits a few minutes before it reports another instance's set-aside container,
+  and treats it as an update under way.
+- A registry that answers a bad login with 403 "denied" (GHCR does) is taken as refusing it, and
+  the login is not saved; before, it was saved unchecked and every pull from that registry failed,
+  public images too. A pull or update check refused for a saved login says so, and Settings shows
+  update checks as well as pulls under "Last used". A broken `registry.key` is reported before the
+  registry is asked.
+- A Check for updates made while an automatic-update pass runs gets a pass of its own afterwards.
+- Phones and wide screens: compose project names, commands and failure notes no longer widen
+  their tables; the Events column of notification targets is left out on phones; the image column
+  keeps at least 14rem on wide screens, and notes in the actions column wrap. International
+  hostnames are shown as written on the Proxy page. A container being replaced does not say a
+  newer image is available.
 
 ## 0.3.0
 

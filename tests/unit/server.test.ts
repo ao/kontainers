@@ -286,7 +286,7 @@ describe('container page facts', () => {
       HostConfig: { RestartPolicy: { Name: 'always' } },
       NetworkSettings: { Ports: { '5432/tcp': [{ HostIp: '127.0.0.1', HostPort: '5433' }], '9187/tcp': null } },
     });
-    expect(page).toContain('<code>docker-entrypoint.sh postgres -c max_connections=200</code>');
+    expect(page.replace(/<wbr>/g, '')).toContain('<code>docker-entrypoint.sh postgres -c max_connections=200</code>');
     expect(page).toContain('<span class="ref">127.0.0.1:5433-&gt;5432/tcp</span>');
     expect(page).toContain('restarted 3 times');
     expect(page).toContain('unhealthy<small class="muted">failed 4 checks in a row, exit code 1: <code>pg_isready: no response</code></small>');

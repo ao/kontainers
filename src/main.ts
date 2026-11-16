@@ -9,7 +9,7 @@ import { bindProblem, loadConfig } from './config';
 import { openDb, snapshot } from './db';
 import { Auth } from './auth';
 import { Docker } from './docker';
-import { recoverInterrupted } from './update';
+import { recoverInterrupted, watchRunning } from './update';
 import { ReplaceJournal } from './journal';
 import { diskFull, setDegraded } from './storage';
 import { ProxyManager, RuleStore } from './proxy';
@@ -122,7 +122,10 @@ async function tidyUp(attempt: number): Promise<void> {
   const kept = (name: string, id: string) => { if (autoUpdates.get(name)) autoUpdates.recreated(name, id); };
   let again = false;
   try {
-    for (const r of await recoverInterrupted(docker, kept, journal, n => autoUpdates.busy.take(n), attempt >= TIDY_ATTEMPTS)) {
+    events.noteSetAside(await docker.listContainers());
+    const watch = (id: string) => watchRunning(docker, id, { settleMs: cfg.autoUpdateSettle * 1000, healthTimeoutMs: cfg.autoUpdateHealthTimeout * 1000, signal: stopping.signal, wasStopped: cid => events.wasStopped(cid) });
+    const held = (name: string, image: string) => { if (autoUpdates.get(name)) autoUpdates.hold(name, image); };
+    for (const r of await recoverInterrupted(docker, kept, journal, n => autoUpdates.busy.take(n), attempt >= TIDY_ATTEMPTS, { watch, held })) {
       if (r.retry) { again = true; if (attempt === 1) console.log(`kontainers: ${r.text}`); continue; }
       const key = `${r.name}\n${r.text}`;
       if (tidied.has(key)) continue;

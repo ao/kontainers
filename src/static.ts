@@ -45,6 +45,9 @@ th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid var(-
    anywhere, so the table fits the screen. Ordinary words (headers, states, buttons) stay whole. */
 /* Long names, references and addresses carry <wbr> break points (views.ts brk); IDs stay whole. */
 code.id { white-space: nowrap; }
+/* Notes in the actions column ("this is kontainers", "being updated") wrap instead of widening it. */
+td.actions small { white-space: normal; }
+@media (min-width: 721px) { #containers td:nth-child(2) { min-width: 14rem; } }
 /* Free text (results, notes, errors) may hold a long address or reference without break points. */
 td.free, td small { overflow-wrap: anywhere; }
 tr:last-child td { border-bottom: 0; }
@@ -110,7 +113,7 @@ p.warn[role=alert] { padding: .6rem .9rem; border-radius: 5px; border-left: 4px 
 .flash, .error { white-space: pre-line; padding: .6rem .9rem; border-radius: 5px; border-left: 4px solid; background: var(--panel); max-width: 70ch; }
 .flash { border-color: var(--run); }
 .error { border-color: var(--rust); color: var(--ink); }
-span.error, small .error { padding: 0; border: 0; background: none; color: var(--rust); }
+span.error, small .error, small.error { padding: 0; border: 0; background: none; color: var(--rust); max-width: none; }
 .warn { color: var(--warn); }
 .muted { color: var(--muted); }
 .toolbar { display: flex; align-items: center; gap: .9rem; margin-bottom: 1rem; flex-wrap: wrap; }
@@ -128,7 +131,7 @@ ul.pulls { margin: 0 0 1rem; padding-left: 1.2rem; }
 
 dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: .35rem 1.5rem; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: .9rem 1.1rem; max-width: 46rem; }
 dl.facts dt { color: var(--muted); }
-dl.facts dd { margin: 0; }
+dl.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 pre#logs { background: #0f1418; color: #d7dee2; padding: .9rem 1rem; max-height: 32rem; overflow: auto; font: .82rem/1.5 var(--mono); white-space: pre-wrap; border-radius: 6px; }
 
 @media (max-width: 720px) {
@@ -140,6 +143,8 @@ pre#logs { background: #0f1418; color: #d7dee2; padding: .9rem 1rem; max-height:
   nav .who { margin-left: auto; }
   #containers th:nth-child(4), #containers td:nth-child(4) { display: none; }
   th.wide, td.wide { display: none; }
+  th, td { padding: .5rem .4rem; }
+  tr.group .groupacts { float: none; display: block; margin-top: .3rem; }
   td.actions form, td.actions a.button, td > form.inline { display: inline-block; margin-bottom: .25rem; }
   .actions { white-space: normal; }
   form.filters input[type=search] { min-width: 0; width: 100%; }

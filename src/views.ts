@@ -1,6 +1,7 @@
 // Server-rendered HTML. Every interpolated value goes through esc(); there is no inline script or style.
 
 import type { Rule } from './proxy';
+import { domainToUnicode } from 'node:url';
 import { containerStatus, type UpdateState } from './updates';
 import { EVENTS, EVENT_KINDS, maskUrl, type Target } from './notify';
 import type { RegistryLogin } from './registries';
@@ -256,7 +257,7 @@ export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = 
       // and its Docker API container are skipped).
       const others = members.filter(c => !isSelf(c, me));
       const acts = k && others.length ? html`<span class="groupacts">${others.some(c => c.State !== 'running') ? post(ctx, `/projects/${k}/start`, 'Start all') : ''} ${others.some(c => c.State === 'running') ? html`${post(ctx, `/projects/${k}/restart`, 'Restart all', { confirm: `Restart every container of ${k}?` })} ${post(ctx, `/projects/${k}/stop`, 'Stop all', { confirm: `Stop every container of ${k}?` })}` : ''}</span>` : '';
-      return [html`<tr class="group" data-group="${k}"${visible ? raw('') : raw(' hidden')}><th colspan="5" scope="rowgroup">${k ? html`compose project ${k}` : 'not in a compose project'} <small>${up} of ${members.length} running</small>${acts}</th></tr>`, ...members.map(row)];
+      return [html`<tr class="group" data-group="${k}"${visible ? raw('') : raw(' hidden')}><th colspan="5" scope="rowgroup">${k ? html`compose project ${brk(k)}` : 'not in a compose project'} <small>${up} of ${members.length} running</small>${acts}</th></tr>`, ...members.map(row)];
     });
   } else rows = sorted.map(row);
 
@@ -297,7 +298,8 @@ ${last}${held}</form>`;
 
 export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, updates: UpdateView | null = null, auto: AutoView | null = null): string {
   const raw = updates?.get(c.Config?.Image) ?? null;
-  const upd = raw && { ...containerStatus(raw, c.Image)!, checkedAt: raw.checkedAt };
+  // While it is being replaced, what the last check said is about the container going away.
+  const upd = raw && !ctx.busy?.(String(c.Name || '').replace(/^\//, '')) ? { ...containerStatus(raw, c.Image)!, checkedAt: raw.checkedAt } : null;
   const name = String(c.Name || '').replace(/^\//, '');
   const held = upd?.status === 'available' ? heldBack(updates, name, c.Id, c.Config?.Image) : null;
   const updText = !upd ? '' : held ? `the newest image for this tag (${shortId(held)}) failed when it was tried automatically and is held back; a newer one will be tried`
@@ -316,7 +318,7 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
   ${c.State?.Health ? html`<dt>Health</dt><dd>${c.State.Health.Status}${healthNote(c.State.Health)}</dd>` : ''}
   ${c.State?.Status === 'exited' ? html`<dt>Exit code</dt><dd>${c.State.ExitCode}${c.State.OOMKilled ? ' (out of memory)' : ''}</dd>` : ''}
   <dt>Restart policy</dt><dd>${c.HostConfig?.RestartPolicy?.Name}${c.RestartCount ? html`<small class="warn">restarted ${c.RestartCount} time${c.RestartCount === 1 ? '' : 's'}</small>` : ''}</dd>
-  ${[...(c.Config?.Entrypoint || []), ...(c.Config?.Cmd || [])].length ? html`<dt>Command</dt><dd><code>${quoteArgs([...(c.Config?.Entrypoint || []), ...(c.Config?.Cmd || [])])}</code></dd>` : ''}
+  ${[...(c.Config?.Entrypoint || []), ...(c.Config?.Cmd || [])].length ? html`<dt>Command</dt><dd><code>${brk(quoteArgs([...(c.Config?.Entrypoint || []), ...(c.Config?.Cmd || [])]))}</code></dd>` : ''}
   ${inspectPorts(c) ? html`<dt>Ports</dt><dd><span class="ref">${inspectPorts(c)}</span></dd>` : ''}
 </dl>
 <div class="actions">${isSelf(c, me) ? selfNote(c, me) : ctx.busy?.(name) ? html`<p class="muted">${ctx.busy(name)}; reload in a moment.</p>` : containerActions(ctx, urlId(c), name, c.State?.Status || '', true)}
@@ -476,8 +478,10 @@ to route domains to containers with automatic HTTPS. See the README.</p>`);
     const st = ruleStatus(r);
     const bad = r.enabled && (!!st.refused || !!st.port || st.target === 'missing' || (st.target && st.target !== 'running') || (r.tls && (!st.cert || st.cert.notAfter.getTime() < Date.now())));
     const addr = `${r.tls ? 'https' : 'http'}://${r.hostname}${r.path === '/' ? '' : r.path}`;
+    // International names are stored in punycode and shown as written.
+    const shown = `${r.tls ? 'https' : 'http'}://${domainToUnicode(r.hostname) || r.hostname}${r.path === '/' ? '' : r.path}`;
     // A wildcard is not an address to visit.
-    return html`<tr data-state="${!r.enabled ? 'exited' : bad ? 'restarting' : 'running'}"><td class="addr">${r.hostname.startsWith('*') ? html`<span class="ref">${brk(addr)}</span>` : html`<a href="${addr}">${brk(addr)}</a>`}</td>
+    return html`<tr data-state="${!r.enabled ? 'exited' : bad ? 'restarting' : 'running'}"><td class="addr">${r.hostname.startsWith('*') ? html`<span class="ref">${brk(shown)}</span>` : html`<a href="${addr}">${brk(shown)}</a>`}</td>
 <td><span class="ref">${brk(`${r.target_container}:${r.target_port}`)}</span></td><td class="free">${ruleState(r, st)}</td>
 <td class="actions"><a class="button" href="/proxy/${r.id}/edit">Edit</a> ${post(ctx, `/proxy/${r.id}/toggle`, r.enabled ? 'Disable' : 'Enable')}
 ${post(ctx, `/proxy/${r.id}/remove`, 'Remove', { confirm: `Remove the rule for ${addr}?`, cls: 'danger' })}</td></tr>`;
@@ -550,13 +554,13 @@ ${rows.length ? html`<table><thead><tr><th>Registry</th><th>Username</th><th>Las
 
 function notifySection(ctx: PageCtx, targets: Target[], watch: { connected: boolean; error: string | null } | null): Html {
   const rows = targets.map(t => html`<tr><td>${t.kind}</td><td><code>${brk(maskUrl(t.url))}</code>${t.token ? html` <small class="muted">with a token</small>` : ''}</td>
-<td>${t.events.join(', ')}</td><td class="free">${t.last_at ? html`${t.last_result} <small class="muted">${ago(t.last_at)}</small>` : html`<span class="muted">nothing sent yet</span>`}</td>
+<td class="wide">${t.events.join(', ')}</td><td class="free">${t.last_at ? html`${t.last_result} <small class="muted">${ago(t.last_at)}</small>` : html`<span class="muted">nothing sent yet</span>`}</td>
 <td class="actions">${post(ctx, `/settings/notify/${t.id}/test`, 'Send test')} ${post(ctx, `/settings/notify/${t.id}/remove`, 'Remove', { confirm: 'Remove this notification target?', cls: 'danger' })}</td></tr>`);
   const boxes = EVENT_KINDS.map(k => html`<label class="check"><input type="checkbox" name="ev_${k}" checked> ${EVENTS[k]}</label>`);
   return html`<h2>Notifications</h2>
 <p>kontainers sends a short message when one of these happens. A <strong>webhook</strong> gets a JSON POST with <code>title</code>, <code>message</code>, <code>event</code> and <code>container</code>, and the text again as <code>text</code> and <code>content</code>; an <strong>ntfy</strong> topic URL gets the message as plain text with a Title header. Only the address is shown here, because webhook paths often carry a secret.</p>
 ${watch && !watch.connected && watch.error ? html`<p class="warn">The Docker event stream is not connected (${watch.error}), so stopped and unhealthy containers are not reported until it is.</p>` : ''}
-${rows.length ? html`<table><thead><tr><th>Kind</th><th>Address</th><th>Events</th><th>Last result</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : html`<p class="muted">No notification targets yet.</p>`}
+${rows.length ? html`<table><thead><tr><th>Kind</th><th>Address</th><th class="wide">Events</th><th>Last result</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : html`<p class="muted">No notification targets yet.</p>`}
 <form method="post" action="/settings/notify" class="stack">${csrfField(ctx)}
   <label>Kind <select name="kind"><option value="webhook">webhook (JSON POST)</option><option value="ntfy">ntfy topic</option></select></label>
   <label>URL <input name="url" type="url" required placeholder="https://ntfy.sh/your-topic" autocomplete="off"></label>

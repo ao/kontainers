@@ -312,7 +312,7 @@ describe('recoverInterrupted', () => {
     const { d } = setup();
     const id = aside(d, 'web', false);
     const { recoverInterrupted } = await import('../../src/update');
-    expect((await recoverInterrupted(d as any)).map(r => r.text)).toEqual(['put web back: an update or edit was interrupted before the new container existed']);
+    expect((await recoverInterrupted(d as any)).map(r => r.text)).toEqual(['put web back: an update or edit was interrupted, and no container had its name']);
     expect(d.find('web').Id).toBe(id);
     expect(d.find('web').State.Running).toBe(true);
   });
@@ -601,5 +601,44 @@ describe('review of round 3', () => {
     expect(updatable(c)).toContain("the host's network");
     expect(updatable({ ...c, HostConfig: { NetworkMode: 'container:abc' } })).toContain("another container's network");
     expect(updatable({ ...c, HostConfig: { NetworkMode: 'bridge' } })).toBeNull();
+  });
+});
+
+describe('QA round 4', () => {
+  const rowsOf = (rows: any[]) => ({ begin() {}, end(n: string) { const i = rows.findIndex(r => r.name === n); if (i >= 0) rows.splice(i, 1); }, all: () => rows.map(r => ({ at: Date.now() - 1000, ...r })) });
+  test('a replacement that runs but crash-loops is watched, found out, and the old one put back with the image held', async () => {
+    const { d } = setup();
+    const id = d.run('web', 'app:1');
+    const c = d.find(id);
+    c.Id = 'abcdef12' + c.Id.slice(8); d.containers.delete(id); d.containers.set(c.Id, c);
+    c.Name = '/web-old-abcdef12'; c.State = { Running: false, Status: 'exited', ExitCode: 137 };
+    const now = d.run('web', 'app:1');
+    d.find(now).Config.Labels['kontainers.replaces'] = c.Id;
+    d.find(now).Image = 'i3';
+    d.find(now).RestartCount = 4;
+    const held: string[] = [];
+    const { recoverInterrupted, watchRunning } = await import('../../src/update');
+    const r = await recoverInterrupted(d as any, () => {}, rowsOf([{ name: 'web', old_id: c.Id, was_running: 1 }]), undefined, false,
+      { watch: cid => watchRunning(d as any, cid, { settleMs: 0, healthTimeoutMs: 0 }), held: (n, img) => held.push(`${n}=${img}`) });
+    expect(r[0].text).toContain('restarted 4 times');
+    expect(d.find('web').Id).toBe(c.Id);
+    expect(d.find('web').State.Running).toBe(true);
+    expect(d.containers.has(now)).toBe(false);
+    expect(held).toEqual(['web=i3']);
+  });
+  test('a check that ends while a pass runs gets a pass of its own after it', async () => {
+    const { d, auto, checker } = setup();
+    const a = d.run('slow', 'app:1');
+    await auto.set(a, true);
+    let calls = 0;
+    const list = d.listContainersWithRefs.bind(d);
+    d.listContainersWithRefs = async () => { calls++; await Bun.sleep(50); return list(); };
+    await checker.checkAll();
+    const first = auto.afterCheck();
+    const second = auto.afterCheck();
+    const third = auto.afterCheck();
+    await Promise.all([first, second, third]);
+    expect(second).toBe(third);
+    expect(calls).toBeGreaterThanOrEqual(3); // the check's own list, the first pass, and one more pass
   });
 });

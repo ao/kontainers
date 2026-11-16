@@ -85,6 +85,8 @@ describe('Registries', () => {
     expect(loginHint('manifest unknown', 'ghcr.io', 'none')).toBe('');
     expect(loginHint('open /var/lib/docker/x: permission denied', 'ghcr.io', 'sent')).toBe('');
     expect(loginHint('unauthorized: authentication required', 'ghcr.io', 'unreadable')).toContain('cannot be read');
+    // GHCR's answer to a bad token, for public images too.
+    expect(loginHint('error from registry: denied', 'ghcr.io', 'sent')).toContain('refused the login saved for ghcr.io');
   });
 });
 
