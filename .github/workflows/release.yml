@@ -19,6 +19,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: scripts/test.sh ${{ matrix.suite }}
+        env:
+          DIND_MIRROR: https://mirror.gcr.io
 
   publish:
     needs: test
