@@ -286,8 +286,15 @@ ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
 <h2>Mounts</h2><ul>${mounts.length ? mounts : html`<li>none</li>`}</ul>
 <h2>Networks</h2><ul>${nets}</ul>
 <h2>Logs</h2>
-<p><label class="check"><input type="checkbox" id="follow" checked> Follow new lines</label></p>
-<pre id="logs" data-logs="/api/containers/${c.Id}/logs?tail=300">loading…</pre>`, 'Containers');
+<div class="logbar">
+  <label>Filter <input type="search" id="logfilter" placeholder="text to look for" autocomplete="off"></label>
+  <label>Lines <select id="loglines"><option>300</option><option>1000</option><option>5000</option></select></label>
+  <label class="check"><input type="checkbox" id="logts" checked> Timestamps</label>
+  <label class="check"><input type="checkbox" id="follow" checked> Follow new lines</label>
+  <a href="/api/containers/${c.Id}/logs.txt?tail=10000" id="logdl" download>Download the last 10000 lines</a>
+  <span class="muted" id="logcount" aria-live="polite"></span>
+</div>
+<pre id="logs" data-logs="/api/containers/${c.Id}/logs">loading…</pre>`, 'Containers');
 }
 
 export function newContainerPage(ctx: PageCtx, allowBind: boolean, autoUpdates = false): string {

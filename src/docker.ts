@@ -121,9 +121,9 @@ export class Docker {
     }
   }
 
-  async logs(id: string, tail = 200): Promise<string> {
-    const t = v.intInRange(tail, 1, 10000, 200);
-    const res = await this.req('GET', `/containers/${encodeURIComponent(v.ref(id))}/logs?stdout=1&stderr=1&timestamps=1&tail=${t}`);
+  async logs(id: string, tail = 200, timestamps = true, max = 10000): Promise<string> {
+    const t = v.intInRange(tail, 1, max, 200);
+    const res = await this.req('GET', `/containers/${encodeURIComponent(v.ref(id))}/logs?stdout=1&stderr=1&timestamps=${timestamps ? 1 : 0}&tail=${t}`, undefined, 60000);
     const buf = new Uint8Array(await res.arrayBuffer());
     return demux(buf);
   }

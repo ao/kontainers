@@ -61,7 +61,7 @@ test('pull an image, create a container, read its logs, stop and remove it', asy
   await page.getByLabel('Image', { exact: true }).fill('busybox:1.36');
   await page.getByLabel('Pull the image first').uncheck();
   await page.getByLabel('Name', { exact: true }).fill('e2e-web');
-  await page.getByLabel('Command').fill('sh -c "echo hello-e2e; sleep 600"');
+  await page.getByLabel('Command').fill('sh -c "echo hello-e2e; echo alpha; echo beta; echo gamma; sleep 600"');
   await page.getByLabel(/^Environment/).fill('MODE=test');
   await page.getByRole('button', { name: 'Create' }).click();
   await expect(page.getByRole('status')).toContainText('Created e2e-web');
@@ -71,6 +71,19 @@ test('pull an image, create a container, read its logs, stop and remove it', asy
   await row.getByRole('link', { name: 'e2e-web' }).click();
   await expect(page.getByRole('heading', { name: 'e2e-web' })).toBeVisible();
   await expect(page.locator('#logs')).toContainText('hello-e2e');
+  // The log filter, the timestamps switch and the download link.
+  await expect(page.locator('#logs')).toContainText('gamma');
+  await expect(page.locator('#logs')).toContainText(/^\d{4}-\d\d-\d\dT/);
+  await page.getByLabel('Filter').fill('BET');
+  await expect(page.locator('#logs')).toHaveText(/^\S+ beta$/);
+  await expect(page.locator('#logcount')).toHaveText('1 of 4 lines');
+  await page.getByLabel('Filter').fill('');
+  await page.getByLabel('Timestamps').uncheck();
+  await expect(page.locator('#logs')).toHaveText('hello-e2e\nalpha\nbeta\ngamma');
+  await expect(page.getByRole('link', { name: /Download/ })).toHaveAttribute('href', /logs\.txt\?tail=10000&timestamps=0$/);
+  const dl = await page.request.get(await page.getByRole('link', { name: /Download/ }).getAttribute('href') as string);
+  expect(dl.headers()['content-disposition']).toMatch(/^attachment; filename="e2e-web-\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d\.log"$/);
+  expect(await dl.text()).toBe('hello-e2e\nalpha\nbeta\ngamma\n');
   await expect(page.getByText('MODE=…')).toBeVisible();
 
   // Live usage is filled in by app.js; containers created here can be updated.

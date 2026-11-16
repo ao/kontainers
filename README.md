@@ -56,7 +56,8 @@ Version 0.2 is a rewrite. Earlier releases (0.1.x) accepted any login and must n
 What works, and is covered by the test suites below:
 
 - containers: list, inspect, create, start, stop, restart, unpause, remove (stopped containers
-  only; kontainers never force-removes), logs. Commands are split with shell quoting
+  only; kontainers never force-removes), logs (filter, 300 to 5000 lines, timestamps on or off,
+  download).) Commands are split with shell quoting
   (`sh -c "echo hi; sleep 60"`) but no shell runs and nothing is expanded. The detail page shows
   CPU, memory, network and process counts, refreshed every 5 seconds.
 - update image, for containers created in kontainers: pull the image again and, if it changed,

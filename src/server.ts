@@ -381,7 +381,15 @@ export function createHandler(d: Deps): Handler {
       if ((r = /^\/api\/containers\/([^/]+)\/stats$/.exec(p))) {
         return new Response(JSON.stringify(summarizeStats(await docker.stats(r[1]))), { headers: { 'content-type': 'application/json' } });
       }
-      if ((r = /^\/api\/containers\/([^/]+)\/logs$/.exec(p))) return text(await docker.logs(r[1], v.intInRange(url.searchParams.get('tail'), 1, 10000, 200)));
+      if ((r = /^\/api\/containers\/([^/]+)\/logs$/.exec(p))) return text(await docker.logs(r[1], v.intInRange(url.searchParams.get('tail'), 1, 10000, 200), url.searchParams.get('timestamps') !== '0'));
+      if ((r = /^\/api\/containers\/([^/]+)\/logs\.txt$/.exec(p))) {
+        // A download: up to 100000 lines, named after the container and the time.
+        const c = await docker.inspect(r[1]);
+        const name = String(c.Name || '').replace(/^\//, '').replace(/[^A-Za-z0-9_.-]/g, '_');
+        const body = await docker.logs(c.Id, v.intInRange(url.searchParams.get('tail'), 1, 100000, 10000), url.searchParams.get('timestamps') !== '0', 100000);
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+        return new Response(body, { headers: { 'content-type': 'text/plain; charset=utf-8', 'content-disposition': `attachment; filename="${name}-${stamp}.log"` } });
+      }
       if (p === '/images') {
         for (const [k, j] of pulls) if (j.state === 'failed' && Date.now() - j.at > 30 * 60 * 1000) pulls.delete(k);
         return page(views.imagesPage(ctx(s), await docker.listImages(), [...pulls].map(([ref, j]) => ({ ref, ...j }))));

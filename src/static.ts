@@ -67,6 +67,9 @@ form.stack label { display: grid; gap: .3rem; font-weight: 550; }
 form.stack label.check, label.check { display: flex; align-items: center; gap: .5rem; font-weight: 500; }
 form.row { display: flex; gap: .5rem; margin-bottom: 1.2rem; max-width: 36rem; }
 form.row input { flex: 1; }
+.logbar { display: flex; flex-wrap: wrap; align-items: end; gap: .6rem 1rem; margin-bottom: .6rem; }
+.logbar label { display: grid; gap: .25rem; font-size: .85rem; font-weight: 550; color: var(--muted); }
+.logbar label.check { display: flex; align-items: center; gap: .4rem; }
 form.autoupdate { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin: 1rem 0; padding: .8rem 1rem; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
 form.autoupdate small { flex-basis: 100%; }
 fieldset { border: 1px solid var(--line); border-radius: 6px; padding: .6rem .9rem; display: grid; gap: .45rem; margin: 0; }
@@ -157,25 +160,46 @@ document.addEventListener('submit', function (e) {
 (function () {
   var pre = document.getElementById('logs');
   if (!pre) return;
-  var url = pre.getAttribute('data-logs');
-  var follow = document.getElementById('follow');
-  var gone = false;
+  var base = pre.getAttribute('data-logs');
+  var follow = document.getElementById('follow'), filter = document.getElementById('logfilter');
+  var lines = document.getElementById('loglines'), ts = document.getElementById('logts');
+  var count = document.getElementById('logcount'), dl = document.getElementById('logdl');
+  var gone = false, text = '', timer = null;
   // Terminal colour and cursor codes are removed; the text is shown as plain text.
   var ansi = /\\u001b\\[[0-9;?]*[A-Za-z]|\\u001b\\][^\\u0007]*\\u0007/g;
+  function url() { return base + '?tail=' + (lines ? lines.value : '300') + '&timestamps=' + (ts && !ts.checked ? '0' : '1'); }
+  function show() {
+    var atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+    var all = text ? text.replace(/\\n$/, '').split('\\n') : [];
+    var q = filter ? filter.value.trim().toLowerCase() : '';
+    var kept = q ? all.filter(function (l) { return l.toLowerCase().indexOf(q) !== -1; }) : all;
+    pre.textContent = kept.length ? kept.join('\\n') : (q ? '(no line contains that)' : '(no output)');
+    if (count) count.textContent = q ? kept.length + ' of ' + all.length + ' lines' : all.length + ' lines';
+    if (atEnd) pre.scrollTop = pre.scrollHeight;
+  }
   function load() {
-    fetch(url, { credentials: 'same-origin' }).then(function (r) {
+    fetch(url(), { credentials: 'same-origin' }).then(function (r) {
       if (r.status === 404) { gone = true; throw new Error('the container no longer exists'); }
       if (r.status === 401) { gone = true; throw new Error('your session has ended; reload the page to log in'); }
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.text();
-    }).then(function (t) {
-      var atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
-      pre.textContent = t.replace(ansi, '') || '(no output)';
-      if (atEnd) pre.scrollTop = pre.scrollHeight;
-    }).catch(function (err) { pre.textContent = 'could not load logs: ' + err.message; });
+    }).then(function (t) { text = t.replace(ansi, ''); show(); })
+      .catch(function (err) { pre.textContent = 'could not load logs: ' + err.message; });
   }
+  // More lines are fetched less often.
+  function schedule() {
+    if (timer) clearInterval(timer);
+    var every = lines && Number(lines.value) > 1000 ? 5000 : 2000;
+    timer = setInterval(function () { if (!gone && follow && follow.checked && !document.hidden) load(); }, every);
+  }
+  if (filter) filter.addEventListener('input', show);
+  if (lines) lines.addEventListener('change', function () { load(); schedule(); });
+  if (ts) ts.addEventListener('change', function () {
+    load();
+    if (dl) dl.href = dl.href.replace(/&timestamps=0/, '') + (ts.checked ? '' : '&timestamps=0');
+  });
   load();
-  setInterval(function () { if (!gone && follow && follow.checked && !document.hidden) load(); }, 2000);
+  schedule();
 })();
 (function () {
   // Containers page: the search box and the Show select filter the rows as you type. Rows the

@@ -23,6 +23,9 @@
   is refused before the old container is stopped. Host paths it already has may stay; new ones
   follow `KONTAINERS_ALLOW_BIND_MOUNTS`.
 - New container: an option to update it automatically.
+- Logs on the container page: a filter that shows only matching lines (with a count), 300, 1000
+  or 5000 lines, timestamps on or off, and a download of the last 10000 lines (up to 100000 with
+  `?tail=`) as a file named after the container.
 - Clean up (linked from Images): untagged images, tagged images no container uses, networks no
   container uses, and anonymous volumes no container mounts, each listed with sizes before
   removal. Stopped containers count as users. Named volumes are never removed in bulk. Items are
