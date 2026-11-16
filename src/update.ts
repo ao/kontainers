@@ -27,7 +27,20 @@ export function recreateSpec(c: any, oldImage: any): CreateSpec {
       ports.push({ container: Number(port), host: Number(b.HostPort), hostIp: b.HostIp || '0.0.0.0', protocol: proto === 'udp' ? 'udp' : 'tcp' });
     }
   }
-  const volumes = (c.HostConfig?.Mounts || []).map((m: any) => ({ source: m.Source, target: m.Target, readOnly: !!m.ReadOnly }));
+  // The container's actual mounts, not only the ones it was created with: an image's VOLUME gets an
+  // anonymous volume that appears only here. Leaving it out lost its data on every update.
+  const volumes: NonNullable<CreateSpec['volumes']> = [];
+  const seen = new Set<string>();
+  for (const m of c.Mounts || []) {
+    if ((m.Type !== 'volume' && m.Type !== 'bind') || seen.has(m.Destination)) continue;
+    seen.add(m.Destination);
+    volumes.push({ source: m.Type === 'volume' ? m.Name : m.Source, target: m.Destination, readOnly: m.RW === false });
+  }
+  for (const m of c.HostConfig?.Mounts || []) {
+    if (seen.has(m.Target) || (m.Type && m.Type !== 'volume' && m.Type !== 'bind')) continue;
+    seen.add(m.Target);
+    volumes.push({ source: m.Source, target: m.Target, readOnly: !!m.ReadOnly });
+  }
   const restart = c.HostConfig?.RestartPolicy?.Name;
   return {
     name: String(c.Name || '').replace(/^\//, ''),
@@ -101,6 +114,12 @@ export async function updateContainerDetailed(docker: Docker, id: string, opts: 
   if (refusal) throw new v.ValidationError(refusal);
   const name = String(c.Name).replace(/^\//, '');
   const ref = c.Config.Image as string;
+  // The image the container was made from, before the pull: its ENV and CMD tell the image's own
+  // settings apart from the user's. A docker build that reused the tag can have deleted it; then
+  // the two cannot be told apart, and guessing would copy the old image's settings into the new
+  // container, so the update is refused.
+  const oldImage = await docker.inspectImage(c.Image).catch(() => null);
+  if (!oldImage) throw new v.ValidationError(`the image ${name} was created from is no longer on this host (was ${ref} rebuilt?), so its settings cannot be told apart from the image's; use Edit settings to recreate it`);
 
   await docker.pull(ref);
   const fresh = await docker.inspectImage(ref);
@@ -109,7 +128,6 @@ export async function updateContainerDetailed(docker: Docker, id: string, opts: 
     return { changed: false, held: true, message: `${name} was not updated: this image of ${ref} failed before.`, oldImage: c.Image, newImage: fresh.Id, id: c.Id };
   }
 
-  const oldImage = await docker.inspectImage(c.Image).catch(() => null);
   try {
     const newId = await replaceContainer(docker, c, recreateSpec(c, oldImage), { ...opts, keepBindMounts: true }, 'update');
     return { changed: true, message: `Updated ${name} to the newest ${ref}.`, oldImage: c.Image, newImage: fresh.Id, id: newId };
@@ -126,7 +144,8 @@ export async function replaceContainer(docker: Docker, c: any, spec: CreateSpec,
   const name = String(c.Name).replace(/^\//, '');
   const networks = Object.keys(c.NetworkSettings?.Networks || {}).filter(n => n !== 'bridge');
   const wasRunning = !!c.State?.Running;
-  const aside = `${name}-old-${String(c.Id).slice(0, 8)}`;
+  // Docker names are at most 128 characters.
+  const aside = `${name.slice(0, 128 - 13)}-old-${String(c.Id).slice(0, 8)}`;
   // Bad input fails here, before the old container is touched.
   docker.createBody({ ...spec, name }, { keepBindMounts: opts.keepBindMounts, allowedBindSources: opts.allowedBindSources });
 

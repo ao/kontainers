@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Fixed: Update image, Edit settings and automatic updates dropped anonymous volumes (an image's
+  VOLUME, such as a database's data directory): the new container started empty and the data
+  was left in a dangling volume. The container's actual mounts are now carried over by name.
+- Fixed: when the image a container was made from was gone (a `docker build` that reused the
+  tag deletes it), Update image copied that image's environment and command into the new
+  container. It now refuses and points to Edit settings, before pulling or stopping anything.
+- Fixed: two updates of one container at once could leave the old one running beside the new
+  one; the second is now refused. A 120-character name no longer makes Update stop and restart
+  the container for nothing (the set-aside name is shortened to fit).
+- Changed: only kontainers itself and the container that serves its Docker API (found from
+  `DOCKER_HOST`, by name, compose service or address, and looked up again every 30 s) are
+  protected from Stop, Restart, Remove and Update. Before, every service in kontainers' compose
+  project was, which locked out anyone who added kontainers to an existing compose file.
 - Containers page: a search box (name, image or compose project) that filters as you type, a Show
   filter (all, running, stopped, needs attention), and rows grouped by compose project with a
   running count per project. "Needs attention" means restarting, dead, unhealthy, or exited with

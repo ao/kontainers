@@ -102,20 +102,21 @@ describe('pages', () => {
     for (const s of ['exited', 'created', 'dead']) expect(buttons(containersPage(ctx, [row(s)]))).toEqual(['Start', 'Remove']);
   });
 
-  test("kontainers' own container and its compose siblings get no actions", () => {
-    const me = { id: 'f'.repeat(64), project: 'kontainers' };
+  test("kontainers' own container and the one serving its Docker API get no actions; other siblings do", () => {
+    const me = { id: 'f'.repeat(64), project: 'kontainers', apiId: 'e'.repeat(64) };
     const own = { ...row('running'), Id: me.id, Labels: { 'com.docker.compose.project': 'kontainers' } };
     const sib = { ...row('running'), Id: 'e'.repeat(64), Names: ['/kontainers-docker-proxy-1'], Labels: { 'com.docker.compose.project': 'kontainers' } };
     const other = { ...row('running'), Id: 'd'.repeat(64), Names: ['/other'], Labels: { 'com.docker.compose.project': 'shop' } };
     expect(isSelf(own, me)).toBe(true);
     expect(isSelf(sib, me)).toBe(true);
     expect(isSelf(other, me)).toBe(false);
-    expect(isSelf(other, { id: me.id, project: null })).toBe(false);
     expect(isSelf(own, null)).toBe(false);
-    const page = containersPage(ctx, [own, sib, other], me);
-    expect(buttons(page)).toEqual(['Stop', 'Restart']); // only "other"
+    const app = { ...row('running'), Id: 'c'.repeat(64), Names: ['/kontainers-app-1'], Labels: { 'com.docker.compose.project': 'kontainers' } };
+    expect(isSelf(app, me)).toBe(false); // same compose project, but neither kontainers nor its API
+    const page = containersPage(ctx, [own, sib, other, app], me);
+    expect(buttons(page)).toEqual(['Stop', 'Restart', 'Stop', 'Restart']); // "app" and "other"
     expect(page).toContain('this is kontainers');
-    expect(page).toContain('part of kontainers');
+    expect(page).toContain('kontainers&#39; Docker API: manage it on the host');
     const detail = containerPage(ctx, { Id: me.id, Name: '/kontainers', State: { Status: 'running' }, Config: { Labels: { 'kontainers.managed': 'true' } }, HostConfig: {} }, me);
     expect(buttons(detail)).toEqual([]);
   });

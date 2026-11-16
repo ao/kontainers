@@ -121,28 +121,32 @@ describe.skipIf(!DOCKER)('docker flows', () => {
     await dockerApi(`/containers/${name}?force=1`, { method: 'DELETE' });
   });
 
-  test('kontainers refuses to stop or remove itself or its compose siblings', async () => {
-    const mk = async (name: string, project: string) => {
-      const r = await dockerApi(`/containers/create?name=${name}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ Image: IMAGE, Cmd: ['sleep', '300'], Labels: { 'com.docker.compose.project': project } }) });
+  test('kontainers refuses to stop or remove itself or the container serving its Docker API', async () => {
+    // DOCKER_HOST here is tcp://dind:2375, so the sibling whose compose service is "dind" plays the
+    // socket proxy. Another service of the same project is an ordinary container.
+    const mk = async (name: string, project: string, service = 'app') => {
+      const r = await dockerApi(`/containers/create?name=${name}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ Image: IMAGE, Cmd: ['sleep', '300'], Labels: { 'com.docker.compose.project': project, 'com.docker.compose.service': service } }) });
       expect(r.status).toBe(201);
       expect((await dockerApi(`/containers/${name}/start`, { method: 'POST' })).status).toBe(204);
     };
-    const [own, sib, other] = [`k-${run}-self`, `k-${run}-sib`, `k-${run}-oth`];
-    await mk(own, `kself${run}`); await mk(sib, `kself${run}`); await mk(other, `kother${run}`);
+    const [own, sib, other, app] = [`k-${run}-self`, `k-${run}-sib`, `k-${run}-oth`, `k-${run}-app`];
+    await mk(own, `kself${run}`, 'kontainers'); await mk(sib, `kself${run}`, 'dind'); await mk(other, `kother${run}`); await mk(app, `kself${run}`);
     // A second server that believes it runs in `own`.
     const { srv: s2, c: c2 } = await readyServer({ KONTAINERS_SELF_CONTAINER: own });
     try {
       const list = await c2.page('/containers');
       expect(list).toMatch(new RegExp(`data-name="${own}"[\\s\\S]*?this is kontainers`));
-      expect(list).toMatch(new RegExp(`data-name="${sib}"[\\s\\S]*?part of kontainers`));
-      for (const n of [own, sib]) for (const op of ['stop', 'restart', 'remove', 'update']) {
-        expect((await c2.submit(`/containers/${n}/${op}`, {})).error).toContain('kontainers itself');
+      expect(list).toMatch(new RegExp(`data-name="${sib}"[\\s\\S]*?kontainers&#39; Docker API: manage it on the host`));
+      for (const op of ['stop', 'restart', 'remove', 'update']) {
+        expect((await c2.submit(`/containers/${own}/${op}`, {})).error).toContain('kontainers itself');
+        expect((await c2.submit(`/containers/${sib}/${op}`, {})).error).toContain('serves kontainers&#39; Docker API');
       }
       expect(((await (await dockerApi(`/containers/${sib}/json`)).json()) as any).State.Running).toBe(true);
       expect((await c2.submit(`/containers/${other}/stop`, {})).error).toBe('');
+      expect((await c2.submit(`/containers/${app}/stop`, {})).error).toBe('');
     } finally {
       await s2.stop();
-      for (const n of [own, sib, other]) await dockerApi(`/containers/${n}?force=1`, { method: 'DELETE' });
+      for (const n of [own, sib, other, app]) await dockerApi(`/containers/${n}?force=1`, { method: 'DELETE' });
     }
   }, 60000);
 

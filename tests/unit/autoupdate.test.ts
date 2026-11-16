@@ -201,3 +201,31 @@ describe('settleProblem', () => {
     expect(settleProblem({ State: { Running: true, Health: { Status: 'unhealthy' } } })).toBe('the new container is unhealthy');
   });
 });
+
+describe('Update image safeguards', () => {
+  test('refused, without stopping anything, when the old image is gone from the host', async () => {
+    const { d } = setup();
+    const id = d.run('web', 'app:1');
+    d.images.delete('i1'); // as a docker build that reuses the tag can do
+    d.registry.set('app:1', 'i2');
+    const { updateContainerDetailed } = await import('../../src/update');
+    await expect(updateContainerDetailed(d as any, id)).rejects.toThrow('no longer on this host');
+    expect(running(d, 'web').Id).toBe(id);
+    expect(running(d, 'web').State.Running).toBe(true);
+    expect(d.pulls).toEqual([]);
+  });
+  test('a 120-character name still fits the name the old container is set aside under', async () => {
+    const { d } = setup();
+    const long = 'x'.repeat(120);
+    const id = d.run(long, 'app:1');
+    d.registry.set('app:1', 'i2');
+    const renames: string[] = [];
+    const rename = d.rename.bind(d);
+    d.rename = async (i: string, n: string) => { renames.push(n); if (n.length > 128) throw new Error('invalid name'); return rename(i, n); };
+    const { updateContainerDetailed } = await import('../../src/update');
+    const r = await updateContainerDetailed(d as any, id);
+    expect(r.changed).toBe(true);
+    expect(renames[0].length).toBeLessThanOrEqual(128);
+    expect(running(d, long).Image).toBe('i2');
+  });
+});

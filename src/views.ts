@@ -43,19 +43,21 @@ function containerActions(ctx: PageCtx, id: string, name: string, state: string,
   return html`${a('start', 'Start')} ${a('remove', 'Remove', { confirm: `Remove container ${name}?`, cls: 'danger' })}`;
 }
 
-export interface SelfInfo { id: string; project: string | null }
+// apiId: the container that serves kontainers' Docker API (the socket proxy), when there is one.
+export interface SelfInfo { id: string; project: string | null; apiId?: string | null }
 
 const labelsOf = (c: any): Record<string, string> => c?.Labels || c?.Config?.Labels || {};
 
-// True for kontainers' own container and for the other containers of its compose project.
+// True for kontainers' own container and the one that serves its Docker API: stopping either from
+// the UI would kill the page or cut it off from Docker. Other services in the same compose project
+// are ordinary containers.
 export function isSelf(c: any, me: SelfInfo | null): boolean {
   if (!me) return false;
-  if (c?.Id === me.id) return true;
-  return !!me.project && labelsOf(c)['com.docker.compose.project'] === me.project;
+  return c?.Id === me.id || (!!me.apiId && c?.Id === me.apiId);
 }
 
 const selfNote = (c: any, me: SelfInfo | null) =>
-  html`<small class="muted">${c?.Id === me?.id ? 'this is kontainers' : 'part of kontainers'}: manage it on the host</small>`;
+  html`<small class="muted">${c?.Id === me?.id ? 'this is kontainers' : "kontainers' Docker API"}: manage it on the host</small>`;
 
 // Docker lists a port published on all interfaces twice (0.0.0.0 and ::); show it once as "*".
 export function formatPorts(ports: any[]): string {

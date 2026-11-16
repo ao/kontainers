@@ -240,17 +240,34 @@ export function createHandler(d: Deps): Handler {
   // kontainers' own container and, under compose, the rest of its project (the socket proxy):
   // stopping or removing one of them from the UI would cut the UI off from Docker or kill it.
   let selfCache: views.SelfInfo | null | undefined;
+  let selfAt = 0;
   async function self(): Promise<views.SelfInfo | null> {
-    if (selfCache !== undefined) return selfCache;
+    if (selfCache !== undefined && (selfCache === null || Date.now() - selfAt < 30_000)) return selfCache;
     if (!d.selfContainer) return (selfCache = null);
     try {
       const c = await docker.inspect(d.selfContainer);
-      selfCache = { id: c.Id, project: c.Config?.Labels?.['com.docker.compose.project'] ?? null };
+      const project = c.Config?.Labels?.['com.docker.compose.project'] ?? null;
+      selfCache = { id: c.Id, project, apiId: await apiContainerId(project) };
+      selfAt = Date.now();
     } catch (e) {
       if (e instanceof DockerError && e.status === 404) selfCache = null; // not a container after all
-      else return null; // daemon unreachable: try again on the next request
+      else return selfCache ?? null; // daemon unreachable: keep what was known, try again later
     }
     return selfCache ?? null;
+  }
+  // The container that serves kontainers' Docker API, when DOCKER_HOST names one (tcp://docker-proxy:2375
+  // in compose.yaml): by container name, by compose service in kontainers' own project, or by address.
+  // Looked up again every 30 s, because compose recreates it under a new ID.
+  async function apiContainerId(project: string | null): Promise<string | null> {
+    const api = dockerApiHost(cfg.dockerHost);
+    if (!api) return null;
+    for (const c of await docker.listContainers()) {
+      const labels = c.Labels || {};
+      if ((c.Names || []).some((n: string) => n.replace(/^\//, '') === api)
+        || (!!project && labels['com.docker.compose.project'] === project && labels['com.docker.compose.service'] === api)
+        || Object.values(c.NetworkSettings?.Networks || {}).some((n: any) => n?.IPAddress === api)) return c.Id;
+    }
+    return null;
   }
   const updateView = (): views.UpdateView | null => d.updates
     ? { get: (ref: string) => d.updates!.get(ref), lastRun: d.updates.lastRun, scheduled: cfg.updateCheckHours > 0 ? cfg.updateCheckHours : null }
@@ -259,8 +276,9 @@ export function createHandler(d: Deps): Handler {
   async function refuseSelf(id: string): Promise<void> {
     const me = await self();
     if (!me) return;
-    if (views.isSelf(await docker.inspect(id), me)) {
-      throw new v.ValidationError('this is kontainers itself, or part of its compose project; stopping or removing it here would cut off this page. Manage it on the host with docker compose or docker');
+    const c = await docker.inspect(id);
+    if (views.isSelf(c, me)) {
+      throw new v.ValidationError(c.Id === me.id ? 'this is kontainers itself; stopping or removing it here would cut off this page. Manage it on the host with docker compose or docker' : "this container serves kontainers' Docker API; stopping or removing it here would cut this page off from Docker. Manage it on the host with docker compose or docker");
     }
   }
 
@@ -367,7 +385,7 @@ export function createHandler(d: Deps): Handler {
       if ((r = /^\/containers\/([^/]+)\/edit$/.exec(p))) {
         const c = await docker.inspect(r[1]);
         const me = await self();
-        if (me && views.isSelf(c, me)) throw new v.ValidationError('this is kontainers itself, or part of its compose project; change it on the host');
+        if (me && views.isSelf(c, me)) throw new v.ValidationError("this is kontainers itself or the container that serves its Docker API; change it on the host");
         const refusal = updatable(c);
         if (refusal) throw new v.ValidationError(refusal.replace('can be updated here', 'can be edited here').replace('update it with', 'change it in the compose file and run'));
         const spec = recreateSpec(c, await docker.inspectImage(c.Image).catch(() => null));
@@ -467,7 +485,7 @@ export function createHandler(d: Deps): Handler {
         const refusal = updatable(c);
         if (refusal) throw new v.ValidationError(refusal.replace('can be updated here', 'can be edited here').replace('update it with', 'change it in the compose file and run'));
         const name = String(c.Name || '').replace(/^\//, '');
-        if (d.autoUpdates?.busy.has(name)) throw new v.ValidationError(`an update of ${name} is running; try again in a minute`);
+        if (d.autoUpdates?.busy.has(name)) throw new v.ValidationError(`an update of ${name} is already running; try again in a minute`);
         const spec = containerSpec(f);
         if (f.pull) await docker.pull(spec.image);
         // Host paths the container already has may stay; new ones follow KONTAINERS_ALLOW_BIND_MOUNTS.
@@ -489,7 +507,7 @@ export function createHandler(d: Deps): Handler {
         await refuseSelf(id);
         const c = await docker.inspect(id);
         const name = String(c.Name || '').replace(/^\//, '');
-        if (d.autoUpdates?.busy.has(name)) throw new v.ValidationError(`an automatic update of ${name} is running; try again in a minute`);
+        if (d.autoUpdates?.busy.has(name)) throw new v.ValidationError(`an update of ${name} is already running; try again in a minute`);
         d.autoUpdates?.busy.add(name);
         try {
           // Watched for a few seconds, so an image that crashes at once is caught and rolled back.

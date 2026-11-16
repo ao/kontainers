@@ -161,6 +161,39 @@ describe.skipIf(!DOCKER)('automatic updates and notifications', () => {
     expect(note.title).toBe(`${SICK} is unhealthy`);
   }, 60000);
 
+  test('Update image keeps the data in a volume the image declares', async () => {
+    const VREPO = `${REPO}vol`, VREF = `${VREPO}:1`, NAME = `au-vol-${run}`;
+    const build = async (changes: string) => {
+      const tmp = `au-tmp-${Math.random().toString(36).slice(2, 8)}`;
+      expect((await post(`/containers/create?name=${tmp}`, { Image: 'busybox:1.36', Cmd: ['true'] })).status).toBe(201);
+      expect((await post(`/commit?container=${tmp}&repo=${encodeURIComponent(VREPO)}&tag=1&changes=${encodeURIComponent(changes)}`, {})).status).toBe(201);
+      await api(`/containers/${tmp}?force=1`, { method: 'DELETE' });
+      await stream(`/images/${encodeURIComponent(VREPO)}/push?tag=1`, AUTH);
+      return imageId(VREF);
+    };
+    const exec = async (cmd: string[]) => {
+      const e = await (await post(`/containers/${NAME}/exec`, { Cmd: cmd, AttachStdout: true, AttachStderr: true })).json() as any;
+      return (await post(`/exec/${e.Id}/start`, { Detach: false, Tty: false })).text();
+    };
+    const v1 = await build('VOLUME /data');
+    try {
+      expect((await c.submit('/containers', { image: VREF, name: NAME, pull: '', cmd: 'sleep 600', start: 'on' })).error).toBe('');
+      await exec(['sh', '-c', 'echo precious > /data/important.txt']);
+      const before = await inspect(NAME);
+      const vol = before.Mounts.find((m: any) => m.Destination === '/data').Name;
+      await build('VOLUME /data\nLABEL release=2');
+      expect((await api(`/images/${v1}/tag?repo=${encodeURIComponent(VREPO)}&tag=1`, { method: 'POST' })).status).toBe(201);
+      const r = await c.submit(`/containers/${NAME}/update`, {});
+      expect(r.flash).toContain(`Updated ${NAME}`);
+      const after = await inspect(NAME);
+      expect(after.Id).not.toBe(before.Id);
+      expect(after.Mounts.find((m: any) => m.Destination === '/data').Name).toBe(vol);
+      expect(await exec(['cat', '/data/important.txt'])).toContain('precious');
+    } finally {
+      await api(`/containers/${NAME}?force=1&v=1`, { method: 'DELETE' });
+    }
+  }, 120000);
+
   test('the container list shows the unhealthy and exited containers as needing attention', async () => {
     const page = await c.page('/containers?state=attention');
     for (const n of [CRASH, SICK]) expect(page).toMatch(new RegExp(`<tr data-name="${n}"[^>]*data-attention="1"(?! hidden)[^>]*>`));
