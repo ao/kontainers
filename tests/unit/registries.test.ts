@@ -80,8 +80,25 @@ describe('Registries', () => {
     expect(() => r.remove(l.id)).toThrow('not found');
   });
   test('hints for refused pulls', () => {
-    expect(loginHint('pull access denied for me/app, repository does not exist or may require \'docker login\'', 'docker.io', false)).toContain('add a login for docker.io');
-    expect(loginHint('Head "https://ghcr.io/v2/me/app/manifests/1": unauthorized', 'ghcr.io', true)).toContain('refused the login saved for ghcr.io');
-    expect(loginHint('manifest unknown', 'ghcr.io', false)).toBe('');
+    expect(loginHint('pull access denied for me/app, repository does not exist or may require \'docker login\'', 'docker.io', 'none')).toContain('add a login for docker.io');
+    expect(loginHint('Head "https://ghcr.io/v2/me/app/manifests/1": unauthorized', 'ghcr.io', 'sent')).toContain('refused the login saved for ghcr.io');
+    expect(loginHint('manifest unknown', 'ghcr.io', 'none')).toBe('');
+    expect(loginHint('open /var/lib/docker/x: permission denied', 'ghcr.io', 'sent')).toBe('');
+    expect(loginHint('unauthorized: authentication required', 'ghcr.io', 'unreadable')).toContain('cannot be read');
+  });
+});
+
+describe('the key file and sealed secrets', () => {
+  test('an empty key file (a failed write) counts as none; a secret moved to another registry does not open', () => {
+    const { r, db, key, dir } = setup();
+    require('node:fs').writeFileSync(key, '');
+    r.add({ registry: 'ghcr.io', username: 'me', password: 'pw-a' });
+    expect(readFileSync(key).length).toBe(32);
+    r.add({ registry: 'quay.io', username: 'me', password: 'pw-b' });
+    const a = db.query("SELECT secret FROM registry_logins WHERE registry = 'ghcr.io'").get() as { secret: Uint8Array };
+    db.query("UPDATE registry_logins SET secret = ? WHERE registry = 'quay.io'").run(a.secret);
+    expect(r.header('quay.io/me/app')).toBeNull();
+    expect(decode(r.header('ghcr.io/me/app')!).password).toBe('pw-a');
+    rmSync(dir, { recursive: true });
   });
 });

@@ -11,7 +11,7 @@ import { Auth, RateLimiter, safeEqual, type Session } from './auth';
 import { Docker, DockerError, summarizeStats, type CreateSpec } from './docker';
 import type { ProxyManager, RuleStore } from './proxy';
 import { snapshot } from './db';
-import { recreateSpec, replaceContainer, updatable, updateContainerDetailed } from './update';
+import { recreateSpec, replaceContainer, updatable, updateContainerDetailed, type Journal } from './update';
 import type { Notifier } from './notify';
 import { EVENT_KINDS } from './notify';
 import type { AutoUpdates } from './autoupdate';
@@ -23,7 +23,7 @@ import * as views from './views';
 import * as cleanup from './cleanup';
 import { NameLocks } from './locks';
 import { diskFull, DISK_FULL, storageTrouble, writeFailed } from './storage';
-import type { Registries } from './registries';
+import { validateRegistry, type Registries } from './registries';
 
 export interface Deps {
   cfg: Config;
@@ -42,6 +42,7 @@ export interface Deps {
   // Aborted at shutdown: replacements being watched are undone instead of left half done.
   stopping?: AbortSignal;
   registries?: Registries;
+  journal?: Journal;
 }
 
 export type Handler = (req: Request, socketIp: string) => Promise<Response>;
@@ -341,10 +342,19 @@ export function createHandler(d: Deps): Handler {
   if (d.proxy) d.proxy.guard = proxyTargetRefusal;
   // Per-name locks shared with automatic updates.
   const locks = d.autoUpdates?.busy ?? new NameLocks();
+  // The container set aside while <name> is replaced, <name>-old-<id>: starting or removing it
+  // meanwhile would leave two instances on the same data, or nothing to put back.
+  const setAsideOf = (name: string) => { const m = /^(.+)-old-[0-9a-f]{8}$/.exec(name); return m && locks.has(m[1]) ? m[1] : null; };
+  function refuseSetAside(name: string): void {
+    const base = setAsideOf(name);
+    if (base) throw new v.ValidationError(`${name} is the old container, set aside while ${base} is updated or edited; it is removed or put back when that finishes`);
+  }
   async function refuseBusy(id: string): Promise<void> {
     const name = String((await docker.inspect(id)).Name || '').replace(/^\//, '');
+    refuseSetAside(name);
     if (locks.has(name)) throw new v.ValidationError(`an update or edit of ${name} is running; wait for it to finish (a minute or two) and try again`);
   }
+  const replaceOpts = () => ({ signal: d.stopping, journal: d.journal, wasStopped: d.events ? (cid: string) => d.events!.wasStopped(cid) : undefined });
   async function refuseProxyTarget(name: string): Promise<void> {
     const no = await proxyTargetRefusal(name);
     if (no) throw new v.ValidationError(no.reason);
@@ -460,7 +470,7 @@ export function createHandler(d: Deps): Handler {
         const c = await docker.inspect(r[1]);
         const name = String(c.Name || '').replace(/^\//, '');
         const row = d.autoUpdates?.get(name) ?? null;
-        const auto = d.autoUpdates ? { on: !!row && row.container_id === c.Id, row } : null;
+        const auto = d.autoUpdates ? { on: d.autoUpdates.isOn(name, c.Id), row } : null;
         return page(views.containerPage(ctx(s), c, await self(), updateView(), auto));
       }
       if ((r = /^\/api\/containers\/([^/]+)\/stats$/.exec(p))) {
@@ -570,11 +580,13 @@ export function createHandler(d: Deps): Handler {
         const refusal = updatable(c);
         if (refusal) throw new v.ValidationError(refusal.replace('can be updated here', 'can be edited here').replace('update it with', 'change it in the compose file and run'));
         const name = String(c.Name || '').replace(/^\//, '');
+        refuseSetAside(name);
         // Taken straight after the inspect, with nothing awaited in between, and held for the pull too.
         const release = locks.take(name);
         if (!release) throw new v.ValidationError(`an update or edit of ${name} is already running; try again in a minute`);
+        const spec = containerSpec(f);
+        let rep: { id: string; note: string | null };
         try {
-          const spec = containerSpec(f);
           if (f.pull) await docker.pull(spec.image);
           // Host paths the container already has may stay (read-only ones read-only); new ones follow
           // KONTAINERS_ALLOW_BIND_MOUNTS.
@@ -582,12 +594,13 @@ export function createHandler(d: Deps): Handler {
             ...(c.Mounts || []).filter((m: any) => m.Type === 'bind').map((m: any) => ({ source: String(m.Source), readOnly: m.RW === false })),
             ...(c.HostConfig?.Mounts || []).filter((m: any) => m.Type === 'bind').map((m: any) => ({ source: String(m.Source), readOnly: !!m.ReadOnly })),
           ];
-          const rep = await replaceContainer(docker, c, spec, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, allowedBinds: binds, signal: d.stopping }, 'saving the settings');
+          rep = await replaceContainer(docker, c, spec, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, allowedBinds: binds, ...replaceOpts() }, 'saving the settings');
           d.autoUpdates?.recreated(name, rep.id);
           back = `/containers/${encodeURIComponent(name)}`;
-          if (d.updates) await d.updates.check(spec.image).catch(() => {});
-          return `Saved the settings of ${name}; it was recreated${rep.note ? `; ${rep.note}` : ''}.`;
         } finally { release(); }
+        // After the lock is released: a crash of the new container from now on is reported as one.
+        if (d.updates) await d.updates.check(spec.image).catch(() => {});
+        return `Saved the settings of ${name}; it was recreated${rep.note ? `; ${rep.note}` : ''}.`;
       }, { ...f, _edit: String(id) });
     }
     if ((r = /^\/containers\/([^/]+)\/update$/.exec(p))) {
@@ -597,15 +610,17 @@ export function createHandler(d: Deps): Handler {
         await refuseSelf(id);
         const c = await docker.inspect(id);
         const name = String(c.Name || '').replace(/^\//, '');
+        refuseSetAside(name);
         const release = locks.take(name);
         if (!release) throw new v.ValidationError(`an update or edit of ${name} is already running; try again in a minute`);
+        let r: Awaited<ReturnType<typeof updateContainerDetailed>>;
         try {
           // Watched for a few seconds, so an image that crashes at once is caught and rolled back.
-          const r = await updateContainerDetailed(docker, id, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, healthTimeoutMs: 0, signal: d.stopping });
+          r = await updateContainerDetailed(docker, id, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, healthTimeoutMs: 0, ...replaceOpts() });
           if (r.changed) d.autoUpdates?.recreated(name, r.id);
-          if (c.Config?.Image && d.updates) await d.updates.check(c.Config.Image).catch(() => {});
-          return r.message;
         } finally { release(); }
+        if (c.Config?.Image && d.updates) await d.updates.check(c.Config.Image).catch(() => {});
+        return r.message;
       });
     }
     if (p === '/updates/check') {
@@ -636,7 +651,7 @@ export function createHandler(d: Deps): Handler {
         const fails: string[] = [];
         for (const c of todo) {
           const n = String(c.Names?.[0] || c.Id).replace(/^\//, '');
-          if (locks.has(n)) { fails.push(`${n}: an update or edit is running`); continue; }
+          if (locks.has(n) || setAsideOf(n)) { fails.push(`${n}: an update or edit is running`); continue; }
           try { if (op === 'start') await docker.start(c.Id); else if (op === 'stop') await docker.stop(c.Id); else await docker.restart(c.Id); }
           catch (e) { fails.push(`${n}: ${errorMessage(e)}`); }
         }
@@ -662,20 +677,31 @@ export function createHandler(d: Deps): Handler {
       });
     }
     if (p === '/settings/registries') {
-      return act(s, ip, '/settings', 'registry-add', String(f.registry || '').slice(0, 200), async () => {
+      // Recorded under the registry it names, never as typed: a token pasted into the wrong field
+      // must not end up on the Activity page.
+      let target = '(invalid registry)';
+      try { target = validateRegistry(f.registry); } catch { /* the action says why */ }
+      return act(s, ip, '/settings', 'registry-add', target, async () => {
         if (!d.registries) throw new v.ValidationError('registry logins are not available');
-        const l = d.registries.add({ registry: f.registry, username: f.username, password: f.password });
-        // Checked once, so a typo shows now rather than at the next pull.
+        const l = d.registries.validate({ registry: f.registry, username: f.username, password: f.password });
+        // Checked before it is saved: a wrong Docker Hub login would make every pull from Docker
+        // Hub fail, public images too.
+        let note: string;
         try {
-          await docker.checkLogin(l.registry, l.username, f.password);
-          d.registries.noteResult(l.registry, 'accepted when it was saved');
-          return `Saved the login for ${l.registry}; the registry accepted it.`;
+          await docker.checkLogin(l.registry, l.username, l.password);
+          note = '; the registry accepted it';
         } catch (e) {
           const m = errorMessage(e);
-          if (errorStatus(e) === 403 && !/denied|unauthorized/i.test(m)) return `Saved the login for ${l.registry}. It could not be checked: the Docker API refused the check (with docker-socket-proxy, set AUTH=1 on it). The next pull uses it.`;
-          d.registries.noteResult(l.registry, `failed: refused when it was saved: ${m}`);
-          return `Saved the login for ${l.registry}, but the registry refused it: ${m}. Correct it by saving the login again.`;
+          if (errorStatus(e) === 401 || /unauthorized|incorrect username or password|authentication required/i.test(m)) {
+            throw new v.ValidationError(`the registry refused this login, so it was not saved: ${m}`);
+          }
+          note = errorStatus(e) === 403
+            ? '. It could not be checked: the Docker API refused the check (with docker-socket-proxy, set AUTH=1 on it); the next pull uses it'
+            : `. It could not be checked (${m}); the next pull uses it`;
         }
+        const saved = d.registries.add(l);
+        d.registries.noteResult(saved.registry, note.startsWith(';') ? 'accepted when it was saved' : 'saved without a check');
+        return `Saved the login for ${saved.registry}${note}.`;
       });
     }
     if ((r = /^\/settings\/registries\/(\d+)\/remove$/.exec(p))) {

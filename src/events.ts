@@ -6,6 +6,7 @@
 
 import type { Docker } from './docker';
 import type { Notifier } from './notify';
+import { endingSignal } from './update';
 
 const KILL_WINDOW_MS = 30_000;
 const EXIT_REPEAT_MS = 10 * 60_000;
@@ -19,6 +20,7 @@ export class EventWatcher {
   private killedAt = new Map<string, number>();
   private oomAt = new Map<string, number>();
   private deaths = new Map<string, number[]>();
+  // Health is kept per container ID: a container recreated under the same name starts afresh.
   private unhealthy = new Set<string>();
   // Containers whose "unhealthy" note went out: only they get a "healthy again" one, so a
   // healthcheck that flaps does not send one every cycle.
@@ -34,6 +36,10 @@ export class EventWatcher {
   }
 
   start(): void { void this.loop(); }
+
+  // Someone stopped or killed this container (docker stop, restart, kill), as far as the events seen
+  // say. For a container just made by an update, so any record counts.
+  wasStopped(id: string): boolean { return this.killedAt.has(id); }
   stop(): void { this.stopped = true; this.ctrl?.abort(); }
 
   // Reconnects with a growing pause when the stream ends or fails (daemon restart, socket proxy
@@ -72,11 +78,13 @@ export class EventWatcher {
     const action = String(ev.Action ?? ev.status ?? '');
     const at = ev.timeNano ? Math.floor(ev.timeNano / 1e6) : ev.time ? ev.time * 1000 : this.now();
 
+    // A kill with a signal that does not end a process (HUP for a reload) is not a stop.
+    if (action === 'kill' && !endingSignal(attrs.signal)) return;
     if (action === 'kill' || action === 'stop') { this.killedAt.set(id, at); this.trim(at); return; }
     // An oom event can come from any process in the container; it explains a die only if close to it.
     if (action === 'oom') { this.oomAt.set(id, at); return; }
     if (action === 'start') { this.oomAt.delete(id); return; }
-    if (action === 'destroy') { this.killedAt.delete(id); this.oomAt.delete(id); this.unhealthy.delete(name); this.reported.delete(name); return; }
+    if (action === 'destroy') { this.killedAt.delete(id); this.oomAt.delete(id); this.unhealthy.delete(id); this.reported.delete(id); return; }
 
     if (action === 'die') {
       const oomAt = this.oomAt.get(id);
@@ -106,11 +114,11 @@ export class EventWatcher {
       // A container being replaced is judged by the update itself.
       if (this.quiet(name)) return;
       const status = action.split(':')[1]?.trim();
-      if (status === 'unhealthy' && !this.unhealthy.has(name)) {
-        this.unhealthy.add(name);
+      if (status === 'unhealthy' && !this.unhealthy.has(id)) {
+        this.unhealthy.add(id);
         this.post({ kind: 'health', title: `${name} is unhealthy`, message: `The healthcheck of ${name} (${attrs.image || 'unknown image'}) reports unhealthy.`, container: name },
-          `health:${name}`, HEALTH_REPEAT_MS, () => this.reported.add(name));
-      } else if (status === 'healthy' && this.unhealthy.delete(name) && this.reported.delete(name)) {
+          `health:${name}`, HEALTH_REPEAT_MS, () => this.reported.add(id));
+      } else if (status === 'healthy' && this.unhealthy.delete(id) && this.reported.delete(id)) {
         this.post({ kind: 'health', title: `${name} is healthy again`, message: `The healthcheck of ${name} reports healthy again.`, container: name },
           `health-ok:${name}`, HEALTH_REPEAT_MS);
       }

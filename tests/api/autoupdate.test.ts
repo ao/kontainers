@@ -264,6 +264,13 @@ describe.skipIf(!DOCKER)('automatic updates and notifications', () => {
       const saving = c.submit(`/containers/${NAME}/edit`, { image: 'busybox:1.36', pull: '', cmd: quick('sleep 602'), ports: '', env: '', volumes: '', restart: 'no' });
       // As a backup script would: stop the new container from outside while it settles.
       const fresh = await until('the new container', async () => { const x = await inspect(NAME); return x.Id && x.Id !== old && x.State?.Running ? x.Id : null; }, 30000);
+      // The old container, set aside meanwhile, cannot be started or removed from kontainers.
+      const c2 = new Client(srv.base);
+      expect((await c2.post('/login', { username: 'admin', password: PW }, { csrf: false })).status).toBe(303);
+      await c2.page('/containers');
+      const aside = `${NAME}-old-${old.slice(0, 8)}`;
+      expect((await c2.submit(`/containers/${aside}/start`, {})).error).toContain('set aside while');
+      expect((await c2.submit(`/containers/${aside}/remove`, {})).error).toContain('set aside while');
       expect((await post(`/containers/${fresh}/stop?t=2`)).status).toBe(204);
       const r = await saving;
       expect(r.error).toBe('');

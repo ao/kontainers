@@ -326,7 +326,39 @@ describe('recoverInterrupted', () => {
     expect(kept.length).toBe(1);
     expect(d.containers.has(old)).toBe(false);
   });
-  test('the new one is not running: both are left, with a note', async () => {
+  const journalOf = (rows: { name: string; old_id: string; was_running: number }[]) => ({ begin() {}, end(n: string) { const i = rows.findIndex(r => r.name === n); if (i >= 0) rows.splice(i, 1); }, all: () => [...rows] });
+  test('with the journal: a new one that never started goes, and the old one is back and running', async () => {
+    const { d } = setup();
+    const old = aside(d, 'web', false);
+    const now = d.run('web', 'app:1');
+    d.find(now).State = { Running: false, Status: 'created' };
+    const rows = [{ name: 'web', old_id: old, was_running: 1 }];
+    const { recoverInterrupted } = await import('../../src/update');
+    expect((await recoverInterrupted(d as any, () => {}, journalOf(rows)))[0].text).toContain('before the new container started');
+    expect(d.find('web').Id).toBe(old);
+    expect(d.find('web').State.Running).toBe(true);
+    expect(d.containers.size).toBe(1);
+    expect(rows).toEqual([]);
+  });
+  test('with the journal: stopped for an update and nothing else happened, it is started again', async () => {
+    const { d } = setup();
+    const id = d.run('web', 'app:1');
+    d.find(id).State = { Running: false, Status: 'exited', ExitCode: 0 };
+    const rows = [{ name: 'web', old_id: id, was_running: 1 }];
+    const { recoverInterrupted } = await import('../../src/update');
+    expect((await recoverInterrupted(d as any, () => {}, journalOf(rows)))[0].text).toContain(`started web again`);
+    expect(d.find('web').State.Running).toBe(true);
+  });
+  test('with the journal: a container that was stopped before its edit is put back stopped', async () => {
+    const { d } = setup();
+    const old = aside(d, 'web', false);
+    const rows = [{ name: 'web', old_id: old, was_running: 0 }];
+    const { recoverInterrupted } = await import('../../src/update');
+    await recoverInterrupted(d as any, () => {}, journalOf(rows));
+    expect(d.find('web').Id).toBe(old);
+    expect(d.find('web').State.Running).toBe(false);
+  });
+  test('without a journal entry, a new one that is not running: both are left, with a note', async () => {
     const { d } = setup();
     aside(d, 'web', false);
     const now = d.run('web', 'app:1');
@@ -376,5 +408,50 @@ describe('replacing a container', () => {
     expect(endpointOf(c, { Aliases: ['abcdef123456', 'web', 'api', 'api.internal'], IPAMConfig: { IPv4Address: '10.5.0.9' } }))
       .toEqual({ Aliases: ['api', 'api.internal'], IPAMConfig: { IPv4Address: '10.5.0.9' } });
     expect(endpointOf(c, { Aliases: null, IPAMConfig: null })).toEqual({});
+  });
+});
+
+describe('replacing a container, when things go wrong', () => {
+  test('kontainers told to stop while the old container stops: it is started again and nothing else changes', async () => {
+    const { d } = setup();
+    const id = d.run('web', 'app:1');
+    const stop = new AbortController();
+    const realStop = d.stop.bind(d);
+    d.stop = async (i: string) => { await realStop(i); stop.abort(); };
+    const { replaceContainer } = await import('../../src/update');
+    await expect(replaceContainer(d as any, d.find(id), { name: 'web', image: 'app:1' }, { signal: stop.signal }, 'update')).rejects.toThrow('nothing was changed');
+    expect(d.find('web').Id).toBe(id);
+    expect(d.find('web').State.Running).toBe(true);
+    expect(d.containers.size).toBe(1);
+  });
+  test('a rollback that cannot give the old container its name back says so', async () => {
+    const { d } = setup();
+    const id = d.run('web', 'app:1');
+    d.image('bad', 'crash'); d.tags.set('bad:1', 'bad');
+    const rename = d.rename.bind(d);
+    d.rename = async (i: string, n: string) => { if (n === 'web') throw new Error('name in use'); return rename(i, n); };
+    const { replaceContainer } = await import('../../src/update');
+    const err = await replaceContainer(d as any, d.find(id), { name: 'web', image: 'bad:1' }, {}, 'saving the settings').catch(e => e);
+    expect(err.message).toContain('putting the old container back went wrong');
+    expect(err.message).toContain('could not get its name back and is still web-old-');
+    expect(err.message).not.toContain('so the old container was put back');
+  });
+  test('a kill with HUP while it settles is not a stop someone asked for: a crash is still rolled back', async () => {
+    const { d } = setup();
+    const id = d.run('web', 'app:1');
+    d.image('bad', 'crash'); d.tags.set('bad:1', 'bad');
+    d.pastEvents = async (f: { container: string[] }) => f.container.map(cid => ({ Action: 'kill', Actor: { ID: cid, Attributes: { signal: '1' } } }));
+    const { replaceContainer } = await import('../../src/update');
+    await expect(replaceContainer(d as any, d.find(id), { name: 'web', image: 'bad:1' }, { sleep: async () => {} }, 'update')).rejects.toThrow('old container was put back');
+    expect(d.find('web').Id).toBe(id);
+  });
+  test('the event watcher\'s record of a stop is enough', async () => {
+    const { d } = setup();
+    const id = d.run('web', 'app:1');
+    d.image('bad', 'crash'); d.tags.set('bad:1', 'bad');
+    d.pastEvents = async () => [];
+    const { replaceContainer } = await import('../../src/update');
+    const r = await replaceContainer(d as any, d.find(id), { name: 'web', image: 'bad:1' }, { wasStopped: () => true }, 'update');
+    expect(r.note).toContain('stopped by someone');
   });
 });

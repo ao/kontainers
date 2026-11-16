@@ -55,12 +55,17 @@ describe.skipIf(!DOCKER)('registry logins', () => {
     expect(r.error).toContain(`add a login for ${HOST} on the Settings page`);
   }, 60000);
 
-  test('a wrong password is saved but reported as refused', async () => {
+  test('a wrong password is refused and not saved', async () => {
     await c.page('/settings');
     const r = await c.submit('/settings/registries', { registry: HOST, username: USER, password: 'wrong' });
-    expect(r.flash).toContain(`Saved the login for ${HOST}, but the registry refused it`);
-    const pull = await c.submit('/containers', { image: REF, name: NAME, pull: 'on', cmd: 'sleep 600', start: 'on' });
-    expect(pull.error).toContain(`the registry refused the login saved for ${HOST}`);
+    expect(r.error).toContain('the registry refused this login, so it was not saved');
+    expect(r.body).toContain('No registry logins.');
+    expect(r.body).not.toContain('wrong');
+    // A token pasted into the registry field is not recorded as typed.
+    await c.submit('/settings/registries', { registry: 'ghp_SECRETTOKEN value', username: USER, password: 'x' });
+    const activity = await c.page('/activity?q=registry');
+    expect(activity).toContain('(invalid registry)');
+    expect(activity).not.toContain('ghp_SECRETTOKEN');
   }, 60000);
 
   test('with the right login: pull, run, and the update check can read the registry', async () => {

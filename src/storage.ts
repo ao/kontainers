@@ -1,7 +1,7 @@
 // kontainers' own database on /data: telling a full or read-only volume apart from other errors,
 // and remembering that writes failed, so every page can say so for a while.
 
-export const diskFull = (e: unknown) => /SQLITE_FULL|database or disk is full|SQLITE_READONLY|readonly database/i.test(`${(e as { code?: string })?.code ?? ''} ${(e as Error)?.message ?? ''}`);
+export const diskFull = (e: unknown) => /SQLITE_FULL|database or disk is full|SQLITE_READONLY|readonly database|ENOSPC|no space left on device|EROFS|read-only file system/i.test(`${(e as { code?: string })?.code ?? ''} ${(e as Error)?.message ?? ''}`);
 export const DISK_FULL = 'kontainers could not write its database: the data volume is full or read-only. Free space on it (/data in the image) and try again';
 
 const SHOW_MS = 10 * 60_000;

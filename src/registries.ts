@@ -8,7 +8,8 @@
 
 import type { Database } from 'bun:sqlite';
 import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, fsyncSync, linkSync, openSync, readFileSync, unlinkSync, writeSync } from 'node:fs';
+import { dirname } from 'node:path';
 import * as v from './validate';
 import { writeFailed } from './storage';
 
@@ -58,15 +59,20 @@ export class Registries {
 
   has(registry: string): boolean { return !!this.db.query('SELECT 1 FROM registry_logins WHERE registry = ?').get(registry); }
 
-  // Adds a login, or replaces the one for that registry.
-  add(input: { registry?: unknown; username?: unknown; password?: unknown }): RegistryLogin {
+  validate(input: { registry?: unknown; username?: unknown; password?: unknown }): { registry: string; username: string; password: string } {
     const registry = validateRegistry(input.registry);
     const username = String(input.username ?? '').trim();
     const password = String(input.password ?? '');
     if (!username || username.length > 255 || /[\u0000-\u001f]/.test(username)) throw new v.ValidationError('the username must be 1 to 255 characters, without control characters');
     if (!password || password.length > 4096 || /[\u0000-\u001f]/.test(password)) throw new v.ValidationError('the password or token must be 1 to 4096 characters, without control characters');
+    return { registry, username, password };
+  }
+
+  // Adds a login, or replaces the one for that registry.
+  add(input: { registry?: unknown; username?: unknown; password?: unknown }): RegistryLogin {
+    const { registry, username, password } = this.validate(input);
     if (!this.has(registry) && (this.db.query('SELECT COUNT(*) AS n FROM registry_logins').get() as { n: number }).n >= 50) throw new v.ValidationError('at most 50 registry logins');
-    const secret = this.seal(password);
+    const secret = this.seal(password, registry);
     return this.db.query(`INSERT INTO registry_logins (registry, username, secret, created_at) VALUES (?, ?, ?, ?)
       ON CONFLICT (registry) DO UPDATE SET username = excluded.username, secret = excluded.secret, created_at = excluded.created_at, last_used_at = NULL, last_result = NULL
       RETURNING id, registry, username, created_at, last_used_at, last_result`).get(registry, username, secret, this.now()) as RegistryLogin;
@@ -84,7 +90,7 @@ export class Registries {
     const row = this.db.query('SELECT username, secret FROM registry_logins WHERE registry = ?').get(registry) as { username: string; secret: Uint8Array } | null;
     if (!row) return null;
     let password: string;
-    try { password = this.open(Buffer.from(row.secret)); } catch {
+    try { password = this.open(Buffer.from(row.secret), registry); } catch {
       this.noteResult(registry, `failed: the password cannot be read (registry.key in the data volume is missing or is not the one it was saved with, as after restoring a backup); enter it again`);
       return null;
     }
@@ -97,38 +103,66 @@ export class Registries {
     try { this.db.query('UPDATE registry_logins SET last_used_at = ?, last_result = ? WHERE registry = ?').run(this.now(), result.slice(0, 300), registry); } catch (e) { writeFailed(e, 'could not save the result of a registry login'); }
   }
 
-  private secretKey(): Buffer {
+  // The key as it is on disk, or null when there is none. An empty file is what a write that
+  // failed (a full volume) leaves behind; it counts as none.
+  private existingKey(): Buffer | null {
     if (this.key) return this.key;
-    if (existsSync(this.keyFile)) {
-      const k = readFileSync(this.keyFile);
-      if (k.length !== 32) throw new Error(`${this.keyFile} is not a 32-byte key`);
-      return (this.key = k);
-    }
-    const k = randomBytes(32);
-    writeFileSync(this.keyFile, k, { mode: 0o600, flag: 'wx' });
+    if (!existsSync(this.keyFile)) return null;
+    const k = readFileSync(this.keyFile);
+    if (k.length === 0) return null;
+    if (k.length !== 32) throw new Error(`${this.keyFile} is not a 32-byte key; move it away to start again (saved registry passwords then have to be entered again)`);
     return (this.key = k);
   }
 
-  // iv (12 bytes) | tag (16 bytes) | ciphertext
-  private seal(text: string): Buffer {
-    const iv = randomBytes(12);
-    const c = createCipheriv('aes-256-gcm', this.secretKey(), iv);
-    const body = Buffer.concat([c.update(text, 'utf8'), c.final()]);
-    return Buffer.concat([iv, c.getAuthTag(), body]);
+  // Made on first use: written to a temporary file, flushed to disk, then linked into place, so the
+  // key file is never half written and an existing key is never replaced.
+  private secretKey(): Buffer {
+    const have = this.existingKey();
+    if (have) return have;
+    if (existsSync(this.keyFile)) unlinkSync(this.keyFile); // empty: see existingKey
+    const k = randomBytes(32);
+    const tmp = `${this.keyFile}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    try {
+      const fd = openSync(tmp, 'wx', 0o600);
+      try { writeSync(fd, k); fsyncSync(fd); } finally { closeSync(fd); }
+      try { linkSync(tmp, this.keyFile); } catch (e) {
+        // Another request made it first: use that one.
+        if ((e as { code?: string }).code === 'EEXIST') { this.key = null; const other = this.existingKey(); if (other) return other; }
+        throw e;
+      }
+    } finally {
+      try { unlinkSync(tmp); } catch { /* not there */ }
+    }
+    try { const d = openSync(dirname(this.keyFile), 'r'); try { fsyncSync(d); } finally { closeSync(d); } } catch { /* not every filesystem allows it */ }
+    return (this.key = k);
   }
 
-  private open(b: Buffer): string {
-    if (!existsSync(this.keyFile) && !this.key) throw new Error('no key');
-    const d = createDecipheriv('aes-256-gcm', this.secretKey(), b.subarray(0, 12));
-    d.setAuthTag(b.subarray(12, 28));
-    return Buffer.concat([d.update(b.subarray(28)), d.final()]).toString('utf8');
+  // version (1) | iv (12 bytes) | tag (16 bytes) | ciphertext. The registry is authenticated data,
+  // so a secret moved to another row does not open for that registry.
+  private seal(text: string, registry: string): Buffer {
+    const iv = randomBytes(12);
+    const c = createCipheriv('aes-256-gcm', this.secretKey(), iv, { authTagLength: 16 });
+    c.setAAD(Buffer.from(registry));
+    const body = Buffer.concat([c.update(text, 'utf8'), c.final()]);
+    return Buffer.concat([Buffer.from([1]), iv, c.getAuthTag(), body]);
+  }
+
+  private open(b: Buffer, registry: string): string {
+    const key = this.existingKey();
+    if (!key) throw new Error('no key');
+    if (b.length < 29 || b[0] !== 1) throw new Error('not a sealed secret');
+    const d = createDecipheriv('aes-256-gcm', key, b.subarray(1, 13), { authTagLength: 16 });
+    d.setAAD(Buffer.from(registry));
+    d.setAuthTag(b.subarray(13, 29));
+    return Buffer.concat([d.update(b.subarray(29)), d.final()]).toString('utf8');
   }
 }
 
-// What to add to a pull or lookup error that looks like a missing or wrong login.
-export function loginHint(message: string, registry: string, hadLogin: boolean): string {
-  if (!/unauthorized|denied|authentication required|no basic auth credentials|requested access to the resource is denied|may require 'docker login'/i.test(message)) return '';
-  return hadLogin
-    ? `; the registry refused the login saved for ${registry}: check it on the Settings page`
-    : `; if the image is private, add a login for ${registry} on the Settings page`;
+// What to add to a pull or lookup error that looks like a missing or wrong login. login: none
+// saved, one saved and sent, or one saved that cannot be read (registry.key missing).
+export function loginHint(message: string, registry: string, login: 'none' | 'sent' | 'unreadable'): string {
+  if (!/unauthorized|authentication required|no basic auth credentials|access to the resource is denied|pull access denied|may require 'docker login'|incorrect username or password/i.test(message)) return '';
+  if (login === 'sent') return `; the registry refused the login saved for ${registry}: check it on the Settings page`;
+  if (login === 'unreadable') return `; the login saved for ${registry} cannot be read (registry.key in the data volume is missing or different): save it again on the Settings page`;
+  return `; if the image is private, add a login for ${registry} on the Settings page`;
 }

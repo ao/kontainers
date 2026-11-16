@@ -164,9 +164,25 @@
   running; table text on a phone breaks inside long names and addresses only, not inside words.
 - Registry logins for private images, on the Settings page: Docker Hub, GHCR or any registry.
   They are used for pulls (Images, New container, Edit settings, Update image, automatic updates)
-  and update checks, and checked when saved. Passwords are stored encrypted with a key kept in
+  and update checks, and checked before they are saved: one the registry refuses is not saved.
+  Passwords are stored encrypted (bound to their registry) with a key kept in
   the data volume (`registry.key`) and left out of the backup. A pull refused for want of a
   login says which registry to add. `compose.yaml`: `AUTH=1` on the socket proxy, for the check.
+- Replacements (Update image, Edit settings, automatic updates) are written down before the old
+  container is stopped, so a kontainers that is killed in the middle finishes the job at its next
+  start: a container stopped for a replacement that got no further is started again, and a new
+  container that never started is removed and the old one put back. kontainers checks for a
+  shutdown after stopping the old container too, and waits up to 25 s for replacements to undo
+  themselves; `compose.yaml` sets `stop_grace_period: 30s`.
+- While a container is replaced, its old container (`<name>-old-<id>`) cannot be started,
+  removed, edited or updated from kontainers. A rollback checks each step and says when putting
+  the old container back went wrong, instead of saying it was put back.
+- A `docker kill -s HUP` (a reload) is not taken for a stop: a crash after it is still reported,
+  and still rolls an update back. Health is followed per container, so a recreated container is
+  judged afresh. An update's lock is released before its registry lookup and notification, so a
+  crash right after is reported.
+- With docker-socket-proxy, a refused API section (HTTP 403) is reported as such again, with the
+  setting to turn on; it was reported as a bad request.
 
 ## 0.3.0
 

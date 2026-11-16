@@ -52,7 +52,10 @@ export class Docker {
 
   // Registry logins (registries.ts): the X-Registry-Auth value for an image reference, or null for
   // none; the registry it is pulled from, for error hints; and where to note how a login fared.
-  auth: { header: (ref: string) => string | null; registry: (ref: string) => string; noteResult?: (registry: string, result: string) => void } | null = null;
+  auth: { header: (ref: string) => string | null; registry: (ref: string) => string; saved?: (registry: string) => boolean; noteResult?: (registry: string, result: string) => void } | null = null;
+  private loginState(registry: string, sent: boolean): 'none' | 'sent' | 'unreadable' {
+    return sent ? 'sent' : this.auth?.saved?.(registry) ? 'unreadable' : 'none';
+  }
 
   private async req(method: string, path: string, body?: unknown, timeoutMs = 30000, extra: Record<string, string> = {}): Promise<Response> {
     const init: RequestInit & { unix?: string } = {
@@ -71,7 +74,9 @@ export class Docker {
     if (!res.ok) {
       let msg = res.statusText;
       try { msg = ((await res.json()) as { message?: string }).message || msg; } catch { /* keep statusText */ }
-      throw new DockerError(msg, res.status === 404 ? 404 : res.status === 409 ? 409 : res.status >= 500 ? 502 : 400);
+      // 401 and 403 are kept: a registry refusing a login, and docker-socket-proxy refusing an API
+      // section it was not told to allow, are told apart by them.
+      throw new DockerError(msg, [401, 403, 404, 409].includes(res.status) ? res.status : res.status >= 500 ? 502 : 400);
     }
     return res;
   }
@@ -231,7 +236,7 @@ export class Docker {
       const text = await res.text();
       return text ? JSON.parse(text) : null;
     } catch (e) {
-      if (e instanceof DockerError && this.auth) e.message += loginHint(e.message, this.auth.registry(img), !!auth);
+      if (e instanceof DockerError && this.auth) { const r = this.auth.registry(img); e.message += loginHint(e.message, r, this.loginState(r, !!auth)); }
       throw e;
     }
   }
@@ -262,7 +267,7 @@ export class Docker {
       if (auth) this.auth?.noteResult?.(registry, `pulled ${img}`);
     } catch (e) {
       if (e instanceof DockerError && this.auth) {
-        const hint = loginHint(e.message, registry, !!auth);
+        const hint = loginHint(e.message, registry, this.loginState(registry, !!auth));
         if (auth && hint) this.auth.noteResult?.(registry, `failed: the registry refused the login when pulling ${img}`);
         e.message += hint;
       }

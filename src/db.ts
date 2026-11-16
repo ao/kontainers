@@ -72,6 +72,13 @@ export const MIGRATIONS: string[] = [
      last_used_at INTEGER,
      last_result TEXT
    );`,
+  // 4: v0.4.0: replacements in progress, so a restart in the middle of one can finish it
+  `CREATE TABLE replacing (
+     name TEXT PRIMARY KEY,
+     old_id TEXT NOT NULL,
+     was_running INTEGER NOT NULL,
+     at INTEGER NOT NULL
+   );`,
 ];
 
 export function openDb(dataDir: string): Database {

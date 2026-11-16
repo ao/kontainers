@@ -214,6 +214,24 @@ describe('EventWatcher', () => {
     expect(sent[0].message).toContain('was killed (exit code 137, SIGKILL) without a docker stop or kill; that usually means it ran out of memory');
   });
 
+  test('a kill with HUP (a reload) does not hide a crash that follows', async () => {
+    const { sent, ev } = watcher();
+    await ev('kill', 'web', { signal: '1' });
+    await ev('die', 'web', { exitCode: '2' });
+    expect(sent.map(s => s.title)).toEqual(['web stopped']);
+  });
+
+  test('health is kept per container: a recreated container is judged afresh', async () => {
+    const sent: string[] = [];
+    let now = 1_000_000;
+    const w = new EventWatcher({} as any, { send: async (n: any, _k?: string, _w?: number, going?: () => void) => { sent.push(n.title); going?.(); return 1; } } as any, () => now);
+    const ev = (Action: string, id: string, name: string) => { now += 1000; return w.handle({ Type: 'container', Action, Actor: { ID: id, Attributes: { name, image: 'x:1' } }, timeNano: now * 1e6 }); };
+    await ev('health_status: unhealthy', 'old', 'web');
+    await ev('destroy', 'old', 'web-old-12345678'); // destroyed under its set-aside name
+    await ev('health_status: unhealthy', 'new', 'web');
+    expect(sent).toEqual(['web is unhealthy', 'web is unhealthy']);
+  });
+
   test('events of other types and unknown actions are ignored', async () => {
     const { sent, ev } = watcher();
     await ev('exec_create: sh', 'web');
@@ -316,4 +334,19 @@ test('BoundedLog keeps output shorter than a frame header', async () => {
   const log = new BoundedLog(1000);
   log.push(new TextEncoder().encode('ok\n'));
   expect(log.text()).toBe('ok\n');
+});
+
+describe('the Docker API through a socket proxy that refuses a section', () => {
+  test('403 stays 403, so the hint says which setting to turn on', async () => {
+    const { Docker } = await import('../../src/docker');
+    const { lookupReason } = await import('../../src/updates');
+    const srv = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Response('<html><body><h1>403 Forbidden</h1></body></html>', { status: 403 }) });
+    try {
+      const d = new Docker(`http://127.0.0.1:${srv.port}`);
+      const e = await d.distribution('nginx:1.27').catch(x => x);
+      expect(e.status).toBe(403);
+      expect(lookupReason(e)).toContain('DISTRIBUTION=1');
+      expect((await d.checkLogin('ghcr.io', 'me', 'x').catch(x => x)).status).toBe(403);
+    } finally { srv.stop(true); }
+  });
 });

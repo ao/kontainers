@@ -201,7 +201,9 @@ recreated from it with the same settings, volumes and networks, and watched for
 container is put back and that image is held back until a newer one appears. A stop someone
 asks for while it settles (`docker stop`, a backup script) is not a failure: the new container is
 left as they left it. If kontainers itself is stopped meanwhile, it puts the old container back
-before it exits. Compose containers are left to `docker compose pull && docker compose up -d`.
+before it exits; `compose.yaml` gives it 30 s for that (`stop_grace_period`), and with `docker run`
+add `--stop-timeout 30`. If it is killed first, it finishes the job when it starts again: what it
+was replacing, and whether that was running, is written down before anything is stopped. Compose containers are left to `docker compose pull && docker compose up -d`.
 
 Notification targets are set on the Settings page, with a Send test button:
 
@@ -291,7 +293,9 @@ For private images, add a login on the Settings page: the registry (`ghcr.io`, `
 enough. kontainers hands it to the Docker daemon with each pull and update check of an image on
 that registry (the `X-Registry-Auth` header). Logins made with `docker login` on the host are kept
 by the Docker CLI, not the daemon, so kontainers cannot see them. A login is checked when it is
-saved; with `compose.yaml` that needs `AUTH=1` on the socket proxy, which it sets.
+saved, and one the registry refuses is not saved (a wrong Docker Hub login would make every pull
+from Docker Hub fail, public images too); with `compose.yaml` the check needs `AUTH=1` on the socket
+proxy, which it sets.
 
 Passwords are stored encrypted (AES-256-GCM) with a key in the data volume, `registry.key`, which
 the database backup does not include. A backup on its own holds only the ciphertext; after

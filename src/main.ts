@@ -10,6 +10,7 @@ import { openDb, snapshot } from './db';
 import { Auth } from './auth';
 import { Docker } from './docker';
 import { recoverInterrupted } from './update';
+import { ReplaceJournal } from './journal';
 import { ProxyManager, RuleStore } from './proxy';
 import { createHandler, dockerApiHost } from './server';
 import { UpdateChecker } from './updates';
@@ -39,7 +40,8 @@ const db = openDb(cfg.dataDir);
 const auth = new Auth(db);
 const docker = new Docker(cfg.dockerHost, { allowBindMounts: cfg.allowBindMounts });
 const registries = new Registries(db, join(cfg.dataDir, 'registry.key'));
-docker.auth = { header: ref => registries.header(ref), registry: registryOf, noteResult: (r, res) => registries.noteResult(r, res) };
+docker.auth = { header: ref => registries.header(ref), registry: registryOf, saved: r => registries.has(r), noteResult: (r, res) => registries.noteResult(r, res) };
+const journal = new ReplaceJournal(db);
 const rules = new RuleStore(db);
 const proxy = new ProxyManager(cfg, rules, docker);
 // In a container the hostname is the container ID, unless --hostname changed it.
@@ -51,10 +53,10 @@ const systemAudit = (action: string, target: string, result?: string) =>
   db.query('INSERT INTO audit_log (at, username, action, target, ip, result) VALUES (?, ?, ?, ?, ?, ?)').run(Date.now(), null, action, target, null, result ?? null);
 // Aborted at shutdown, so a replacement being watched is undone instead of left half done.
 const stopping = new AbortController();
-const autoUpdates = new AutoUpdates(db, docker, updates, notifier, { settleMs: cfg.autoUpdateSettle * 1000, healthTimeoutMs: cfg.autoUpdateHealthTimeout * 1000, signal: stopping.signal }, systemAudit);
+const autoUpdates: AutoUpdates = new AutoUpdates(db, docker, updates, notifier, { settleMs: cfg.autoUpdateSettle * 1000, healthTimeoutMs: cfg.autoUpdateHealthTimeout * 1000, signal: stopping.signal, journal, wasStopped: (id: string): boolean => events.wasStopped(id) }, systemAudit);
 updates.onChecked = () => autoUpdates.afterCheck();
-const events = new EventWatcher(docker, notifier, Date.now, ms => Bun.sleep(ms), name => autoUpdates.busy.has(name));
-const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries });
+const events: EventWatcher = new EventWatcher(docker, notifier, Date.now, ms => Bun.sleep(ms), name => autoUpdates.busy.has(name));
+const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal });
 updates.start();
 events.start();
 // Certificate trouble, hourly (first check after 5 minutes), when the proxy runs.
@@ -86,7 +88,7 @@ if (!(await docker.ping())) console.error(`kontainers: Docker is not reachable a
 else {
   const kept = (name: string, id: string) => { if (autoUpdates.get(name)) autoUpdates.recreated(name, id); };
   try {
-    for (const r of await recoverInterrupted(docker, kept)) {
+    for (const r of await recoverInterrupted(docker, kept, journal)) {
       console.log(`kontainers: ${r.text}`);
       try { systemAudit('recover', r.name, r.trouble ? `failed: ${r.text}`.slice(0, 500) : undefined); } catch { /* the log line is enough */ }
     }
@@ -104,9 +106,11 @@ async function shutdown(sig: string) {
   if (closing) return;
   closing = true;
   console.log(`kontainers: ${sig}, shutting down`);
-  // Replacements being watched put the old container back; Docker waits 10 s before it kills us.
+  // Replacements in progress put the old container back. Stopping the old container can itself take
+  // its 10 s stop timeout, so this waits up to 25 s; compose.yaml gives kontainers 30 s to stop. If
+  // Docker kills it sooner (docker run's default is 10 s), the journal lets the next start finish.
   stopping.abort();
-  for (let i = 0; i < 80 && autoUpdates.busy.size; i++) await Bun.sleep(100);
+  for (let i = 0; i < 250 && autoUpdates.busy.size; i++) await Bun.sleep(100);
   if (autoUpdates.busy.size) console.error('kontainers: an update was still running at shutdown; it is tidied up at the next start');
   server.stop();
   updates.stop();

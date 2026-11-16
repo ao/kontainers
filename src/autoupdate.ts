@@ -9,14 +9,14 @@ import type { Database } from 'bun:sqlite';
 import type { Docker } from './docker';
 import type { Notifier } from './notify';
 import { containerStatus, type UpdateChecker } from './updates';
-import { updatable, updateContainerDetailed, UpdateFailed } from './update';
+import { updatable, updateContainerDetailed, UpdateFailed, type Journal } from './update';
 import * as v from './validate';
 import { NameLocks } from './locks';
 import { writeFailed } from './storage';
 
 export interface AutoRow { container: string; container_id: string; created_at: number; last_at: number | null; last_result: string | null; held_image: string | null }
 
-export interface AutoOptions { settleMs: number; healthTimeoutMs: number; signal?: AbortSignal }
+export interface AutoOptions { settleMs: number; healthTimeoutMs: number; signal?: AbortSignal; wasStopped?: (id: string) => boolean; journal?: Journal }
 
 // A container set aside by an update that is still running or was interrupted: <name>-old-<id>.
 const setAside = (c: any, name: string) => c.Labels?.['kontainers.managed'] === 'true' && /-old-[0-9a-f]{8}$/.test(name) && String(c.Id).startsWith(name.slice(-8));
@@ -132,16 +132,18 @@ export class AutoUpdates {
     if (!release) return;
     let result: string;
     let held: string | null = row?.held_image ?? null;
+    // Sent after the lock is released: while it is held, the new container's own events are quiet.
+    let note: { n: Parameters<Notifier['send']>[0]; key?: string; within?: number } | null = null;
     // Bookkeeping after the update must not turn an update that worked into a failure.
     const quietly = (what: string, fn: () => void) => { try { fn(); } catch (e) { writeFailed(e, `${what} for ${name}`); } };
     try {
-      const r = await updateContainerDetailed(this.docker, id, { settleMs: this.opts.settleMs, healthTimeoutMs: this.opts.healthTimeoutMs, skipImage: held, signal: this.opts.signal });
+      const r = await updateContainerDetailed(this.docker, id, { settleMs: this.opts.settleMs, healthTimeoutMs: this.opts.healthTimeoutMs, skipImage: held, signal: this.opts.signal, wasStopped: this.opts.wasStopped, journal: this.opts.journal });
       result = r.message;
       if (r.changed) {
         held = null;
         this.recreated(name, r.id);
         quietly('could not record the automatic update', () => this.audit('auto-update', name));
-        await this.notifier?.send({ kind: 'autoupdate', title: `Updated ${name}`, message: `${name} now runs the newest ${ref}${r.note ? `; ${r.note}` : ''}.`, container: name });
+        note = { n: { kind: 'autoupdate', title: `Updated ${name}`, message: `${name} now runs the newest ${ref}${r.note ? `; ${r.note}` : ''}.`, container: name } };
       }
     } catch (e) {
       result = (e as Error).message;
@@ -153,12 +155,13 @@ export class AutoUpdates {
       const next = holds ? 'That image is held back until a newer one appears.' : 'It will be tried again at the next check.';
       // kontainers stopping is not news to anyone; the next start's check tries again.
       if (this.opts.signal?.aborted) { quietly('could not save the result', () => this.db.query('UPDATE auto_update SET last_at = ?, last_result = ? WHERE container = ?').run(this.now(), result.slice(0, 500), name)); return; }
-      await this.notifier?.send({ kind: 'autoupdate', title: `Update of ${name} failed`, message: `${result}. ${next}`, container: name },
-        `autoupdate-failed:${name}:${held ?? ''}:${Bun.hash(result).toString(36)}`, 86400_000);
+      note = { n: { kind: 'autoupdate', title: `Update of ${name} failed`, message: `${result}. ${next}`, container: name },
+        key: `autoupdate-failed:${name}:${held ?? ''}:${Bun.hash(result).toString(36)}`, within: 86400_000 };
     } finally {
       release();
     }
     quietly('could not save the result', () => this.db.query('UPDATE auto_update SET last_at = ?, last_result = ?, held_image = ? WHERE container = ?').run(this.now(), result.slice(0, 500), held, name));
+    if (note) await this.notifier?.send(note.n, note.key, note.within).catch(e => console.error(`kontainers: notification failed: ${(e as Error).message}`));
     await this.checker.check(ref).catch(() => {});
   }
 }
