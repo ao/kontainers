@@ -621,7 +621,7 @@ describe('QA round 4', () => {
     const held: string[] = [];
     const { recoverInterrupted, watchRunning } = await import('../../src/update');
     const r = await recoverInterrupted(d as any, () => {}, rowsOf([{ name: 'web', old_id: c.Id, was_running: 1 }]), undefined, false,
-      { watch: cid => watchRunning(d as any, cid, { settleMs: 0, healthTimeoutMs: 0 }), held: (n, img) => held.push(`${n}=${img}`) });
+      { watch: cid => watchRunning(d as any, cid, { settleMs: 0, healthTimeoutMs: 0 }), held: (n, img) => { held.push(`${n}=${img}`); return true; } });
     expect(r[0].text).toContain('restarted 4 times');
     expect(d.find('web').Id).toBe(c.Id);
     expect(d.find('web').State.Running).toBe(true);
@@ -697,5 +697,40 @@ describe('code review of round 4', () => {
     const r = await recoverInterrupted(d as any, () => {}, rowsOf(rows));
     expect(r[0]).toMatchObject({ retry: true });
     expect(rows).toHaveLength(1);
+  });
+});
+
+describe('QA round 5', () => {
+  const rowsOf = (rows: any[]) => ({ begin() {}, end(n: string) { const i = rows.findIndex(r => r.name === n); if (i >= 0) rows.splice(i, 1); }, all: () => rows.map(r => ({ at: Date.now() - 1000, ...r })) });
+  const pair = (d: FakeDocker, name: string, newImage: string, restarts = 0) => {
+    const id = d.run(name, 'app:1');
+    const c = d.find(id);
+    const oldId = '0' + String(d.containers.size).padStart(7, '0') + c.Id.slice(8);
+    d.containers.delete(id); c.Id = oldId; d.containers.set(oldId, c);
+    c.Name = `/${name}-old-${oldId.slice(0, 8)}`; c.State = { Running: true, Status: 'running' };
+    const now = d.run(name, 'app:1');
+    d.find(now).Config.Labels['kontainers.replaces'] = oldId;
+    d.find(now).Image = newImage;
+    d.find(now).RestartCount = restarts;
+    return { old: oldId, now };
+  };
+  test('names are judged together, and every old container that ran beside its replacement was stopped first', async () => {
+    const { d } = setup();
+    const a = pair(d, 'good', 'i2');
+    const b = pair(d, 'loop', 'i3', 3);
+    const stops: string[] = [];
+    const stop = d.stop.bind(d);
+    d.stop = async (i: string) => { stops.push(i); return stop(i); };
+    const watched: string[] = [];
+    const { recoverInterrupted, watchRunning } = await import('../../src/update');
+    const r = await recoverInterrupted(d as any, () => {}, rowsOf([{ name: 'good', old_id: a.old, was_running: 1 }, { name: 'loop', old_id: b.old, was_running: 1 }]), undefined, false,
+      { watch: async id => { watched.push(id); await Bun.sleep(30); return watchRunning(d as any, id, { settleMs: 0, healthTimeoutMs: 0 }); }, held: () => false });
+    expect(stops.slice(0, 2).sort()).toEqual([a.old, b.old].sort());
+    expect(watched.sort()).toEqual([a.now, b.now].sort());
+    const good = r.find(x => x.name === 'good')!, loop = r.find(x => x.name === 'loop')!;
+    expect(good.text).toContain('was watched after the restart and works');
+    expect(loop.text).toContain('its tag now points at the image that failed');
+    expect(d.find('loop').Id).toBe(b.old);
+    expect(d.find('good').Id).toBe(a.now);
   });
 });

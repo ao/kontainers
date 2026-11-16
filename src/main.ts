@@ -127,7 +127,7 @@ async function tidyUp(attempt: number): Promise<void> {
   try {
     events.noteSetAside(await docker.listContainers());
     const watch = (id: string) => watchRunning(docker, id, { settleMs: cfg.autoUpdateSettle * 1000, healthTimeoutMs: cfg.autoUpdateHealthTimeout * 1000, signal: stopping.signal, wasStopped: cid => events.wasStopped(cid) });
-    const held = (name: string, image: string) => { if (autoUpdates.get(name)) autoUpdates.hold(name, image); };
+    const held = (name: string, image: string) => { if (!autoUpdates.get(name)) return false; autoUpdates.hold(name, image); return true; };
     const windowMs = (cfg.autoUpdateSettle + cfg.autoUpdateHealthTimeout + 120) * 1000;
     for (const r of await recoverInterrupted(docker, kept, journal, n => autoUpdates.busy.take(n), attempt >= TIDY_ATTEMPTS, { watch, held, windowMs })) {
       if (r.retry) { again = true; if (attempt === 1) console.log(`kontainers: ${r.text}`); continue; }

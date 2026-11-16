@@ -401,7 +401,8 @@ export function createHandler(d: Deps): Handler {
       const msg = await fn();
       addFlash(s.idHash, { flash: msg || 'Done.' });
     } catch (e) {
-      if (errorStatus(e) >= 500 && !(e instanceof DockerError)) console.error(`kontainers: ${action} failed:`, e);
+      // A stack only for the unexpected; a refusal with a reason is logged as its message.
+      if (errorStatus(e) >= 500 && !(e instanceof DockerError)) console.error(`kontainers: ${action} failed:`, e instanceof v.ValidationError ? e.message : e);
       const form = keep ? Object.fromEntries(Object.entries(keep).filter(([k]) => k !== '_csrf' && !/password/i.test(k))) : undefined;
       addFlash(s.idHash, { error: errorMessage(e), form });
       result = `failed: ${errorMessage(e)}`.slice(0, 500);
@@ -729,7 +730,10 @@ export function createHandler(d: Deps): Handler {
           const m = errorMessage(e);
           // A 403 from the daemon that carries the registry's own words ("denied: denied", as GHCR
           // answers a bad token) is the registry refusing; docker-socket-proxy's 403 is a bare page.
-          if (errorStatus(e) === 401 || /unauthorized|incorrect username or password|authentication required|(?<!permission )\bdenied\b/i.test(m)) {
+          // A 403 with the daemon's own message (anything but HAProxy's bare "Forbidden") is the
+          // registry's answer too.
+          const daemon403 = errorStatus(e) === 403 && m.trim() !== 'Forbidden';
+          if (errorStatus(e) === 401 || daemon403 || /unauthorized|incorrect username or password|authentication required|(?<!permission )\bdenied\b/i.test(m)) {
             throw new v.ValidationError(`the registry refused this login, so it was not saved: ${m}`);
           }
           note = errorStatus(e) === 403

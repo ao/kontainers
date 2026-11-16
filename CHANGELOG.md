@@ -244,6 +244,15 @@
 - `DOCKER_HOST=tcp://host` without a port uses port 2375, as Docker does, and notifications are
   kept off that port. The full-volume notice and the exclusive-mode notice are shown together.
   A registry login's "Last used" is no longer flipped by every update check.
+- After a restart that interrupted several replacements, the old containers that run beside
+  their replacements are stopped first, and all names are judged at the same time rather than one
+  watch after another. The note after a good watch says so; for a container that is not updated
+  automatically it says its tag now points at the image that failed. The event watcher notes
+  set-aside containers whenever it connects, so a replacement's crashes are left to the tidy-up.
+- Any 403 the Docker daemon itself gives for a login check refuses the login (only the socket
+  proxy's bare "Forbidden" means the check could not be made).
+- A table that is still wider than a phone (a very long compose project name) scrolls inside its
+  own box instead of widening the page.
 
 ## 0.3.0
 

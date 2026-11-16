@@ -45,6 +45,9 @@ th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid var(-
    anywhere, so the table fits the screen. Ordinary words (headers, states, buttons) stay whole. */
 /* Long names, references and addresses carry <wbr> break points (views.ts brk); IDs stay whole. */
 code.id { white-space: nowrap; }
+/* A table that is still wider than the screen (a very long name) scrolls inside its own box, not
+   the whole page. */
+.scroll { overflow-x: auto; max-width: 100%; }
 /* Notes in the actions column ("this is kontainers", "being updated") wrap instead of widening it. */
 td.actions small { white-space: normal; }
 @media (min-width: 721px) { #containers td:nth-child(2) { min-width: 14rem; } }

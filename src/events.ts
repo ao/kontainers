@@ -38,7 +38,9 @@ export class EventWatcher {
   // quiet: containers being updated, whose new container may stop as part of a rollback; the
   // update reports that itself.
   constructor(private docker: Docker, private notifier: Notifier, private now: () => number = Date.now, private sleep = (ms: number) => Bun.sleep(ms), private quiet: (name: string) => boolean = () => false) {
-    this.since = Math.floor(this.now() / 1000);
+    // From the next whole second: the event API counts in seconds, and the second kontainers starts
+    // in can hold the events of the instance before it (its own kill, for one).
+    this.since = Math.ceil(this.now() / 1000);
   }
 
   start(): void { void this.loop(); }
@@ -55,6 +57,9 @@ export class EventWatcher {
     while (!this.stopped) {
       try {
         this.ctrl = new AbortController();
+        // On every connect, before the events since the last one are replayed: containers set aside
+        // by an update (a restart may have interrupted it) keep their name's events quiet.
+        try { this.noteSetAside(await this.docker.listContainers()); } catch { /* the stream says why */ }
         for await (const ev of this.docker.events(this.since, this.ctrl.signal)) {
           this.connected = true;
           this.lastError = null;
