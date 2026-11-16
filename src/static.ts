@@ -154,7 +154,7 @@ pre#logs { background: #0f1418; color: #d7dee2; padding: .9rem 1rem; max-height:
   form.filters label:first-child { flex-basis: 100%; }
 }
 dl.facts dd small { display: block; }
-table + form.stack { margin-top: 1rem; }
+table + form.stack, .scroll + form.stack { margin-top: 1rem; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 `;
 
@@ -229,6 +229,25 @@ document.addEventListener('submit', function (e) {
   });
   load();
   schedule();
+})();
+(function () {
+  // A table box that does scroll (a very long name on a narrow screen) can be reached and scrolled
+  // with the keyboard, and says what it holds; one that does not scroll is no extra tab stop.
+  function mark() {
+    var boxes = document.querySelectorAll('.scroll');
+    for (var i = 0; i < boxes.length; i++) {
+      var b = boxes[i];
+      if (b.scrollWidth > b.clientWidth + 1) {
+        b.setAttribute('tabindex', '0');
+        b.setAttribute('role', 'region');
+        var h = b.previousElementSibling;
+        while (h && !/^H[1-3]$/.test(h.tagName)) h = h.previousElementSibling;
+        b.setAttribute('aria-label', (h ? h.textContent : document.title.split(' - ')[0]) + ' (table, scrolls sideways)');
+      } else { b.removeAttribute('tabindex'); b.removeAttribute('role'); b.removeAttribute('aria-label'); }
+    }
+  }
+  mark();
+  window.addEventListener('resize', mark);
 })();
 (function () {
   // Containers page: the search box and the Show select filter the rows as you type. Rows the

@@ -38,9 +38,9 @@ export class EventWatcher {
   // quiet: containers being updated, whose new container may stop as part of a rollback; the
   // update reports that itself.
   constructor(private docker: Docker, private notifier: Notifier, private now: () => number = Date.now, private sleep = (ms: number) => Bun.sleep(ms), private quiet: (name: string) => boolean = () => false) {
-    // From the next whole second: the event API counts in seconds, and the second kontainers starts
-    // in can hold the events of the instance before it (its own kill, for one).
-    this.since = Math.ceil(this.now() / 1000);
+    // To the millisecond: the second kontainers starts in can hold the events of the instance
+    // before it (its own kill, for one), and Docker takes a fractional time.
+    this.since = this.now() / 1000;
   }
 
   start(): void { void this.loop(); }
@@ -64,7 +64,8 @@ export class EventWatcher {
           this.connected = true;
           this.lastError = null;
           pause = 1000;
-          if (ev.time) this.since = Math.max(this.since, ev.time + 1);
+          if (ev.timeNano) this.since = Math.max(this.since, ev.timeNano / 1e9 + 0.000001);
+          else if (ev.time) this.since = Math.max(this.since, ev.time + 1);
           await this.handle(ev).catch(e => console.error(`kontainers: event handling failed: ${(e as Error).message}`));
         }
       } catch (e) {
@@ -150,10 +151,16 @@ export class EventWatcher {
 
   // Containers already set aside when kontainers starts (another kontainers on this host may be in
   // the middle of an update) count as a replacement under way from now.
+  // Each set-aside container counts once: one left behind (its removal failed) must not silence
+  // its name again at every reconnect.
+  private noted = new Set<string>();
   noteSetAside(list: any[]): void {
     for (const c of list) {
       const m = /^(.+)-old-([0-9a-f]{8})$/.exec(String(c.Names?.[0] || '').replace(/^\//, ''));
-      if (m && c.Labels?.['kontainers.managed'] === 'true' && String(c.Id).startsWith(m[2]) && !this.replacing.has(m[1])) this.replacing.set(m[1], this.now());
+      if (!m || c.Labels?.['kontainers.managed'] !== 'true' || !String(c.Id).startsWith(m[2]) || this.noted.has(c.Id)) continue;
+      this.noted.add(c.Id);
+      if (this.noted.size > 1000) this.noted.clear();
+      if (!this.replacing.has(m[1])) this.replacing.set(m[1], this.now());
     }
   }
 

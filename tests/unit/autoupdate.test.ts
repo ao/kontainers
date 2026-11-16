@@ -323,7 +323,7 @@ describe('recoverInterrupted', () => {
     const { recoverInterrupted } = await import('../../src/update');
     const kept: string[] = [];
     const rows = [{ name: 'web', old_id: old, was_running: 1 }];
-    expect((await recoverInterrupted(d as any, (n, id) => kept.push(`${n}=${id}`), journalOf(rows))).map(r => r.text)).toEqual(['removed web-old-abcdef12, left over from an interrupted update or edit of web; the new web was not watched to the end, so check that it works']);
+    expect((await recoverInterrupted(d as any, (n, id) => kept.push(`${n}=${id}`), journalOf(rows))).map(r => r.text)).toEqual(['removed web-old-abcdef12, left over from an interrupted update or edit of web; the new web ran unwatched since the update began, so check that it works']);
     expect(kept.length).toBe(1);
     expect(d.containers.has(old)).toBe(false);
   });
@@ -732,5 +732,91 @@ describe('QA round 5', () => {
     expect(loop.text).toContain('its tag now points at the image that failed');
     expect(d.find('loop').Id).toBe(b.old);
     expect(d.find('good').Id).toBe(a.now);
+  });
+});
+
+describe('code review of round 5', () => {
+  const rowsOf = (rows: any[]) => ({ begin() {}, rollingBack(n: string) { const r = rows.find(x => x.name === n); if (r) r.rollback = 1; }, end(n: string) { const i = rows.findIndex(r => r.name === n); if (i >= 0) rows.splice(i, 1); }, all: () => rows.map(r => ({ at: Date.now() - 1000, ...r })) });
+  const pair = (d: FakeDocker, name: string, oldState: any, newState: any) => {
+    const id = d.run(name, 'app:1');
+    const c = d.find(id);
+    const oldId = 'ab' + String(d.containers.size).padStart(6, '0') + c.Id.slice(8);
+    d.containers.delete(id); c.Id = oldId; d.containers.set(oldId, c);
+    c.Name = `/${name}-old-${oldId.slice(0, 8)}`; c.State = oldState;
+    const now = d.run(name, 'app:1');
+    d.find(now).Config.Labels['kontainers.replaces'] = oldId;
+    d.find(now).State = newState;
+    return { old: oldId, now };
+  };
+  test('a failed listing for one name does not lose what happens to another', async () => {
+    const { d } = setup();
+    const a = pair(d, 'aa', { Running: false, Status: 'exited' }, { Running: false, Status: 'created' });
+    const b = pair(d, 'bb', { Running: false, Status: 'exited' }, { Running: false, Status: 'created' });
+    let n = 0;
+    const list = d.listContainers.bind(d);
+    d.listContainers = async () => { n++; if (n === 4) throw new Error('daemon busy'); return list(); };
+    const seen: string[] = [];
+    const { recoverInterrupted } = await import('../../src/update');
+    await recoverInterrupted(d as any, () => {}, rowsOf([{ name: 'aa', old_id: a.old, was_running: 1 }, { name: 'bb', old_id: b.old, was_running: 1 }]), undefined, false, { report: r => seen.push(`${r.name}:${r.retry ? 'retry' : 'done'}`) });
+    expect(seen).toHaveLength(2);
+    expect(seen.some(s => s.endsWith(':retry'))).toBe(true);
+    expect(seen.some(s => s.endsWith(':done'))).toBe(true);
+  });
+  test('a rollback put the old one under its name but could not start it: the next attempt starts it', async () => {
+    const { d } = setup();
+    const id = d.run('web', 'app:1');
+    d.find(id).State = { Running: false, Status: 'exited', ExitCode: 0, FinishedAt: new Date(Date.now() - 3600_000).toISOString() };
+    const rows = [{ name: 'web', old_id: id, was_running: 1, rollback: 1, at: Date.now() - 7200_000 }];
+    const { recoverInterrupted } = await import('../../src/update');
+    const r = await recoverInterrupted(d as any, () => {}, rowsOf(rows));
+    expect(r[0].text).toContain('started web again');
+    expect(d.find('web').State.Running).toBe(true);
+  });
+  test('the old one is not stopped when its replacement is not running', async () => {
+    const { d } = setup();
+    const { old } = pair(d, 'web', { Running: true, Status: 'running' }, { Running: false, Status: 'removing' });
+    const stops: string[] = [];
+    const stop = d.stop.bind(d);
+    d.stop = async (i: string) => { stops.push(i); return stop(i); };
+    const { recoverInterrupted } = await import('../../src/update');
+    const r = await recoverInterrupted(d as any, () => {}, rowsOf([{ name: 'web', old_id: old, was_running: 1 }]));
+    expect(stops).toEqual([]);
+    expect(r[0]).toMatchObject({ retry: true });
+  });
+  test('long after the update began: a running replacement with trouble is left, with both containers', async () => {
+    const { d } = setup();
+    const { old, now } = pair(d, 'web', { Running: false, Status: 'exited' }, { Running: true, Status: 'running', Health: { Status: 'unhealthy' } });
+    const { recoverInterrupted } = await import('../../src/update');
+    const r = await recoverInterrupted(d as any, () => {}, rowsOf([{ name: 'web', old_id: old, was_running: 1, at: Date.now() - 86400_000 }]), undefined, false, { windowMs: 60_000 });
+    expect(r[0].text).toContain('check them by hand');
+    expect(d.containers.has(old)).toBe(true);
+    expect(d.containers.has(now)).toBe(true);
+  });
+  test('replaceContainer marks the rollback before it removes the new container', async () => {
+    const { d } = setup();
+    const id = d.run('web', 'app:1');
+    d.image('bad', 'crash'); d.tags.set('bad:1', 'bad');
+    const marks: string[] = [];
+    const remove = d.remove.bind(d);
+    d.remove = async (i: string, f?: boolean) => { marks.push(`remove ${i === id ? 'old' : 'new'}`); return remove(i); };
+    const journal = { begin: () => marks.push('begin'), rollingBack: () => marks.push('rollback'), end: () => marks.push('end'), all: () => [] };
+    const { replaceContainer } = await import('../../src/update');
+    await expect(replaceContainer(d as any, d.find(id), { name: 'web', image: 'bad:1' }, { journal }, 'update')).rejects.toThrow('put back');
+    expect(marks).toEqual(['begin', 'rollback', 'remove new', 'end']);
+  });
+});
+
+describe('ReplaceJournal', () => {
+  test('begin, rolling back, a new begin clears the flag, end', async () => {
+    const { ReplaceJournal } = await import('../../src/journal');
+    const db = new Database(':memory:', { strict: true }); migrate(db);
+    const j = new ReplaceJournal(db, () => 1000);
+    j.begin('web', 'a'.repeat(64), true);
+    j.rollingBack('web');
+    expect(j.all()).toEqual([{ name: 'web', old_id: 'a'.repeat(64), was_running: 1, at: 1000, rollback: 1 }]);
+    j.begin('web', 'b'.repeat(64), false);
+    expect(j.all()[0]).toMatchObject({ old_id: 'b'.repeat(64), was_running: 0, rollback: 0 });
+    j.end('web');
+    expect(j.all()).toEqual([]);
   });
 });

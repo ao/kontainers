@@ -6,8 +6,9 @@ import { loginHint } from './registries';
 
 const API = '/v1.41';
 
+// fromDaemon: the message is the daemon's own (its JSON body), not a proxy's page in front of it.
 export class DockerError extends Error {
-  constructor(message: string, public status: number) {
+  constructor(message: string, public status: number, public fromDaemon = false) {
     super(message);
   }
 }
@@ -54,8 +55,9 @@ export class Docker {
       this.base = 'http://docker';
     } else if (dockerHost.startsWith('tcp://')) {
       // Docker's own default port for tcp:// without one.
-      const rest = dockerHost.slice('tcp://'.length).replace(/\/$/, '');
-      this.base = 'http://' + (/^(\[[^\]]+\]|[^:]+)$/.test(rest) ? `${rest}:2375` : rest);
+      const u = new URL('http://' + dockerHost.slice('tcp://'.length));
+      if (!u.port) u.port = '2375';
+      this.base = u.toString().replace(/\/$/, '');
     } else if (dockerHost.startsWith('http://')) {
       this.base = dockerHost.replace(/\/$/, '');
     } else {
@@ -86,10 +88,11 @@ export class Docker {
     }
     if (!res.ok) {
       let msg = res.statusText;
-      try { msg = ((await res.json()) as { message?: string }).message || msg; } catch { /* keep statusText */ }
+      let fromDaemon = false;
+      try { const m = ((await res.json()) as { message?: string }).message; if (m) { msg = m; fromDaemon = true; } } catch { /* keep statusText */ }
       // 401 and 403 are kept: a registry refusing a login, and docker-socket-proxy refusing an API
       // section it was not told to allow, are told apart by them.
-      throw new DockerError(msg, [401, 403, 404, 409].includes(res.status) ? res.status : res.status >= 500 ? 502 : 400);
+      throw new DockerError(msg, [401, 403, 404, 409].includes(res.status) ? res.status : res.status >= 500 ? 502 : 400, fromDaemon);
     }
     return res;
   }
@@ -150,7 +153,7 @@ export class Docker {
     if (this.unix) init.unix = this.unix;
     let res: Response;
     try {
-      res = await fetch(`${this.base}${API}/events?since=${Math.floor(sinceSec)}&filters=${filters}`, init);
+      res = await fetch(`${this.base}${API}/events?since=${sinceSec.toFixed(3)}&filters=${filters}`, init);
     } catch (e) {
       throw new DockerError(`Docker daemon unreachable: ${unreachable(e as Error)}`, 502);
     }
@@ -260,8 +263,7 @@ export class Docker {
     try {
       const res = await this.req('GET', `/distribution/${encodeURIComponent(img)}/json`, undefined, 30000, auth ? { 'X-Registry-Auth': auth } : {});
       const text = await res.text();
-      // Only over an earlier failure: lookups run four at a time, and "checked" for each would hide
-      // a refusal seen a moment before.
+      // Over an earlier failure only: the result of the last pull or save stays readable.
       if (auth) this.auth?.noteResult?.(this.auth.registry(img), `checked ${img} for updates`, true);
       return text ? JSON.parse(text) : null;
     } catch (e) {

@@ -143,6 +143,8 @@ export class AutoUpdates {
           continue;
         }
         if (this.busy.has(name)) continue; // a person is updating or editing it
+        // An interrupted update of it is not tidied up yet.
+        if ((() => { try { return this.opts.journal?.all().some(r => r.name === name) ?? false; } catch { return false; } })()) continue;
         // The image that failed is what the tag points at here, and the registry has nothing newer.
         if (row.held_image && st?.imageId === row.held_image && st.status !== 'available') continue;
         if (this.opts.signal?.aborted) return;

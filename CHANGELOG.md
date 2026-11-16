@@ -253,6 +253,16 @@
   proxy's bare "Forbidden" means the check could not be made).
 - A table that is still wider than a phone (a very long compose project name) scrolls inside its
   own box instead of widening the page.
+- The tidy-up after a restart removes a container only on clear evidence. Long after an update
+  began, a replacement that is restarting, has stopped or is unhealthy is no longer judged from
+  one look: both containers are left and the note says to check them by hand. The old container
+  is stopped only while its replacement runs, and a rollback starts it again only once the new
+  container is gone, so two copies never share the data. Outcomes are reported as they are
+  reached; a name whose listing failed is tried again without losing the others; a rollback that
+  put the old container back but could not start it is finished at the next attempt; an update
+  of a name whose interrupted update is not tidied up yet waits for it.
+- A table box that scrolls on a narrow screen can be reached with the keyboard and is named
+  after its section; one that does not scroll is no extra tab stop.
 
 ## 0.3.0
 

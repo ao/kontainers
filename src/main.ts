@@ -9,7 +9,7 @@ import { bindProblem, loadConfig } from './config';
 import { openDb, snapshot } from './db';
 import { Auth } from './auth';
 import { Docker } from './docker';
-import { recoverInterrupted, watchRunning } from './update';
+import { recoverInterrupted, watchRunning, type Recovered } from './update';
 import { ReplaceJournal } from './journal';
 import { diskFull, setDegraded } from './storage';
 import { ProxyManager, RuleStore } from './proxy';
@@ -129,15 +129,17 @@ async function tidyUp(attempt: number): Promise<void> {
     const watch = (id: string) => watchRunning(docker, id, { settleMs: cfg.autoUpdateSettle * 1000, healthTimeoutMs: cfg.autoUpdateHealthTimeout * 1000, signal: stopping.signal, wasStopped: cid => events.wasStopped(cid) });
     const held = (name: string, image: string) => { if (!autoUpdates.get(name)) return false; autoUpdates.hold(name, image); return true; };
     const windowMs = (cfg.autoUpdateSettle + cfg.autoUpdateHealthTimeout + 120) * 1000;
-    for (const r of await recoverInterrupted(docker, kept, journal, n => autoUpdates.busy.take(n), attempt >= TIDY_ATTEMPTS, { watch, held, windowMs })) {
-      if (r.retry) { again = true; if (attempt === 1) console.log(`kontainers: ${r.text}`); continue; }
+    // Each outcome is reported as it is reached, not when the slowest watch ends.
+    const report = (r: Recovered) => {
+      if (r.retry) { again = true; if (attempt === 1) console.log(`kontainers: ${r.text}`); return; }
       const key = `${r.name}\n${r.text}`;
-      if (tidied.has(key)) continue;
+      if (tidied.has(key)) return;
       tidied.add(key);
       console.log(`kontainers: ${r.text}`);
       try { systemAudit('recover', r.name, `${r.trouble ? 'failed' : 'note'}: ${r.text}`.slice(0, 500)); } catch { /* the log line is enough */ }
       void notifier.send({ kind: 'autoupdate', title: `Interrupted update of ${r.name}`, message: `${r.text}.`, container: r.name }, `recover:${r.name}:${Bun.hash(r.text).toString(36)}`, 3600_000).catch(() => {});
-    }
+    };
+    await recoverInterrupted(docker, kept, journal, n => autoUpdates.busy.take(n), attempt >= TIDY_ATTEMPTS, { watch, held, windowMs, report, signal: stopping.signal });
     autoUpdates.adopt(await docker.listContainers());
   } catch (e) {
     if (attempt === 1 || attempt >= TIDY_ATTEMPTS) console.error(`kontainers: could not look for interrupted updates${attempt >= TIDY_ATTEMPTS ? ' (gave up)' : ''}: ${(e as Error).message}`);

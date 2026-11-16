@@ -732,7 +732,7 @@ export function createHandler(d: Deps): Handler {
           // answers a bad token) is the registry refusing; docker-socket-proxy's 403 is a bare page.
           // A 403 with the daemon's own message (anything but HAProxy's bare "Forbidden") is the
           // registry's answer too.
-          const daemon403 = errorStatus(e) === 403 && m.trim() !== 'Forbidden';
+          const daemon403 = errorStatus(e) === 403 && e instanceof DockerError && e.fromDaemon;
           if (errorStatus(e) === 401 || daemon403 || /unauthorized|incorrect username or password|authentication required|(?<!permission )\bdenied\b/i.test(m)) {
             throw new v.ValidationError(`the registry refused this login, so it was not saved: ${m}`);
           }

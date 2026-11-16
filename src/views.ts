@@ -278,7 +278,7 @@ ${post(ctx, '/updates/check', 'Check for updates')}`
   return layout('Containers', ctx, html`
 <div class="toolbar"><span class="muted">${running} of ${list.length} running${attention ? html`; <a href="${filterQuery(f, { state: 'attention', q: '' })}">${attention} ${attention === 1 ? 'needs' : 'need'} attention</a>` : ''}</span><span class="spread"></span>${checked}<a class="button primary" href="/containers/new">New container</a></div>
 ${filters}
-<div class="scroll" tabindex="0"><table id="containers"><thead><tr><th>Name</th><th>Image</th><th>State</th><th>Published ports</th><th></th></tr></thead>
+<div class="scroll"><table id="containers"><thead><tr><th>Name</th><th>Image</th><th>State</th><th>Published ports</th><th></th></tr></thead>
 <tbody>${rows.length ? rows : empty}</tbody></table></div>
 <p class="muted" id="nomatch"${list.length && !shown ? raw('') : raw(' hidden')}>No container matches. <a href="/containers">Show all ${list.length}</a>.</p>`);
 }
@@ -425,7 +425,7 @@ export function imagesPage(ctx: PageCtx, list: any[], pulls: { ref: string; stat
 <form method="post" action="/images/pull" class="row">${csrfField(ctx)}<input name="ref" required placeholder="alpine:3.20" aria-label="Image to pull"><button>Pull</button></form>
 <p class="muted">For a private image, add a registry login on the <a href="/settings">Settings</a> page first.</p>
 ${pending.length ? html`<ul class="pulls">${pending}</ul>` : ''}
-<div class="scroll" tabindex="0"><table><thead><tr><th>Tags</th><th>ID</th><th>Size</th><th class="wide">Created (UTC)</th></tr></thead><tbody>${rows}</tbody></table></div>
+<div class="scroll"><table><thead><tr><th>Tags</th><th>ID</th><th>Size</th><th class="wide">Created (UTC)</th></tr></thead><tbody>${rows}</tbody></table></div>
 ${cleanup}`);
 }
 
@@ -440,7 +440,7 @@ export function networksPage(ctx: PageCtx, list: any[], users: Map<string, strin
 <td>${builtin.has(n.Name) ? '' : post(ctx, `/networks/${n.Id}/remove`, 'Remove', { confirm: `Remove network ${n.Name}?`, cls: 'danger' })}</td></tr>`);
   return layout('Networks', ctx, html`
 <form method="post" action="/networks" class="row">${csrfField(ctx)}<input name="name" required placeholder="network name" aria-label="Network name"><button>Create</button></form>
-<div class="scroll" tabindex="0"><table><thead><tr><th>Name</th><th class="wide">Driver</th><th class="wide">Scope</th><th>Containers</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+<div class="scroll"><table><thead><tr><th>Name</th><th class="wide">Driver</th><th class="wide">Scope</th><th>Containers</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
 <p><a href="/cleanup">Clean up</a> networks no container uses.</p>`);
 }
 export function volumesPage(ctx: PageCtx, list: any[], users: Map<string, string[]> = new Map()): string {
@@ -448,7 +448,7 @@ export function volumesPage(ctx: PageCtx, list: any[], users: Map<string, string
 <td>${post(ctx, `/volumes/${vol.Name}/remove`, 'Remove', { confirm: `Remove volume ${vol.Name} and its data?`, cls: 'danger' })}</td></tr>`);
   return layout('Volumes', ctx, html`
 <form method="post" action="/volumes" class="row">${csrfField(ctx)}<input name="name" required placeholder="volume name" aria-label="Volume name"><button>Create</button></form>
-<div class="scroll" tabindex="0"><table><thead><tr><th>Name</th><th class="wide">Driver</th><th class="wide">Created</th><th>Mounted by</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+<div class="scroll"><table><thead><tr><th>Name</th><th class="wide">Driver</th><th class="wide">Created</th><th>Mounted by</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
 <p><a href="/cleanup">Clean up</a> anonymous volumes no container mounts.</p>`);
 }
 
@@ -488,7 +488,7 @@ ${post(ctx, `/proxy/${r.id}/remove`, 'Remove', { confirm: `Remove the rule for $
   });
   return layout('Proxy', ctx, html`
 <div class="toolbar"><span class="status${status.running ? raw(' on') : raw('')}">Proxy ${status.running ? 'running' : 'not running'}</span>${status.lastError ? html`<span class="error">${status.lastError}</span>` : ''}${status.networkError ? html`<span class="error">${status.networkError}; kontainers tries again every 10 seconds</span>` : ''}</div>
-<div class="scroll" tabindex="0"><table><thead><tr><th>Address</th><th>Target</th><th>State</th><th></th></tr></thead>
+<div class="scroll"><table><thead><tr><th>Address</th><th>Target</th><th>State</th><th></th></tr></thead>
 <tbody>${rows.length ? rows : html`<tr><td colspan="4">No rules yet. Add one below to send a domain to a container.</td></tr>`}</tbody></table></div>
 <section class="add"><h2>Add a rule</h2>
 <form method="post" action="/proxy" class="stack">${csrfField(ctx)}
@@ -525,7 +525,7 @@ export function settingsPage(ctx: PageCtx, users: { id: number; username: string
 </form>
 <h2>Users</h2>
 <p>Every user has full control of the Docker host.</p>
-<div class="scroll" tabindex="0"><table><tbody>${rows}</tbody></table></div>
+<div class="scroll"><table><tbody>${rows}</tbody></table></div>
 <form method="post" action="/settings/users" class="stack">${csrfField(ctx)}
   <label>Username <input name="username" required></label>
   <label>Password <input name="password" type="password" required minlength="12" autocomplete="new-password"></label>
@@ -543,7 +543,7 @@ function registrySection(ctx: PageCtx, logins: RegistryLogin[]): Html {
 <td class="actions">${post(ctx, `/settings/registries/${l.id}/remove`, 'Remove', { confirm: `Remove the login for ${l.registry}?`, cls: 'danger' })}</td></tr>`);
   return html`<h2>Registry logins</h2>
 <p>For private images: kontainers gives the login to Docker for each pull and update check of an image on that registry. Logins made with <code>docker login</code> on the host are not visible to kontainers. Passwords are stored encrypted and never shown again; a token with read access is enough.</p>
-${rows.length ? html`<div class="scroll" tabindex="0"><table><thead><tr><th>Registry</th><th>Username</th><th>Last used</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : html`<p class="muted">No registry logins.</p>`}
+${rows.length ? html`<div class="scroll"><table><thead><tr><th>Registry</th><th>Username</th><th>Last used</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : html`<p class="muted">No registry logins.</p>`}
 <form method="post" action="/settings/registries" class="stack">${csrfField(ctx)}
   <label>Registry <input name="registry" required placeholder="ghcr.io, docker.io or registry.example.com:5000" autocomplete="off"></label>
   <label>Username <input name="username" required autocomplete="off"></label>
@@ -560,7 +560,7 @@ function notifySection(ctx: PageCtx, targets: Target[], watch: { connected: bool
   return html`<h2>Notifications</h2>
 <p>kontainers sends a short message when one of these happens. A <strong>webhook</strong> gets a JSON POST with <code>title</code>, <code>message</code>, <code>event</code> and <code>container</code>, and the text again as <code>text</code> and <code>content</code>; an <strong>ntfy</strong> topic URL gets the message as plain text with a Title header. Only the address is shown here, because webhook paths often carry a secret.</p>
 ${watch && !watch.connected && watch.error ? html`<p class="warn">The Docker event stream is not connected (${watch.error}), so stopped and unhealthy containers are not reported until it is.</p>` : ''}
-${rows.length ? html`<div class="scroll" tabindex="0"><table><thead><tr><th>Kind</th><th>Address</th><th class="wide">Events</th><th>Last result</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : html`<p class="muted">No notification targets yet.</p>`}
+${rows.length ? html`<div class="scroll"><table><thead><tr><th>Kind</th><th>Address</th><th class="wide">Events</th><th>Last result</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` : html`<p class="muted">No notification targets yet.</p>`}
 <form method="post" action="/settings/notify" class="stack">${csrfField(ctx)}
   <label>Kind <select name="kind"><option value="webhook">webhook (JSON POST)</option><option value="ntfy">ntfy topic</option></select></label>
   <label>URL <input name="url" type="url" required placeholder="https://ntfy.sh/your-topic" autocomplete="off"></label>
@@ -580,7 +580,7 @@ export function cleanupPage(ctx: PageCtx, p: { dangling: { id: string; size: num
 ${p.dangling.length ? html`<p>${p.dangling.length} image${p.dangling.length === 1 ? '' : 's'}, up to ${total(p.dangling)}. These are left behind when a tag moves to a newer image.</p>
 ${post(ctx, '/cleanup/images', `Remove ${p.dangling.length} untagged image${p.dangling.length === 1 ? '' : 's'}`, { confirm: `Remove ${p.dangling.length} untagged images?`, cls: 'danger', fields: { scope: 'dangling' } })}` : html`<p class="muted">None.</p>`}
 <h2>Tagged images no container uses</h2>
-${p.unusedTagged.length ? html`<div class="scroll" tabindex="0"><table><thead><tr><th>Tags</th><th>ID</th><th>Size</th></tr></thead><tbody>${tagged}</tbody></table></div>
+${p.unusedTagged.length ? html`<div class="scroll"><table><thead><tr><th>Tags</th><th>ID</th><th>Size</th></tr></thead><tbody>${tagged}</tbody></table></div>
 <p>${post(ctx, '/cleanup/images', `Remove these ${p.unusedTagged.length} and the untagged ones`, { confirm: 'Remove every image no container uses? They can be pulled again.', cls: 'danger', fields: { scope: 'unused' } })}</p>` : html`<p class="muted">None.</p>`}
 ${p.localUnused?.length ? html`<h2>Images built on this host</h2>
 <p>${p.localUnused.map((i, k) => html`${k ? ', ' : ''}<span class="ref">${i.tags.join(', ')}</span> (${fmtSize(i.size)})`)}: no container uses ${p.localUnused.length === 1 ? 'it' : 'them'}, but ${p.localUnused.length === 1 ? 'it was' : 'they were'} built here and cannot be pulled again, so ${p.localUnused.length === 1 ? 'it is' : 'they are'} not removed in bulk. Remove one on the <a href="/images">Images</a> page if you are sure.</p>` : ''}
@@ -623,7 +623,7 @@ export function activityPage(ctx: PageCtx, rows: AuditRow[], q: string, older: n
   return layout('Activity', ctx, html`
 <p>Who did what, newest first, including failed attempts and what kontainers did on its own. Entries older than a year are removed.</p>
 <form method="get" action="/activity" class="filters" role="search"><label>Search <input type="search" name="q" value="${q}" placeholder="user, action or name"></label><button>Apply</button>${q ? html` <a href="/activity">Clear</a>` : ''}</form>
-${list.length ? html`<div class="scroll" tabindex="0"><table><thead><tr><th>When (UTC)</th><th>Who</th><th>What</th><th>From</th></tr></thead><tbody>${list}</tbody></table></div>` : html`<p class="muted">${q ? 'Nothing matches.' : 'Nothing yet.'}</p>`}
+${list.length ? html`<div class="scroll"><table><thead><tr><th>When (UTC)</th><th>Who</th><th>What</th><th>From</th></tr></thead><tbody>${list}</tbody></table></div>` : html`<p class="muted">${q ? 'Nothing matches.' : 'Nothing yet.'}</p>`}
 ${older ? html`<p><a href="/activity?before=${older}${q ? `&q=${encodeURIComponent(q)}` : ''}">Older</a></p>` : ''}`);
 }
 
