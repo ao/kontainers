@@ -9,10 +9,11 @@ describe('plan', () => {
   const images = [
     { Id: H('1'), RepoTags: ['nginx:1.27'], Size: 50e6 }, // used by a running container
     { Id: H('2'), RepoTags: ['redis:7'], Size: 40e6 }, // used by a stopped container
-    { Id: H('3'), RepoTags: ['old:1', 'old:latest'], Size: 30e6 }, // unused, two tags
+    { Id: H('3'), RepoTags: ['old:1', 'old:latest'], RepoDigests: [`old@${H('9')}`], Size: 30e6 }, // unused, two tags
     { Id: H('4'), RepoTags: ['<none>:<none>'], Size: 20e6 }, // dangling
     { Id: H('5'), RepoTags: null, Size: 10e6 }, // dangling, no tag list at all
-    { Id: H('6'), RepoTags: ['big:1'], Size: 90e6 }, // unused
+    { Id: H('6'), RepoTags: ['big:1'], RepoDigests: [`big@${H('8')}`], Size: 90e6 }, // unused
+    { Id: H('7'), RepoTags: ['mybuild:dev'], Size: 70e6 }, // unused, built here
   ];
   const containers = [
     { ImageID: H('1'), State: 'running', Mounts: [{ Type: 'volume', Name: 'data' }, { Type: 'bind', Source: '/srv' }], NetworkSettings: { Networks: { app: { NetworkID: 'n-app' } } } },
@@ -32,6 +33,7 @@ describe('plan', () => {
   test('images used by any container, running or stopped, stay', () => {
     expect(p.dangling.map(i => i.id)).toEqual([H('4'), H('5')]);
     expect(p.unusedTagged.map(i => i.tags)).toEqual([['big:1'], ['old:1', 'old:latest']]); // biggest first
+    expect(p.localUnused.map(i => i.tags)).toEqual([['mybuild:dev']]); // listed, never in the bulk removal
   });
   test('networks: built-in, swarm, labelled keep and connected ones stay', () => {
     expect(p.networks).toEqual([{ id: 'n-old', name: 'old-net' }]);
@@ -51,7 +53,8 @@ describe('plan', () => {
     expect(page).toContain('2 images, up to 30.0 MB');
     expect(page).toContain('<span class="ref">old:1</span><br><span class="ref">old:latest</span>');
     expect(page).toContain('Remove 1 unused network');
-    expect(page).toContain('Remove 2 anonymous volumes');
+    expect(page).toContain(`<input type="checkbox" name="vol_${anon}"> <code>${anon.slice(0, 12)}</code>`);
+    expect(page).toContain('Remove the selected volumes');
     expect(page).toContain('1 named volume is not mounted by any container');
     expect(page).not.toContain('backups');
     const empty = cleanupPage({ user: 'a', csrf: 't' }, { dangling: [], unusedTagged: [], networks: [], volumes: [], namedUnused: 0 });

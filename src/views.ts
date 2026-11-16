@@ -223,7 +223,11 @@ export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = 
       const members = groups.get(k)!;
       const up = members.filter(c => c.State === 'running').length;
       const visible = members.some(c => matchesFilter(c, f));
-      return [html`<tr class="group" data-group="${k}"${visible ? raw('') : raw(' hidden')}><th colspan="5" scope="rowgroup">${k ? html`compose project ${k}` : 'not in a compose project'} <small>${up} of ${members.length} running</small></th></tr>`, ...members.map(row)];
+      // A compose project's header can start, stop or restart its containers together (kontainers
+      // and its Docker API container are skipped).
+      const others = members.filter(c => !isSelf(c, me));
+      const acts = k && others.length ? html`<span class="groupacts">${others.some(c => c.State !== 'running') ? post(ctx, `/projects/${k}/start`, 'Start all') : ''} ${others.some(c => c.State === 'running') ? html`${post(ctx, `/projects/${k}/restart`, 'Restart all', { confirm: `Restart every container of ${k}?` })} ${post(ctx, `/projects/${k}/stop`, 'Stop all', { confirm: `Stop every container of ${k}?` })}` : ''}</span>` : '';
+      return [html`<tr class="group" data-group="${k}"${visible ? raw('') : raw(' hidden')}><th colspan="5" scope="rowgroup">${k ? html`compose project ${k}` : 'not in a compose project'} <small>${up} of ${members.length} running</small>${acts}</th></tr>`, ...members.map(row)];
     });
   } else rows = sorted.map(row);
 
@@ -345,7 +349,7 @@ export interface EditSpec {
 }
 
 // Change the settings of a container kontainers created; saving recreates it.
-export function editContainerPage(ctx: PageCtx, c: any, spec: EditSpec, allowBind: boolean): string {
+export function editContainerPage(ctx: PageCtx, c: any, spec: EditSpec, allowBind: boolean, imageGone = false): string {
   const name = String(c.Name || '').replace(/^\//, '');
   const ports = (spec.ports || []).map(p => `${p.hostIp ? (p.hostIp.includes(':') ? `[${p.hostIp}]` : p.hostIp) + ':' : ''}${p.host}:${p.container}${p.protocol === 'udp' ? '/udp' : ''}`).join('\n');
   const vols = (spec.volumes || []).map(m => `${m.source}:${m.target}${m.readOnly ? ':ro' : ''}`).join('\n');
@@ -353,6 +357,7 @@ export function editContainerPage(ctx: PageCtx, c: any, spec: EditSpec, allowBin
   return layout(`Edit ${name}`, ctx, html`
 <p><a href="/containers/${urlId(c)}">Back to ${name}</a></p>
 <p>Saving recreates ${name} with these settings: it is stopped, a new container is made and started, and if the new one cannot start or stops within a few seconds, the old one is put back. The name and networks stay. Environment values are shown here so they can be edited.</p>
+${imageGone ? html`<p class="warn">The image ${name} was created from is no longer on this host, so its own environment and command cannot be told apart from the ones set for ${name}: the fields below may include the old image's values (PATH, version variables). Remove the ones that belong to the image before saving.</p>` : ''}
 <form method="post" action="/containers/${urlId(c)}/edit" class="stack">${csrfField(ctx)}
   <label>Image <input name="image" required value="${spec.image}"></label>
   <label class="check"><input type="checkbox" name="pull"> Pull the image first</label>
@@ -511,7 +516,7 @@ ${rows.length ? html`<table><thead><tr><th>Kind</th><th>Address</th><th>Events</
 }
 
 // What can be removed safely, with the size of each group.
-export function cleanupPage(ctx: PageCtx, p: { dangling: { id: string; size: number }[]; unusedTagged: { id: string; tags: string[]; size: number }[]; networks: { name: string }[]; volumes: { name: string }[]; namedUnused: number }): string {
+export function cleanupPage(ctx: PageCtx, p: { dangling: { id: string; size: number }[]; unusedTagged: { id: string; tags: string[]; size: number }[]; localUnused?: { id: string; tags: string[]; size: number }[]; networks: { name: string }[]; volumes: { name: string; created?: string | null }[]; namedUnused: number }): string {
   const total = (items: { size: number }[]) => fmtSize(items.reduce((s, i) => s + i.size, 0));
   const tagged = p.unusedTagged.map(i => html`<tr><td>${i.tags.map((t, k) => html`${k ? html`<br>` : ''}<span class="ref">${t}</span>`)}</td><td><code>${shortId(i.id)}</code></td><td>${fmtSize(i.size)}</td></tr>`);
   return layout('Clean up', ctx, html`
@@ -522,12 +527,16 @@ ${post(ctx, '/cleanup/images', `Remove ${p.dangling.length} untagged image${p.da
 <h2>Tagged images no container uses</h2>
 ${p.unusedTagged.length ? html`<table><thead><tr><th>Tags</th><th>ID</th><th>Size</th></tr></thead><tbody>${tagged}</tbody></table>
 <p>${post(ctx, '/cleanup/images', `Remove these ${p.unusedTagged.length} and the untagged ones`, { confirm: 'Remove every image no container uses? They can be pulled again.', cls: 'danger', fields: { scope: 'unused' } })}</p>` : html`<p class="muted">None.</p>`}
+${p.localUnused?.length ? html`<h2>Images built on this host</h2>
+<p>${p.localUnused.map((i, k) => html`${k ? ', ' : ''}<span class="ref">${i.tags.join(', ')}</span> (${fmtSize(i.size)})`)}: no container uses ${p.localUnused.length === 1 ? 'it' : 'them'}, but ${p.localUnused.length === 1 ? 'it was' : 'they were'} built here and cannot be pulled again, so ${p.localUnused.length === 1 ? 'it is' : 'they are'} not removed in bulk. Remove one on the <a href="/images">Images</a> page if you are sure.</p>` : ''}
 <h2>Networks</h2>
 ${p.networks.length ? html`<p>${p.networks.map((n, k) => html`${k ? ', ' : ''}<span class="ref">${n.name}</span>`)}: no container is connected.</p>
 ${post(ctx, '/cleanup/networks', `Remove ${p.networks.length} unused network${p.networks.length === 1 ? '' : 's'}`, { confirm: 'Remove the networks no container is connected to?', cls: 'danger' })}` : html`<p class="muted">None unused.</p>`}
 <h2>Anonymous volumes</h2>
-${p.volumes.length ? html`<p>${p.volumes.length} anonymous volume${p.volumes.length === 1 ? '' : 's'} no container mounts (created by images that declare a volume, for containers since removed).</p>
-${post(ctx, '/cleanup/volumes', `Remove ${p.volumes.length} anonymous volume${p.volumes.length === 1 ? '' : 's'}`, { confirm: 'Remove the unused anonymous volumes and their data?', cls: 'danger' })}` : html`<p class="muted">None unused.</p>`}
+${p.volumes.length ? html`<p>${p.volumes.length} anonymous volume${p.volumes.length === 1 ? '' : 's'} no container mounts. An image that declares a volume (a database's data directory, say) gets one, and it is left behind when its container is removed, or by an update in kontainers 0.3 and earlier. It can hold the only copy of that data: choose each one you are sure of. None is selected to start with.</p>
+<form method="post" action="/cleanup/volumes" class="stack" data-confirm="Remove the selected volumes and the data in them?">${csrfField(ctx)}
+<fieldset><legend>Anonymous volumes no container mounts</legend>${p.volumes.map(vol => html`<label class="check"><input type="checkbox" name="vol_${vol.name}"> <code>${vol.name.slice(0, 12)}</code> <small class="muted">created ${vol.created ? vol.created.slice(0, 16).replace('T', ' ') : 'at an unknown time'}</small></label>`)}</fieldset>
+<button class="danger">Remove the selected volumes</button></form>` : html`<p class="muted">None unused.</p>`}
 ${p.namedUnused ? html`<p class="muted">${p.namedUnused} named volume${p.namedUnused === 1 ? ' is' : 's are'} not mounted by any container. Named volumes usually hold data, so they are not removed here; remove one on the <a href="/volumes">Volumes</a> page if you are sure.</p>` : ''}`, 'Images');
 }
 
@@ -542,6 +551,7 @@ const ACTIONS: Record<string, string> = {
   'network-create': 'created the network', 'network-remove': 'removed the network', 'volume-create': 'created the volume', 'volume-remove': 'removed the volume',
   'proxy-create': 'added the proxy rule', 'proxy-edit': 'edited proxy rule', 'proxy-toggle': 'turned on or off proxy rule', 'proxy-remove': 'removed proxy rule',
   'notify-add': 'added a notification target', 'notify-test': 'tested notification target', 'notify-remove': 'removed notification target',
+  'project-start': 'started every container of', 'project-stop': 'stopped every container of', 'project-restart': 'restarted every container of',
   'cleanup-images': 'cleaned up images', 'cleanup-networks': 'cleaned up networks', 'cleanup-volumes': 'cleaned up anonymous volumes',
 };
 

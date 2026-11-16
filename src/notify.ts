@@ -28,7 +28,9 @@ export interface Note { kind: EventKind | 'test'; title: string; message: string
 
 const MAX_URL = 2000;
 
-export function validateTarget(input: { kind?: unknown; url?: unknown; token?: unknown; events?: unknown[] }): { kind: TargetKind; url: string; token: string | null; events: EventKind[] } {
+// blocked: hosts a notification must never be sent to, such as the Docker API kontainers uses
+// (a POST there would be a Docker API call).
+export function validateTarget(input: { kind?: unknown; url?: unknown; token?: unknown; events?: unknown[] }, blocked: string[] = []): { kind: TargetKind; url: string; token: string | null; events: EventKind[] } {
   const kind = input.kind === 'ntfy' ? 'ntfy' : input.kind === 'webhook' ? 'webhook' : null;
   if (!kind) throw new v.ValidationError('choose webhook or ntfy');
   const url = String(input.url ?? '').trim();
@@ -37,8 +39,12 @@ export function validateTarget(input: { kind?: unknown; url?: unknown; token?: u
   if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new v.ValidationError('the URL must start with https:// or http://');
   if (url.length > MAX_URL) throw new v.ValidationError(`the URL is longer than ${MAX_URL} characters`);
   if (/[\s\u0000-\u001f]/.test(url)) throw new v.ValidationError('the URL contains spaces or control characters');
+  const host = u.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (blocked.map(b => b.toLowerCase()).includes(host)) throw new v.ValidationError(`${host} serves kontainers' Docker API; notifications cannot be sent there`);
+  // Link-local addresses are cloud metadata services, never a notification receiver.
+  if (/^169\.254\./.test(host) || /^fe80:/.test(host) || host === 'fd00:ec2::254') throw new v.ValidationError('link-local addresses (169.254.0.0/16, fe80::/10) cannot be notification targets');
   const token = String(input.token ?? '').trim();
-  if (token.length > 500 || /[\s\u0000-\u001f]/.test(token)) throw new v.ValidationError('the token must be one word of at most 500 characters');
+  if (token.length > 500 || !/^[\x21-\x7e]*$/.test(token)) throw new v.ValidationError('the token must be one word of at most 500 printable ASCII characters');
   const events = [...new Set((input.events || []).map(String))].filter((e): e is EventKind => (EVENT_KINDS as string[]).includes(e));
   if (!events.length) throw new v.ValidationError('choose at least one event');
   return { kind, url, token: token || null, events };
@@ -57,13 +63,14 @@ export class Notifier {
     private db: Database,
     private fetchImpl: (url: string, init: RequestInit) => Promise<Response> = (u, i) => fetch(u, i),
     private now: () => number = Date.now,
+    private blocked: string[] = [],
   ) {}
 
   list(): Target[] { return this.db.query('SELECT * FROM notify_targets ORDER BY id').all().map(row); }
   get(id: number): Target | null { const r = this.db.query('SELECT * FROM notify_targets WHERE id = ?').get(id); return r ? row(r) : null; }
 
   add(input: Parameters<typeof validateTarget>[0]): Target {
-    const t = validateTarget(input);
+    const t = validateTarget(input, this.blocked);
     if ((this.db.query('SELECT COUNT(*) AS n FROM notify_targets').get() as { n: number }).n >= 20) throw new v.ValidationError('at most 20 notification targets');
     const r = this.db.query('INSERT INTO notify_targets (kind, url, token, events, created_at) VALUES (?, ?, ?, ?, ?) RETURNING *')
       .get(t.kind, t.url, t.token, t.events.join(','), this.now());
@@ -91,7 +98,9 @@ export class Notifier {
     const targets = this.list().filter(t => note.kind === 'test' || t.events.includes(note.kind));
     if (!targets.length) return 0;
     if (key && !this.claim(key, withinMs)) return 0;
-    await Promise.all(targets.map(t => this.deliver(t, note)));
+    const results = await Promise.all(targets.map(t => this.deliver(t, note)));
+    // Nobody got it: forget the claim, so the fact is sent when it comes up again.
+    if (key && results.every(r => r.startsWith('failed'))) this.db.query('DELETE FROM notify_sent WHERE key = ?').run(key);
     return targets.length;
   }
 
@@ -120,8 +129,11 @@ export class Notifier {
         const text = `${note.title}: ${note.message}`;
         body = JSON.stringify({ event: note.kind, title: note.title, message: note.message, container: note.container ?? null, at: new Date(at).toISOString(), text, content: text });
       }
-      const res = await this.fetchImpl(t.url, { method: 'POST', headers, body, redirect: 'follow', signal: AbortSignal.timeout(10000) });
-      result = res.ok ? `sent (HTTP ${res.status})` : `failed: HTTP ${res.status} ${(await res.text().catch(() => '')).slice(0, 200)}`.trim();
+      // Redirects are not followed: the body and the token would go to an address nobody chose.
+      const res = await this.fetchImpl(t.url, { method: 'POST', headers, body, redirect: 'manual', signal: AbortSignal.timeout(10000) });
+      result = res.status >= 300 && res.status < 400
+        ? `failed: the target redirected (HTTP ${res.status}) to ${String(res.headers.get('location') || '?').slice(0, 200)}; use that address`
+        : res.ok ? `sent (HTTP ${res.status})` : `failed: HTTP ${res.status} ${(await res.text().catch(() => '')).slice(0, 200)}`.trim();
     } catch (e) {
       result = `failed: ${((e as Error).message || String(e)).slice(0, 200)}`;
     }

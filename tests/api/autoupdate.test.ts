@@ -201,6 +201,37 @@ describe.skipIf(!DOCKER)('automatic updates and notifications', () => {
     }
   }, 120000);
 
+  test('one change at a time: Edit, Update image and Stop on one container while another runs', async () => {
+    const NAME = `au-lock-${run}`;
+    // busybox, not REF: by now REF points at the image that fails on purpose.
+    expect((await c.submit('/containers', { image: 'busybox:1.36', name: NAME, pull: '', cmd: 'sleep 600', start: 'on' })).error).toBe('');
+    expect((await inspect(NAME)).State.Running).toBe(true);
+    try {
+      const c2 = new Client(srv.base);
+      expect((await c2.post('/login', { username: 'admin', password: PW }, { csrf: false })).status).toBe(303);
+      await c2.page(`/containers/${NAME}`);
+      // An edit that recreates (and so settles for 3 s) against an update and a stop sent meanwhile.
+      const c3 = new Client(srv.base);
+      expect((await c3.post('/login', { username: 'admin', password: PW }, { csrf: false })).status).toBe(303);
+      await c3.page(`/containers/${NAME}`);
+      const [edit, upd, stop] = await Promise.all([
+        c.submit(`/containers/${NAME}/edit`, { image: 'busybox:1.36', pull: '', cmd: 'sleep 601', ports: '', env: '', volumes: '', restart: 'no' }),
+        (async () => { await Bun.sleep(1500); return c2.submit(`/containers/${NAME}/update`, {}); })(),
+        (async () => { await Bun.sleep(1500); return c3.submit(`/containers/${NAME}/stop`, {}); })(),
+      ]);
+      expect(edit.flash).toBe(`Saved the settings of ${NAME}; it was recreated.`);
+      expect(upd.error, JSON.stringify({ edit: [edit.flash, edit.error], upd: [upd.flash, upd.error], stop: [stop.flash, stop.error] })).toContain('already running');
+      expect(stop.error).toContain('wait for it to finish');
+      const all = (await (await api('/containers/json?all=1')).json()) as any[];
+      const mine = all.filter(x => x.Names.some((n: string) => n.startsWith(`/${NAME}`)));
+      expect(mine).toHaveLength(1);
+      expect(mine[0].State).toBe('running');
+      expect((await inspect(NAME)).Config.Cmd).toEqual(['sleep', '601']);
+    } finally {
+      await api(`/containers/${NAME}?force=1`, { method: 'DELETE' });
+    }
+  }, 120000);
+
   test('the container list shows the unhealthy and exited containers as needing attention', async () => {
     const page = await c.page('/containers?state=attention');
     for (const n of [CRASH, SICK]) expect(page).toMatch(new RegExp(`<tr data-name="${n}"[^>]*data-attention="1"(?! hidden)[^>]*>`));

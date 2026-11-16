@@ -148,7 +148,7 @@ describe('references and registries', () => {
     d.distribution = async (ref: string) => { if (ref.includes('@') && !known.has(ref)) throw new Error('manifest unknown'); return plain(ref); };
     const u = new UpdateChecker(d as any, 0);
     await u.checkAll();
-    expect(u.get('mine:1')).toMatchObject({ status: 'unknown', reason: expect.stringContaining('built on this host') });
+    expect(u.get('mine:1')).toMatchObject({ status: 'unknown', reason: expect.stringContaining('built on this host, or the registry has since deleted it') });
     known.add(`mine@${D('a')}`); // the registry did serve ours once: then it is older
     await u.checkAll();
     expect(u.get('mine:1')?.status).toBe('available');

@@ -10,7 +10,7 @@ import { Auth } from './auth';
 import { Docker } from './docker';
 import { recoverInterrupted } from './update';
 import { ProxyManager, RuleStore } from './proxy';
-import { createHandler } from './server';
+import { createHandler, dockerApiHost } from './server';
 import { UpdateChecker } from './updates';
 import { Notifier } from './notify';
 import { AutoUpdates } from './autoupdate';
@@ -42,7 +42,7 @@ const proxy = new ProxyManager(cfg, rules, docker);
 const selfContainer = process.env.KONTAINERS_SELF_CONTAINER || (cfg.inContainer ? hostname() : undefined);
 proxy.selfContainer = selfContainer ?? null;
 const updates = new UpdateChecker(docker, cfg.updateCheckHours * 3600 * 1000);
-const notifier = new Notifier(db);
+const notifier = new Notifier(db, undefined, undefined, [dockerApiHost(cfg.dockerHost)].filter((h): h is string => !!h));
 const systemAudit = (action: string, target: string, result?: string) =>
   db.query('INSERT INTO audit_log (at, username, action, target, ip, result) VALUES (?, ?, ?, ?, ?, ?)').run(Date.now(), null, action, target, null, result ?? null);
 const autoUpdates = new AutoUpdates(db, docker, updates, notifier, { settleMs: cfg.autoUpdateSettle * 1000, healthTimeoutMs: cfg.autoUpdateHealthTimeout * 1000 }, systemAudit);
@@ -55,7 +55,7 @@ events.start();
 const certCheck = () => void checkCertificates(rules.list(), h => proxy.certificate(h), notifier).catch(e => console.error(`kontainers: certificate check failed: ${(e as Error).message}`));
 const certTimers = cfg.proxy.enabled ? [setTimeout(certCheck, 5 * 60_000), setInterval(certCheck, 3600_000)] : [];
 // The activity log keeps a year.
-const pruneAudit = () => db.query('DELETE FROM audit_log WHERE at < ?').run(Date.now() - 365 * 86400_000);
+const pruneAudit = () => { try { db.query('DELETE FROM audit_log WHERE at < ?').run(Date.now() - 365 * 86400_000); } catch (e) { console.error(`kontainers: could not prune the activity log: ${(e as Error).message}`); } };
 pruneAudit();
 const auditTimer = setInterval(pruneAudit, 86400_000);
 

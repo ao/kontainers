@@ -93,7 +93,7 @@ describe('form parsing', () => {
 describe('pages', () => {
   const ctx = { user: 'admin', csrf: 'tok', proxyEnabled: true };
   const row = (State: string) => ({ Id: 'a'.repeat(64), Names: ['/web'], Image: 'nginx', State, Status: '', Ports: [] });
-  const buttons = (htmlText: string) => [...htmlText.matchAll(/<button[^>]*>([^<]+)<\/button>/g)].map(m => m[1]).filter(b => b !== 'Log out' && b !== 'Apply');
+  const buttons = (htmlText: string) => [...htmlText.matchAll(/<button[^>]*>([^<]+)<\/button>/g)].map(m => m[1]).filter(b => b !== 'Log out' && b !== 'Apply' && !b.endsWith(' all'));
 
   test('container actions follow the state; Remove only when stopped', () => {
     expect(buttons(containersPage(ctx, [row('running')]))).toEqual(['Stop', 'Restart']);

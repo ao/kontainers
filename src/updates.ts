@@ -82,7 +82,7 @@ export class UpdateChecker {
       // know was built (or changed) here, and "newer image available" would be wrong.
       if (st.status === 'available') {
         const known = await Promise.any(own.map(d => this.docker.distribution(`${repoOf(ref)}@${d.split('@')[1]}`))).catch(() => null);
-        if (!known) st = { ...st, status: 'unknown', reason: 'the registry does not have the image this tag points at here, so it was probably built on this host' };
+        if (!known) st = { ...st, status: 'unknown', reason: 'the registry does not have the image this tag points at here: it was built on this host, or the registry has since deleted it. Update image still pulls whatever the tag points at now' };
       }
     } catch (e) {
       st = { status: 'unknown', reason: lookupReason(e), checkedAt: this.now() };

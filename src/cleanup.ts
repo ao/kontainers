@@ -5,10 +5,11 @@
 
 import type { Docker } from './docker';
 
-export interface ImageItem { id: string; tags: string[]; size: number; created: number }
+export interface ImageItem { id: string; tags: string[]; size: number; created: number; local?: boolean }
 export interface Plan {
   dangling: ImageItem[]; // no tag, used by no container
-  unusedTagged: ImageItem[]; // tagged, used by no container (stopped ones count as users)
+  unusedTagged: ImageItem[]; // tagged, pulled from a registry, used by no container (stopped ones count as users)
+  localUnused: ImageItem[]; // tagged, built on this host, used by no container: listed, not removed in bulk
   networks: { id: string; name: string }[]; // user-defined, no container attached
   volumes: { name: string; created: string | null }[]; // anonymous, mounted by no container
   namedUnused: number; // named volumes no container mounts; listed, not removed here
@@ -27,11 +28,14 @@ export function plan(images: any[], containers: any[], networks: any[], volumes:
   const items = images.filter(i => !used.has(i.Id)).map(i => ({
     id: i.Id as string, size: Number(i.Size) || 0, created: Number(i.Created) || 0,
     tags: (i.RepoTags || []).filter((t: string) => t && t !== '<none>:<none>'),
+    // No registry digest: built here (docker build, compose build:), so it cannot be pulled again.
+    local: !(i.RepoDigests || []).length,
   }));
   const vols = volumes.filter(v => !mounted.has(v.Name));
   return {
     dangling: items.filter(i => !i.tags.length),
-    unusedTagged: items.filter(i => i.tags.length).sort((a, b) => b.size - a.size),
+    unusedTagged: items.filter(i => i.tags.length && !i.local).sort((a, b) => b.size - a.size),
+    localUnused: items.filter(i => i.tags.length && i.local).sort((a, b) => b.size - a.size),
     networks: networks.filter(n => !BUILTIN_NETS.has(n.Name) && (n.Scope ?? 'local') === 'local' && !(networkUse.get(n.Id) || 0) && !(networkUse.get(n.Name) || 0) && !n.Labels?.['kontainers.keep'])
       .map(n => ({ id: n.Id, name: n.Name })),
     volumes: vols.filter(isAnonymousVolume).map(v => ({ name: v.Name, created: v.CreatedAt ?? null })),

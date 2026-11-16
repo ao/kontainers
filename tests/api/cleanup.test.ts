@@ -72,10 +72,18 @@ describe.skipIf(!DOCKER)('clean up', () => {
     expect(await exists(`/images/${inUse}/json`)).toBe(true);
   });
 
-  test('every unused image goes, a two-tag one too; one a stopped container uses stays', async () => {
+  test('every unused pulled image goes, a two-tag one too; built ones and used ones stay', async () => {
+    // A pulled image, under a second tag too.
+    await (await post('/images/create?fromImage=alpine&tag=3.18')).text();
+    const pulled = ((await (await api('/images/alpine:3.18/json')).json()) as any).Id;
+    expect((await api(`/images/alpine:3.18/tag?repo=kc${run}/alpine&tag=x`, { method: 'POST' })).status).toBe(201);
+    const page = await c.page('/cleanup');
+    expect(page).toContain('Images built on this host');
+    expect(page).toContain(`${REPO}:2`); // committed here: listed as built here
     const r = await c.submit('/cleanup/images', { scope: 'unused' });
     expect(r.error).toBe('');
-    expect(await exists(`/images/${unused}/json`)).toBe(false);
+    expect(await exists(`/images/${pulled}/json`)).toBe(false);
+    expect(await exists(`/images/${unused}/json`)).toBe(true); // built here, cannot be pulled again
     expect(await exists(`/images/${inUse}/json`)).toBe(true);
   });
 
@@ -89,7 +97,11 @@ describe.skipIf(!DOCKER)('clean up', () => {
 
   test('anonymous volumes go, named ones never do', async () => {
     const before = ((await (await api('/volumes')).json()) as any).Volumes.map((v: any) => v.Name);
-    const r = await c.submit('/cleanup/volumes', {});
+    expect((await c.submit('/cleanup/volumes', {})).error).toContain('none was selected');
+    // Each one is chosen by hand; tick every one the page offers.
+    const offered = [...(await c.page('/cleanup')).matchAll(/name="(vol_[0-9a-f]{64})"/g)].map(m => m[1]);
+    expect(offered.length).toBeGreaterThan(0);
+    const r = await c.submit('/cleanup/volumes', Object.fromEntries(offered.map(k => [k, 'on'])));
     expect(r.flash).toMatch(/^Removed [1-9]\d* anonymous volumes?\./);
     const after = ((await (await api('/volumes')).json()) as any).Volumes.map((v: any) => v.Name);
     expect(after).toContain(NAMED);

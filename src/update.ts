@@ -68,7 +68,8 @@ export interface UpdateResult { changed: boolean; message: string; oldImage: str
 
 // The update failed and the old container was put back; newImage is the image that failed.
 export class UpdateFailed extends v.ValidationError {
-  constructor(message: string, public newImage: string | null) { super(message); }
+  // held: the new image itself failed (it ran and then stopped or turned unhealthy).
+  constructor(message: string, public newImage: string | null, public held = false) { super(message); }
 }
 
 // Why a just-started container is not good, or null while it looks fine. "starting" health is fine
@@ -100,7 +101,9 @@ async function watchNew(docker: Docker, id: string, opts: UpdateOptions): Promis
     const q = settleProblem(c);
     if (q) return q;
   }
-  if (c.State?.Health?.Status === 'starting') return 'the new container did not become healthy in time';
+  // Without a wait for health (Update image and Edit by hand), "starting" is fine: Docker's first
+  // check comes after its interval, 30 s by default, and a healthy image would always be rolled back.
+  if (c.State?.Health?.Status === 'starting' && (opts.healthTimeoutMs ?? 0) > 0) return 'the new container did not become healthy in time';
   return null;
 }
 
@@ -132,7 +135,7 @@ export async function updateContainerDetailed(docker: Docker, id: string, opts: 
     const newId = await replaceContainer(docker, c, recreateSpec(c, oldImage), { ...opts, keepBindMounts: true }, 'update');
     return { changed: true, message: `Updated ${name} to the newest ${ref}.`, oldImage: c.Image, newImage: fresh.Id, id: newId };
   } catch (e) {
-    throw new UpdateFailed((e as Error).message, fresh.Id);
+    throw new UpdateFailed((e as Error).message, fresh.Id, (e as { stage?: string }).stage === 'settle');
   }
 }
 
@@ -157,11 +160,16 @@ export async function replaceContainer(docker: Docker, c: any, spec: CreateSpec,
     throw new v.ValidationError(`${what} failed before anything changed (could not rename the old container to ${aside}): ${(e as Error).message}`);
   }
   let newId: string | null = null;
+  // Where it failed: only a container that started and then stopped, restarted or turned unhealthy
+  // says something about the image ("settle"); the rest can be the host (a port in use, say).
+  let stage = 'create';
   try {
     newId = (await docker.create({ ...spec, name }, { keepBindMounts: opts.keepBindMounts, allowedBindSources: opts.allowedBindSources })).Id;
     for (const n of networks) await docker.connect(n, newId);
     if (wasRunning) {
+      stage = 'start';
       await docker.start(newId);
+      stage = 'settle';
       const problem = await watchNew(docker, newId, opts);
       if (problem) throw new v.ValidationError(problem);
     }
@@ -170,7 +178,7 @@ export async function replaceContainer(docker: Docker, c: any, spec: CreateSpec,
     await docker.rename(c.Id, name).catch(() => {});
     if (wasRunning) await docker.start(c.Id).catch(() => {});
     const msg = e instanceof DockerError || e instanceof v.ValidationError ? e.message : 'internal error';
-    throw new v.ValidationError(`${what} failed, so the old container was put back: ${msg}`);
+    throw Object.assign(new v.ValidationError(`${what} failed, so the old container was put back: ${msg}`), { stage });
   }
   await docker.remove(c.Id, false).catch(err => console.error(`kontainers: could not remove ${aside}: ${(err as Error).message}`));
   return newId;
@@ -188,18 +196,21 @@ export async function recoverInterrupted(docker: Docker): Promise<string[]> {
     const m = /^(.+)-old-([0-9a-f]{8})$/.exec(name);
     if (!m || c.Labels?.['kontainers.managed'] !== 'true' || !String(c.Id).startsWith(m[2])) continue;
     const base = m[1];
+    // At Docker's 128-character limit the set-aside name was shortened, so it no longer says the name.
+    if (name.length >= 128) { out.push(`${name} looks set aside by an interrupted update, but its name was shortened; check it by hand`); continue; }
     const now = byName.get(base);
     try {
       if (!now) {
         await docker.rename(c.Id, base);
         if (c.State !== 'running') await docker.start(c.Id).catch(() => {});
         out.push(`put ${base} back: an update or edit was interrupted before the new container existed`);
-      } else if (now.State === 'running') {
+      } else if (now.State === 'running' && now.Labels?.['kontainers.managed'] === 'true' && Number(now.Created) >= Number(c.Created)) {
+        // The running one is the replacement: made by kontainers, and after the old one.
         if (c.State === 'running') await docker.stop(c.Id);
         await docker.remove(c.Id, false);
         out.push(`removed ${name}, left over from an interrupted update of ${base}`);
       } else {
-        out.push(`${name} and ${base} both exist and ${base} is not running; check them by hand`);
+        out.push(`${name} and ${base} both exist, and ${base} is not running or not its replacement; check them by hand`);
       }
     } catch (e) {
       out.push(`could not tidy up ${name}: ${(e as Error).message}`);

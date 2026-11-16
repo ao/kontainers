@@ -107,6 +107,10 @@ export class Auth {
     return { id, csrf };
   }
 
+  hasUser(username: string): boolean {
+    return !!this.db.query('SELECT 1 FROM users WHERE username = ?').get(username);
+  }
+
   getSession(id: string | undefined): Session | null {
     if (!id || id.length > 100) return null;
     const idHash = hash(id);

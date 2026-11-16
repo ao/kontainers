@@ -5,7 +5,7 @@
 import type { Database } from 'bun:sqlite';
 import { mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { hostname as osHostname } from 'node:os';
+import { hostname as osHostname, networkInterfaces } from 'node:os';
 import { X509Certificate } from 'node:crypto';
 import { createConnection } from 'node:net';
 import type { Config } from './config';
@@ -307,8 +307,12 @@ export class ProxyManager {
     // A container no enabled rule points at leaves the network: otherwise every target could still
     // reach it. This also takes off a container serving the Docker API that an old rule put there.
     // kontainers itself stays: Caddy reaches the targets from it.
-    for (const [id, name] of onNet) {
-      if (served.has(name) || this.isOwn(id, name)) continue;
+    // Only on a network kontainers made: KONTAINERS_PROXY_NETWORK may name one the user shares with
+    // other services, and those must stay connected.
+    const ours = net?.Labels?.['kontainers.managed'] === 'true';
+    for (const [id, name] of ours ? onNet : []) {
+      const ip = String((net?.Containers?.[id] as any)?.IPv4Address || '').split('/')[0];
+      if (served.has(name) || this.isOwn(id, name, ip)) continue;
       try {
         await this.docker.disconnect(this.cfg.proxy.network, id);
         const why = this.refused.get(name)?.reason;
@@ -342,9 +346,11 @@ export class ProxyManager {
   });
   // kontainers' own container: its hostname is its short ID, unless KONTAINERS_SELF_CONTAINER names it.
   selfContainer: string | null = null;
-  private isOwn(id: string, name: string): boolean {
+  // Its address on the network is one of this process's own, whatever its hostname or name.
+  private isOwn(id: string, name: string, ip = ''): boolean {
     const h = osHostname();
-    return (/^[a-f0-9]{12}$/.test(h) && id.startsWith(h)) || (!!this.selfContainer && (this.selfContainer === name || id.startsWith(this.selfContainer)));
+    const mine = Object.values(networkInterfaces()).flat().some(a => !!ip && a?.address === ip);
+    return mine || (/^[a-f0-9]{12}$/.test(h) && id.startsWith(h)) || (!!this.selfContainer && (this.selfContainer === name || id.startsWith(this.selfContainer)));
   }
 
   // The certificate Caddy holds for a hostname, if any. Caddy stores <issuer>/<host>/<host>.crt.

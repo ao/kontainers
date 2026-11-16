@@ -217,3 +217,60 @@ describe('checkCertificates', () => {
     expect(sent.every(s => s.kind === 'cert' && s.within === 86400_000)).toBe(true);
   });
 });
+
+describe('where notifications may not go', () => {
+  const ok = { kind: 'webhook', url: 'https://hooks.example.net/abc', events: ['update'] };
+  test('the Docker API host and link-local addresses are refused; printable tokens only', () => {
+    expect(() => validateTarget({ ...ok, url: 'http://docker-proxy:2375/volumes/prune' }, ['docker-proxy'])).toThrow("serves kontainers' Docker API");
+    expect(() => validateTarget({ ...ok, url: 'http://169.254.169.254/latest/meta-data/' })).toThrow('link-local');
+    expect(() => validateTarget({ ...ok, url: 'http://[fe80::1]/x' })).toThrow('link-local');
+    expect(() => validateTarget({ ...ok, token: 'tokén' })).toThrow('printable ASCII');
+    expect(validateTarget({ ...ok, url: 'http://ntfy.lan:8080/t' }, ['docker-proxy']).url).toBe('http://ntfy.lan:8080/t');
+  });
+  test('a redirect is not followed, and says where it pointed', async () => {
+    let calls = 0, mode = '';
+    const n = new Notifier(db(), async (_u, init) => { calls++; mode = String(init.redirect); return new Response(null, { status: 301, headers: { location: 'https://elsewhere.example.net/x' } }); });
+    const t = n.add({ kind: 'webhook', url: 'http://hooks.example.net/a', events: ['exit'] });
+    expect(await n.test(t.id)).toBe('failed: the target redirected (HTTP 301) to https://elsewhere.example.net/x; use that address');
+    expect(calls).toBe(1);
+    expect(mode).toBe('manual');
+  });
+  test('a fact nobody received is sent again next time', async () => {
+    let up = false;
+    const n = new Notifier(db(), async () => (up ? new Response(null, { status: 204 }) : new Response('down', { status: 503 })));
+    n.add({ kind: 'webhook', url: 'https://hooks.example.net/a', events: ['update'] });
+    const note = { kind: 'update' as const, title: 't', message: 'm' };
+    await n.send(note, 'update:web:1');
+    up = true;
+    expect(await n.send(note, 'update:web:1')).toBe(1);
+    expect(n.list()[0].last_result).toBe('sent (HTTP 204)');
+    expect(await n.send(note, 'update:web:1')).toBe(0);
+  });
+});
+
+describe('EventWatcher timing', () => {
+  test('an out-of-memory event long before a stop does not make the stop an OOM', async () => {
+    const sent: any[] = [];
+    let now = 1_000_000;
+    const w = new EventWatcher({} as any, { send: async (n: any) => { sent.push(n); return 1; } } as any, () => now);
+    const ev = (Action: string, attrs: Record<string, string> = {}, dt = 1000) => { now += dt; return w.handle({ Type: 'container', Action, Actor: { ID: 'id-x', Attributes: { name: 'x', image: 'i', ...attrs } }, timeNano: now * 1e6 }); };
+    await ev('oom');
+    await ev('kill', { signal: '15' }, 120_000);
+    await ev('die', { exitCode: '143' }, 500);
+    expect(sent).toEqual([]);
+  });
+  test('nothing is reported for a container that is being updated', async () => {
+    const sent: any[] = [];
+    const w = new EventWatcher({} as any, { send: async (n: any) => { sent.push(n); return 1; } } as any, Date.now, async () => {}, n => n === 'busy');
+    await w.handle({ Type: 'container', Action: 'die', Actor: { ID: 'a', Attributes: { name: 'busy', exitCode: '1' } } });
+    await w.handle({ Type: 'container', Action: 'health_status: unhealthy', Actor: { ID: 'a', Attributes: { name: 'busy' } } });
+    expect(sent).toEqual([]);
+  });
+});
+
+test('BoundedLog keeps output shorter than a frame header', async () => {
+  const { BoundedLog } = await import('../../src/docker');
+  const log = new BoundedLog(1000);
+  log.push(new TextEncoder().encode('ok\n'));
+  expect(log.text()).toBe('ok\n');
+});

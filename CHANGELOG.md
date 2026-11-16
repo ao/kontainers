@@ -50,7 +50,7 @@
   page left open keeps working after `docker compose up` or an update recreates the container.
 - Fixed: log responses were unbounded (a container that printed a 20 MB line made a 40 MB
   response and spiked memory). Logs are read as a stream and the page keeps the newest 2 MB,
-  saying how much earlier output it leaves out; a download keeps up to 50 MB.
+  saying how much earlier output it leaves out; a download keeps up to 20 MB, two at a time.
 - Fixed: editing a rule into another rule's hostname and path gave "internal error"; HTTPS rules
   for names over 230 characters are refused (Caddy's lock file name was too long, so the
   certificate never came and the page blamed DNS). A wildcard rule is no longer shown as a link,
@@ -94,6 +94,32 @@
   container uses, and anonymous volumes no container mounts, each listed with sizes before
   removal. Stopped containers count as users. Named volumes are never removed in bulk. Items are
   removed one by one and never forced, so anything that came into use meanwhile is kept.
+- Compose projects on the Containers page have Start all, Restart all and Stop all. kontainers
+  itself, its Docker API container and containers being updated are skipped; each failure is
+  listed.
+- Fixed: Stop, Start, Restart or Remove of a container while an update or an edit replaced it
+  undid the replacement (the old container came back and the good image was held back as
+  failed). They are now refused until it finishes. Edit settings takes the container before it
+  pulls, so two saves at once can no longer leave the old container running beside the new one.
+- Fixed: an automatic update that failed for a reason outside the image (a port in use, a pull
+  that failed) held the image back for good. Only an image whose container started and then
+  stopped, restarted or turned unhealthy is held back; anything else is tried again at the next
+  check. A healthy image is no longer rolled back by Update image or Edit settings because its
+  first healthcheck had not run yet.
+- Notifications: never sent to the Docker API kontainers uses or to link-local addresses (cloud
+  metadata); redirects are not followed (the body and token would go to an address nobody
+  chose); a fact no target received is sent again the next time it comes up; a slow receiver no
+  longer holds up the other events; health notes about a container being replaced are left to
+  the update's own note; "healthy again" is sent once an hour at most; an `oom` event counts
+  only if it came within 30 s of the container stopping.
+- Clean up lists images built on this host (no registry digest) apart and does not remove them
+  in bulk: they cannot be pulled again. Anonymous volumes are removed only when ticked.
+- A failed login for a username that does not exist is recorded as "(no such user)", so a
+  password typed into the username field does not end up on the Activity page.
+- The proxy takes containers off its network only on a network kontainers made, and recognises
+  its own container by its address too.
+- Edit settings says when the image the container was made from is gone, so its environment and
+  command may include that image's own values.
 
 ## 0.3.0
 

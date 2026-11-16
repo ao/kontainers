@@ -11,6 +11,7 @@ import type { Notifier } from './notify';
 import { containerStatus, type UpdateChecker } from './updates';
 import { updatable, updateContainerDetailed, UpdateFailed } from './update';
 import * as v from './validate';
+import { NameLocks } from './locks';
 
 export interface AutoRow { container: string; container_id: string; created_at: number; last_at: number | null; last_result: string | null; held_image: string | null }
 
@@ -20,7 +21,7 @@ const nameOf = (c: any) => String(c.Names?.[0] || c.Name || '').replace(/^\//, '
 
 export class AutoUpdates {
   // Container names being updated right now, by this pass or by Update image.
-  readonly busy = new Set<string>();
+  readonly busy = new NameLocks();
   private running: Promise<void> | null = null;
 
   constructor(
@@ -78,7 +79,7 @@ export class AutoUpdates {
           `update:${name}:${st?.remoteDigest || st?.imageId || ''}`);
         continue;
       }
-      if (this.busy.has(name)) continue;
+      if (this.busy.has(name)) continue; // a person is updating or editing it
       // The image that failed is what the tag points at here, and the registry has nothing newer.
       if (row.held_image && st?.imageId === row.held_image && st.status !== 'available') continue;
       await this.updateOne(c.Id, name, c.Ref);
@@ -87,28 +88,35 @@ export class AutoUpdates {
 
   private async updateOne(id: string, name: string, ref: string): Promise<void> {
     const row = this.get(name);
-    this.busy.add(name);
+    const release = this.busy.take(name);
+    if (!release) return;
     let result: string;
     let held: string | null = row?.held_image ?? null;
+    // Bookkeeping after the update must not turn an update that worked into a failure.
+    const quietly = (what: string, fn: () => void) => { try { fn(); } catch (e) { console.error(`kontainers: ${what} for ${name}: ${(e as Error).message}`); } };
     try {
       const r = await updateContainerDetailed(this.docker, id, { settleMs: this.opts.settleMs, healthTimeoutMs: this.opts.healthTimeoutMs, skipImage: held });
       result = r.message;
       if (r.changed) {
         held = null;
-        this.recreated(name, r.id);
-        this.audit('auto-update', name);
+        quietly('could not note the new container ID', () => this.recreated(name, r.id));
+        quietly('could not record the automatic update', () => this.audit('auto-update', name));
         await this.notifier?.send({ kind: 'autoupdate', title: `Updated ${name}`, message: `${name} now runs the newest ${ref}.`, container: name });
       }
     } catch (e) {
       result = (e as Error).message;
-      if (e instanceof UpdateFailed && e.newImage) held = e.newImage;
-      this.audit('auto-update', name, `failed: ${result}`.slice(0, 500));
-      await this.notifier?.send({ kind: 'autoupdate', title: `Update of ${name} failed`, message: `${result}. That image is held back until a newer one appears.`, container: name },
-        `autoupdate-failed:${name}:${held ?? ''}`);
+      // Held back only when the new image ran and then failed; a port in use or a failed pull is
+      // not the image's fault, and the next check tries again.
+      const holds = e instanceof UpdateFailed && e.held && !!e.newImage;
+      if (holds) held = (e as UpdateFailed).newImage;
+      quietly('could not record the failed automatic update', () => this.audit('auto-update', name, `failed: ${result}`.slice(0, 500)));
+      const next = holds ? 'That image is held back until a newer one appears.' : 'It will be tried again at the next check.';
+      await this.notifier?.send({ kind: 'autoupdate', title: `Update of ${name} failed`, message: `${result}. ${next}`, container: name },
+        `autoupdate-failed:${name}:${held ?? ''}:${Bun.hash(result).toString(36)}`, 86400_000);
     } finally {
-      this.busy.delete(name);
+      release();
     }
-    this.db.query('UPDATE auto_update SET last_at = ?, last_result = ?, held_image = ? WHERE container = ?').run(this.now(), result.slice(0, 500), held, name);
+    quietly('could not save the result', () => this.db.query('UPDATE auto_update SET last_at = ?, last_result = ?, held_image = ? WHERE container = ?').run(this.now(), result.slice(0, 500), held, name));
     await this.checker.check(ref).catch(() => {});
   }
 }

@@ -327,6 +327,8 @@ export class BoundedLog {
   }
 
   text(): string {
+    // Fewer than 8 bytes in all: too short to tell framed from raw; it is raw text.
+    if (this.mode === 'unknown' && this.pending.length) { this.keep(this.pending); this.pending = new Uint8Array(0); }
     let s = new TextDecoder().decode(this.parts.length === 1 ? this.parts[0] : concat(...this.parts));
     if (!this.dropped) return s;
     const nl = s.indexOf('\n');

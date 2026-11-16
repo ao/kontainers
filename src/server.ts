@@ -21,6 +21,7 @@ import { STATIC } from './static';
 import * as v from './validate';
 import * as views from './views';
 import * as cleanup from './cleanup';
+import { NameLocks } from './locks';
 
 export interface Deps {
   cfg: Config;
@@ -232,11 +233,14 @@ export function createHandler(d: Deps): Handler {
   const cookieName = secure ? COOKIE_SECURE : COOKIE_PLAIN;
   // Outcomes waiting to be shown, per session. Several actions at once (two tabs) each add theirs;
   // form: what a failed form held, to fill it in again.
+  let downloads = 0;
   const flashes = new Map<string, { flash?: string; error?: string; form?: Record<string, string> }>();
   const addFlash = (idHash: string, m: { flash?: string; error?: string; form?: Record<string, string> }) => {
     const f = flashes.get(idHash) ?? {};
-    if (m.flash) f.flash = f.flash ? `${f.flash}\n${m.flash}` : m.flash;
-    if (m.error) f.error = f.error ? `${f.error}\n${m.error}` : m.error;
+    // The newest five of each, so a script that posts without reading pages cannot grow them.
+    const add = (old: string | undefined, msg: string) => (old ? `${old}\n${msg}` : msg).split('\n').slice(-5).join('\n').slice(-4000);
+    if (m.flash) f.flash = add(f.flash, m.flash);
+    if (m.error) f.error = add(f.error, m.error);
     if (m.form) f.form = m.form;
     flashes.set(idHash, f);
   };
@@ -322,6 +326,12 @@ export function createHandler(d: Deps): Handler {
     return serves ? { self: false, reason: "this container serves kontainers' Docker API; on the proxy network every proxy target could use it to control Docker" } : null;
   }
   if (d.proxy) d.proxy.guard = proxyTargetRefusal;
+  // Per-name locks shared with automatic updates.
+  const locks = d.autoUpdates?.busy ?? new NameLocks();
+  async function refuseBusy(id: string): Promise<void> {
+    const name = String((await docker.inspect(id)).Name || '').replace(/^\//, '');
+    if (locks.has(name)) throw new v.ValidationError(`an update or edit of ${name} is running; wait for it to finish (a minute or two) and try again`);
+  }
   async function refuseProxyTarget(name: string): Promise<void> {
     const no = await proxyTargetRefusal(name);
     if (no) throw new v.ValidationError(no.reason);
@@ -367,7 +377,9 @@ export function createHandler(d: Deps): Handler {
     ipLimiter.fail(`ip:${ip}`);
     const u = await auth.verifyLogin(f.username, f.password);
     if (!u) {
-      safeAudit(null, 'login-failed', user, ip);
+      // The name only if such an account exists: a password typed into the username field must not
+      // end up on the Activity page.
+      safeAudit(null, 'login-failed', auth.hasUser(user) ? user : '(no such user)', ip);
       return page(views.loginPage({ username: typed, error: 'Wrong username or password.' }), 401);
     }
     limiter.reset(`user:${user}`);
@@ -427,8 +439,9 @@ export function createHandler(d: Deps): Handler {
         if (me && views.isSelf(c, me)) throw new v.ValidationError("this is kontainers itself or the container that serves its Docker API; change it on the host");
         const refusal = updatable(c);
         if (refusal) throw new v.ValidationError(refusal.replace('can be updated here', 'can be edited here').replace('update it with', 'change it in the compose file and run'));
-        const spec = recreateSpec(c, await docker.inspectImage(c.Image).catch(() => null));
-        return page(views.editContainerPage(ctx(s), c, spec, cfg.allowBindMounts));
+        const oldImage = await docker.inspectImage(c.Image).catch(() => null);
+        const spec = recreateSpec(c, oldImage);
+        return page(views.editContainerPage(ctx(s), c, spec, cfg.allowBindMounts, !oldImage));
       }
       if ((r = /^\/containers\/([^/]+)$/.exec(p))) {
         const c = await docker.inspect(r[1]);
@@ -442,12 +455,17 @@ export function createHandler(d: Deps): Handler {
       }
       if ((r = /^\/api\/containers\/([^/]+)\/logs$/.exec(p))) return text(await docker.logs(r[1], v.intInRange(url.searchParams.get('tail'), 1, 10000, 200), url.searchParams.get('timestamps') !== '0'));
       if ((r = /^\/api\/containers\/([^/]+)\/logs\.txt$/.exec(p))) {
-        // A download: up to 100000 lines, named after the container and the time.
-        const c = await docker.inspect(r[1]);
-        const name = String(c.Name || '').replace(/^\//, '').replace(/[^A-Za-z0-9_.-]/g, '_');
-        const body = await docker.logs(c.Id, v.intInRange(url.searchParams.get('tail'), 1, 100000, 10000), url.searchParams.get('timestamps') !== '0', 100000, 50 << 20);
-        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-        return new Response(body, { headers: { 'content-type': 'text/plain; charset=utf-8', 'content-disposition': `attachment; filename="${name}-${stamp}.log"` } });
+        // A download: up to 100000 lines and 20 MB, named after the container and the time. Two at a
+        // time, since each holds its text in memory.
+        if (downloads >= 2) return text('Two log downloads are already running; try again when one has finished.\n', 429);
+        downloads++;
+        try {
+          const c = await docker.inspect(r[1]);
+          const name = String(c.Name || '').replace(/^\//, '').replace(/[^A-Za-z0-9_.-]/g, '_');
+          const body = await docker.logs(c.Id, v.intInRange(url.searchParams.get('tail'), 1, 100000, 10000), url.searchParams.get('timestamps') !== '0', 100000, 20 << 20);
+          const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+          return new Response(body, { headers: { 'content-type': 'text/plain; charset=utf-8', 'content-disposition': `attachment; filename="${name}-${stamp}.log"` } });
+        } finally { downloads--; }
       }
       if (p === '/images') {
         for (const [k, j] of pulls) if (j.state === 'failed' && Date.now() - j.at > 30 * 60 * 1000) pulls.delete(k);
@@ -534,18 +552,19 @@ export function createHandler(d: Deps): Handler {
         const refusal = updatable(c);
         if (refusal) throw new v.ValidationError(refusal.replace('can be updated here', 'can be edited here').replace('update it with', 'change it in the compose file and run'));
         const name = String(c.Name || '').replace(/^\//, '');
-        if (d.autoUpdates?.busy.has(name)) throw new v.ValidationError(`an update of ${name} is already running; try again in a minute`);
-        const spec = containerSpec(f);
-        if (f.pull) await docker.pull(spec.image);
-        // Host paths the container already has may stay; new ones follow KONTAINERS_ALLOW_BIND_MOUNTS.
-        const binds = (c.HostConfig?.Mounts || []).filter((m: any) => m.Type === 'bind').map((m: any) => m.Source);
-        d.autoUpdates?.busy.add(name);
+        // Taken straight after the inspect, with nothing awaited in between, and held for the pull too.
+        const release = locks.take(name);
+        if (!release) throw new v.ValidationError(`an update or edit of ${name} is already running; try again in a minute`);
         try {
+          const spec = containerSpec(f);
+          if (f.pull) await docker.pull(spec.image);
+          // Host paths the container already has may stay; new ones follow KONTAINERS_ALLOW_BIND_MOUNTS.
+          const binds = (c.HostConfig?.Mounts || []).filter((m: any) => m.Type === 'bind').map((m: any) => m.Source);
           const newId = await replaceContainer(docker, c, spec, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, allowedBindSources: binds }, 'saving the settings');
-          d.autoUpdates?.recreated(name, newId);
+          try { d.autoUpdates?.recreated(name, newId); } catch (e) { console.error(`kontainers: could not note the new ID of ${name}: ${(e as Error).message}`); }
           back = `/containers/${encodeURIComponent(name)}`;
-        } finally { d.autoUpdates?.busy.delete(name); }
-        if (d.updates && v.image(spec.image)) await d.updates.check(spec.image).catch(() => {});
+          if (d.updates) await d.updates.check(spec.image).catch(() => {});
+        } finally { release(); }
         return `Saved the settings of ${name}; it was recreated.`;
       });
     }
@@ -556,15 +575,15 @@ export function createHandler(d: Deps): Handler {
         await refuseSelf(id);
         const c = await docker.inspect(id);
         const name = String(c.Name || '').replace(/^\//, '');
-        if (d.autoUpdates?.busy.has(name)) throw new v.ValidationError(`an update of ${name} is already running; try again in a minute`);
-        d.autoUpdates?.busy.add(name);
+        const release = locks.take(name);
+        if (!release) throw new v.ValidationError(`an update or edit of ${name} is already running; try again in a minute`);
         try {
           // Watched for a few seconds, so an image that crashes at once is caught and rolled back.
           const r = await updateContainerDetailed(docker, id, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, healthTimeoutMs: 0 });
-          if (r.changed) d.autoUpdates?.recreated(name, r.id);
+          if (r.changed) { try { d.autoUpdates?.recreated(name, r.id); } catch (e) { console.error(`kontainers: could not note the new ID of ${name}: ${(e as Error).message}`); } }
           if (c.Config?.Image && d.updates) await d.updates.check(c.Config.Image).catch(() => {});
           return r.message;
-        } finally { d.autoUpdates?.busy.delete(name); }
+        } finally { release(); }
       });
     }
     if (p === '/updates/check') {
@@ -579,6 +598,28 @@ export function createHandler(d: Deps): Handler {
         const auto = newer.filter(c => d.autoUpdates?.isOn(String(c.Names?.[0] || '').replace(/^\//, ''), c.Id)).length;
         const available = newer.length;
         return `Checked ${n} image${n === 1 ? '' : 's'}: ${available === 0 ? 'every container runs the newest image for its tag' : `${available} container${available === 1 ? ' has' : 's have'} a newer image`}${auto ? `; ${auto} ${auto === 1 ? 'is' : 'are'} being updated automatically` : ''}.`;
+      });
+    }
+    if ((r = /^\/projects\/([^/]+)\/(start|stop|restart)$/.exec(p))) {
+      const [, project, op] = r;
+      return act(s, ip, '/containers', `project-${op}`, project, async () => {
+        v.name(project, 'compose project');
+        const me = await self();
+        const members = (await docker.listContainers()).filter(c => c.Labels?.['com.docker.compose.project'] === project);
+        if (!members.length) throw Object.assign(new v.ValidationError(`no containers in compose project ${project}`), { status: 404 });
+        // kontainers and its Docker API container are never touched; the rest only if the action fits.
+        const todo = members.filter(c => !views.isSelf(c, me) && (op === 'start' ? c.State !== 'running' : c.State === 'running'));
+        const fails: string[] = [];
+        for (const c of todo) {
+          const n = String(c.Names?.[0] || c.Id).replace(/^\//, '');
+          if (locks.has(n)) { fails.push(`${n}: an update or edit is running`); continue; }
+          try { if (op === 'start') await docker.start(c.Id); else if (op === 'stop') await docker.stop(c.Id); else await docker.restart(c.Id); }
+          catch (e) { fails.push(`${n}: ${errorMessage(e)}`); }
+        }
+        const verb = op === 'start' ? 'Started' : op === 'stop' ? 'Stopped' : 'Restarted';
+        const msg = `${verb} ${todo.length - fails.length} of ${todo.length} container${todo.length === 1 ? '' : 's'} of ${project}`;
+        if (fails.length) throw new v.ValidationError(`${msg}; ${fails.join('; ')}`);
+        return `${msg}.`;
       });
     }
     if ((r = /^\/containers\/([^/]+)\/autoupdate$/.exec(p))) {
@@ -611,6 +652,8 @@ export function createHandler(d: Deps): Handler {
       const back = op === 'remove' ? '/containers' : (f.back === 'detail' ? `/containers/${encodeURIComponent(id)}` : '/containers');
       return act(s, ip, back, `container-${op}`, id, async () => {
         if (op !== 'start' && op !== 'unpause') await refuseSelf(id);
+        // Stopping or starting a container while it is being replaced would undo the replacement.
+        await refuseBusy(id);
         if (op === 'start') await docker.start(id);
         else if (op === 'stop') await docker.stop(id);
         else if (op === 'restart') await docker.restart(id);
@@ -663,7 +706,10 @@ export function createHandler(d: Deps): Handler {
           return said(o, 'image', o.removed ? ` (up to ${(freed / 1e6).toFixed(1)} MB)` : '');
         }
         if (what === 'networks') return said(await cleanup.removeAll(pl.networks, n => docker.removeNetwork(n.id), n => n.name), 'network');
-        return said(await cleanup.removeAll(pl.volumes, vol => docker.removeVolume(vol.name), vol => vol.name.slice(0, 12)), 'anonymous volume');
+        // Only the ones ticked, and only if they are still unmounted anonymous volumes.
+        const chosen = pl.volumes.filter(vol => f[`vol_${vol.name}`]);
+        if (!chosen.length) throw new v.ValidationError('choose the volumes to remove; none was selected');
+        return said(await cleanup.removeAll(chosen, vol => docker.removeVolume(vol.name), vol => vol.name.slice(0, 12)), 'anonymous volume');
       });
     }
     if (p === '/images/remove') return act(s, ip, '/images', 'image-remove', f.ref ?? null, async () => { await docker.removeImage(f.ref); return `Removed ${f.ref}.`; });

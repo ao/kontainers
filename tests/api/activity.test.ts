@@ -23,10 +23,12 @@ describe.skipIf(!DOCKER)('activity', () => {
     expect((await c.submit('/containers', { image: 'busybox:1.36', name: NAME, pull: '', cmd: 'sleep 600', start: 'on' })).error).toBe('');
     expect((await c.submit(`/containers/${NAME}/remove`, {})).error).not.toBe('');
     expect((await c.submit(`/containers/${NAME}/stop`, {})).error).toBe('');
-    await new Client(srv.base).post('/login', { username: 'nobody', password: 'wrong password!!' }, { csrf: false });
+    await new Client(srv.base).post('/login', { username: 'admin', password: 'wrong password!!' }, { csrf: false });
+    await new Client(srv.base).post('/login', { username: 'Secret-Typed-Here', password: 'x' }, { csrf: false });
     const page = await c.page('/activity');
     const what = [...page.matchAll(/<td>([a-z ]+?) <span class="ref">([^<]*)<\/span>/g)].map(m => `${m[1]} ${m[2]}`);
-    expect(what.slice(0, 4)).toEqual(['failed to log in nobody', `stopped ${NAME}`, `removed ${NAME}`, `created a container ${NAME}`]);
+    expect(what.slice(0, 5)).toEqual(['failed to log in (no such user)', 'failed to log in admin', `stopped ${NAME}`, `removed ${NAME}`, `created a container ${NAME}`]);
+    expect(await c.page('/activity')).not.toContain('Secret-Typed-Here');
     expect(page).toMatch(/<tr class="failed">[\s\S]*?removed <span class="ref">[^<]+<\/span><br><small class="error">failed: [^<]+<\/small>/);
     expect(page).toContain('<span class="muted">not logged in</span>');
   });

@@ -17,7 +17,7 @@ export class EventWatcher {
   private stopped = false;
   private ctrl: AbortController | null = null;
   private killedAt = new Map<string, number>();
-  private oom = new Set<string>();
+  private oomAt = new Map<string, number>();
   private deaths = new Map<string, number[]>();
   private unhealthy = new Set<string>();
   private since: number;
@@ -69,11 +69,15 @@ export class EventWatcher {
     const at = ev.timeNano ? Math.floor(ev.timeNano / 1e6) : ev.time ? ev.time * 1000 : this.now();
 
     if (action === 'kill' || action === 'stop') { this.killedAt.set(id, at); this.trim(at); return; }
-    if (action === 'oom') { this.oom.add(id); return; }
-    if (action === 'destroy') { this.killedAt.delete(id); this.oom.delete(id); this.unhealthy.delete(name); return; }
+    // An oom event can come from any process in the container; it explains a die only if close to it.
+    if (action === 'oom') { this.oomAt.set(id, at); return; }
+    if (action === 'start') { this.oomAt.delete(id); return; }
+    if (action === 'destroy') { this.killedAt.delete(id); this.oomAt.delete(id); this.unhealthy.delete(name); return; }
 
     if (action === 'die') {
-      const oom = this.oom.delete(id);
+      const oomAt = this.oomAt.get(id);
+      this.oomAt.delete(id);
+      const oom = oomAt !== undefined && at - oomAt <= KILL_WINDOW_MS;
       if (this.quiet(name)) return;
       const killed = this.killedAt.get(id);
       const code = attrs.exitCode ?? '?';
@@ -84,21 +88,29 @@ export class EventWatcher {
       this.deaths.set(name, times);
       const why = oom ? 'ran out of memory and was stopped' : `stopped with exit code ${code}`;
       const again = times.length > 1 ? ` It has stopped ${times.length} times in the last 10 minutes.` : '';
-      await this.notifier.send({ kind: 'exit', title: `${name} ${oom ? 'ran out of memory' : 'stopped'}`, message: `${name} (${attrs.image || 'unknown image'}) ${why}.${again}`, container: name },
+      // Not awaited: a slow receiver must not hold up the next events.
+      this.post({ kind: 'exit', title: `${name} ${oom ? 'ran out of memory' : 'stopped'}`, message: `${name} (${attrs.image || 'unknown image'}) ${why}.${again}`, container: name },
         `exit:${name}`, EXIT_REPEAT_MS);
       return;
     }
 
     if (action.startsWith('health_status')) {
+      // A container being replaced is judged by the update itself.
+      if (this.quiet(name)) return;
       const status = action.split(':')[1]?.trim();
       if (status === 'unhealthy' && !this.unhealthy.has(name)) {
         this.unhealthy.add(name);
-        await this.notifier.send({ kind: 'health', title: `${name} is unhealthy`, message: `The healthcheck of ${name} (${attrs.image || 'unknown image'}) reports unhealthy.`, container: name },
+        this.post({ kind: 'health', title: `${name} is unhealthy`, message: `The healthcheck of ${name} (${attrs.image || 'unknown image'}) reports unhealthy.`, container: name },
           `health:${name}`, HEALTH_REPEAT_MS);
       } else if (status === 'healthy' && this.unhealthy.delete(name)) {
-        await this.notifier.send({ kind: 'health', title: `${name} is healthy again`, message: `The healthcheck of ${name} reports healthy again.`, container: name });
+        this.post({ kind: 'health', title: `${name} is healthy again`, message: `The healthcheck of ${name} reports healthy again.`, container: name },
+          `health-ok:${name}`, HEALTH_REPEAT_MS);
       }
     }
+  }
+
+  private post(note: Parameters<Notifier['send']>[0], key: string, within: number): void {
+    void this.notifier.send(note, key, within).catch(e => console.error(`kontainers: notification failed: ${(e as Error).message}`));
   }
 
   private trim(at: number): void {

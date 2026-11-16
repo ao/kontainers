@@ -145,6 +145,7 @@ describe('ProxyManager and protected targets', () => {
     const docker = {
       listContainers: async () => ['web', 'docker-proxy', 'kontainers'].map(n => ({ Names: ['/' + n], State: 'running' })),
       inspectNetwork: async () => ({
+        Labels: { 'kontainers.managed': 'true' },
         IPAM: { Config: [{ Subnet: '172.18.0.0/16', Gateway: '172.18.0.1' }] },
         Containers: Object.fromEntries(attached.map((n, i) => [`id${i}`, { Name: n }])),
       }),
@@ -188,7 +189,7 @@ describe('ProxyManager network upkeep', () => {
     const c = loadConfig({ KONTAINERS_PROXY: '1', KONTAINERS_DATA: dir, KONTAINERS_CADDY_BIN: '/nonexistent/caddy' });
     const s = store();
     const disconnected: string[] = [];
-    const net = { IPAM: { Config: [{ Subnet: '172.18.0.0/16' }] }, Containers: { aaa: { Name: 'web' }, bbb: { Name: 'old-target' }, ccc: { Name: 'off-target' }, ddd: { Name: 'kontainers' } } };
+    const net: any = { Labels: { 'kontainers.managed': 'true' }, IPAM: { Config: [{ Subnet: '172.18.0.0/16' }] }, Containers: { aaa: { Name: 'web' }, bbb: { Name: 'old-target' }, ccc: { Name: 'off-target' }, ddd: { Name: 'kontainers' } } };
     const docker = {
       listContainers: async () => ['web', 'old-target', 'off-target', 'kontainers'].map(n => ({ Names: ['/' + n], State: 'running' })),
       inspectNetwork: async () => net, connect: async () => {}, disconnect: async (_n: string, id: string) => { disconnected.push(id); },
@@ -201,6 +202,11 @@ describe('ProxyManager network upkeep', () => {
     s.setEnabled(off.id, false);
     await pm.reconcile();
     expect(disconnected.sort()).toEqual(['bbb', 'ccc']);
+    // A network the user made and named in KONTAINERS_PROXY_NETWORK: nobody is taken off it.
+    disconnected.length = 0;
+    delete net.Labels;
+    await pm.reconcile();
+    expect(disconnected).toEqual([]);
   });
 
   test('a missing proxy network is made again, and the page can say when it cannot be', async () => {

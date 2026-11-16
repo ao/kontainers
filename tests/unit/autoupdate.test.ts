@@ -23,14 +23,14 @@ class FakeDocker {
   run(name: string, ref: string, managed = true) {
     const id = `c${++this.n}`.padEnd(12, '0');
     this.containers.set(id, {
-      Id: id, Name: '/' + name, Image: this.tags.get(ref), RestartCount: 0,
+      Id: id, Name: '/' + name, Image: this.tags.get(ref), RestartCount: 0, Created: this.n,
       Config: { Image: ref, Env: [], Labels: managed ? { 'kontainers.managed': 'true' } : {} },
       HostConfig: { PortBindings: {}, Mounts: [], RestartPolicy: { Name: 'unless-stopped' } },
       NetworkSettings: { Networks: { bridge: {} } }, State: { Running: true, Status: 'running' },
     });
     return id;
   }
-  async listContainers() { return [...this.containers.values()].map(c => ({ Id: c.Id, Names: [c.Name], Image: c.Config.Image, ImageID: c.Image, State: c.State.Status, Labels: c.Config.Labels })); }
+  async listContainers() { return [...this.containers.values()].map(c => ({ Id: c.Id, Names: [c.Name], Image: c.Config.Image, ImageID: c.Image, State: c.State.Status, Labels: c.Config.Labels, Created: c.Created ?? 0 })); }
   async listContainersWithRefs() { return (await this.listContainers()).map(c => ({ ...c, Ref: c.Image })); }
   async inspect(id: string) { return structuredClone(this.find(id)); }
   async inspectImage(ref: string) {
@@ -185,7 +185,7 @@ describe('AutoUpdates', () => {
     const id = d.run('web', 'app:1');
     await auto.set(id, true);
     d.registry.set('app:1', 'i2');
-    auto.busy.add('web');
+    auto.busy.take('web');
     await cycle();
     expect(running(d, 'web').Id).toBe(id);
   });
@@ -262,7 +262,7 @@ describe('recoverInterrupted', () => {
     const now = d.run('web', 'app:1');
     d.find(now).State = { Running: false, Status: 'created' };
     const { recoverInterrupted } = await import('../../src/update');
-    expect((await recoverInterrupted(d as any))[0]).toContain('check them by hand');
+    expect((await recoverInterrupted(d as any))[0]).toContain('not running or not its replacement');
     expect(d.containers.size).toBe(2);
   });
   test('names that only look like it are ignored', async () => {
@@ -271,5 +271,22 @@ describe('recoverInterrupted', () => {
     d.run('x-old-abcdef12', 'app:1', false); // not created by kontainers
     const { recoverInterrupted } = await import('../../src/update');
     expect(await recoverInterrupted(d as any)).toEqual([]);
+  });
+});
+
+describe('health while settling', () => {
+  test('by hand (no health wait) a container still starting its healthcheck is kept; with a wait it must turn healthy', async () => {
+    const { d } = setup();
+    d.image('i6');
+    const start = d.start.bind(d);
+    d.start = async (id: string) => { await start(id); const c = d.find(id); if (c.Image === 'i6') c.State = { Running: true, Status: 'running', Health: { Status: 'starting' } }; };
+    const id = d.run('web', 'app:1');
+    d.registry.set('app:1', 'i6');
+    const { updateContainerDetailed } = await import('../../src/update');
+    const r = await updateContainerDetailed(d as any, id, { settleMs: 0, healthTimeoutMs: 0 });
+    expect(r.changed).toBe(true);
+    const id2 = d.run('api', 'app:1');
+    d.find(id2).Image = 'i1';
+    await expect(updateContainerDetailed(d as any, id2, { settleMs: 0, healthTimeoutMs: 2000, sleep: async () => {} })).rejects.toThrow('did not become healthy in time');
   });
 });

@@ -80,6 +80,8 @@ form.filters label { display: grid; gap: .25rem; font-size: .85rem; font-weight:
 form.filters input[type=search] { min-width: 16rem; }
 tr.group th { background: var(--ground); color: var(--ink, inherit); font-size: .9rem; padding-top: .8rem; }
 tr.group th small { color: var(--muted); font-weight: 500; margin-left: .4rem; }
+tr.group .groupacts { float: right; font-weight: 400; }
+tr.group .groupacts button { padding: .2rem .6rem; font-size: .82rem; }
 tr[data-attention] td:nth-child(3) .state { color: var(--rust); }
 input, select, textarea, button { font: inherit; color: inherit; }
 input, select, textarea { padding: .5rem .6rem; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); font-weight: 400; }
