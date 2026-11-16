@@ -304,6 +304,8 @@ export class ProxyManager {
         } catch (e) { console.error(`kontainers: cannot connect ${r.target_container} to ${this.cfg.proxy.network}: ${(e as Error).message}`); }
       }
     }
+    // Shown at once: the port checks below can take a few seconds.
+    this.targetState = state;
     // A container no enabled rule points at leaves the network: otherwise every target could still
     // reach it. This also takes off a container serving the Docker API that an old rule put there.
     // kontainers itself stays: Caddy reaches the targets from it.

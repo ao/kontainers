@@ -142,7 +142,7 @@ describe.skipIf(!URL_)('proxy with ACME', () => {
       return x.status === 200 ? x.text() : null;
     }, 30000);
     expect(body).toContain('hello-again');
-    expect(await c.page('/proxy')).not.toContain('no container named web');
+    await until('the page to stop reporting the missing target', async () => (!(await c.page('/proxy')).includes('no container named web') ? true : null), 15000);
   }, 60000);
 
   test('a rule whose target port has nothing listening says so', async () => {
