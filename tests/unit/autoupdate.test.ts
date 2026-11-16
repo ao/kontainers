@@ -31,6 +31,7 @@ class FakeDocker {
     return id;
   }
   async listContainers() { return [...this.containers.values()].map(c => ({ Id: c.Id, Names: [c.Name], Image: c.Config.Image, ImageID: c.Image, State: c.State.Status })); }
+  async listContainersWithRefs() { return (await this.listContainers()).map(c => ({ ...c, Ref: c.Image })); }
   async inspect(id: string) { return structuredClone(this.find(id)); }
   async inspectImage(ref: string) {
     const id = this.tags.get(ref) ?? (this.images.has(ref) ? ref : undefined);

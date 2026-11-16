@@ -21,6 +21,12 @@
   disconnected (kontainers itself stays). The proxy network is made again if it is missing, for
   example when the Docker API was not reachable at start, and the Proxy page says when it
   cannot be.
+- Fixed: update checks missed a container left on an old image after a `docker pull` (the list
+  then shows an image ID, so the container's own reference is used), and on Docker's containerd
+  image store every locally built image was "newer image available", kontainers included: a
+  digest the registry never served now counts as built on this host. Registry errors are put
+  in words. Four images are checked at a time, and Check for updates answers within 20 s,
+  carrying on in the background when a registry is slow.
 - Fixed: editing a rule into another rule's hostname and path gave "internal error"; HTTPS rules
   for names over 230 characters are refused (Caddy's lock file name was too long, so the
   certificate never came and the page blamed DNS). A wildcard rule is no longer shown as a link,

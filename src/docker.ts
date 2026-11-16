@@ -78,6 +78,18 @@ export class Docker {
 
   // Containers
   listContainers() { return this.json<any[]>('GET', '/containers/json?all=1'); }
+
+  // The list, with Ref: the image reference each container was created with. The list's Image field
+  // holds an image ID instead once that reference has moved to a newer image (a docker pull), so
+  // those few are inspected for it.
+  async listContainersWithRefs(): Promise<any[]> {
+    const list = await this.listContainers();
+    await Promise.all(list.map(async c => {
+      c.Ref = c.Image;
+      if (isImageId(c.Image)) c.Ref = (await this.inspect(c.Id).catch(() => null))?.Config?.Image ?? c.Image;
+    }));
+    return list;
+  }
   inspect(id: string) { return this.json<any>('GET', `/containers/${encodeURIComponent(v.ref(id))}/json`); }
   async start(id: string) { await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/start`); }
   async stop(id: string) { await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/stop?t=10`, undefined, 60000); }
@@ -258,3 +270,6 @@ export function demux(buf: Uint8Array): string {
   }
   return parts.map(p => new TextDecoder().decode(p)).join('');
 }
+
+// An image ID rather than a reference: "sha256:<hex>" or bare hex.
+export const isImageId = (s: unknown) => typeof s === 'string' && /^(sha256:)?[a-f0-9]{12,64}$/.test(s);

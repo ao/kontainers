@@ -68,20 +68,20 @@ export class AutoUpdates {
   }
 
   private async pass(): Promise<void> {
-    for (const c of await this.docker.listContainers()) {
+    for (const c of await this.docker.listContainersWithRefs()) {
       const name = nameOf(c);
-      const st = this.checker.get(c.Image);
+      const st = this.checker.get(c.Ref);
       if (containerStatus(st, c.ImageID)?.status !== 'available') continue;
       const row = this.get(name);
       if (!row || row.container_id !== c.Id) {
-        await this.notifier?.send({ kind: 'update', title: `Newer image for ${name}`, message: `${c.Image} has a newer image than the one ${name} runs.`, container: name },
+        await this.notifier?.send({ kind: 'update', title: `Newer image for ${name}`, message: `${c.Ref} has a newer image than the one ${name} runs.`, container: name },
           `update:${name}:${st?.remoteDigest || st?.imageId || ''}`);
         continue;
       }
       if (this.busy.has(name)) continue;
       // The image that failed is what the tag points at here, and the registry has nothing newer.
       if (row.held_image && st?.imageId === row.held_image && st.status !== 'available') continue;
-      await this.updateOne(c.Id, name, c.Image);
+      await this.updateOne(c.Id, name, c.Ref);
     }
   }
 

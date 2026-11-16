@@ -405,7 +405,7 @@ export function createHandler(d: Deps): Handler {
 
     if (m === 'GET') {
       if (p === '/') return redirect('/containers');
-      if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainers(), await self(), updateView(), views.parseFilter(url.searchParams)));
+      if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainersWithRefs(), await self(), updateView(), views.parseFilter(url.searchParams)));
       if (p === '/containers/new') return page(views.newContainerPage(ctx(s), cfg.allowBindMounts, !!d.autoUpdates));
       if ((r = /^\/containers\/([^/]+)\/edit$/.exec(p))) {
         const c = await docker.inspect(r[1]);
@@ -546,8 +546,12 @@ export function createHandler(d: Deps): Handler {
     if (p === '/updates/check') {
       return act(s, ip, '/containers', 'update-check', null, async () => {
         if (!d.updates) throw new v.ValidationError('update checks are not available');
-        const n = await d.updates.checkAll();
-        const newer = n === 0 ? [] : (await docker.listContainers()).filter(c => containerStatus(d.updates!.get(c.Image), c.ImageID)?.status === 'available');
+        // Registries that do not answer make a check slow; after 20 s it carries on in the background.
+        const running = d.updates.checkAll();
+        const finished = await Promise.race([running.then(() => true, () => true), Bun.sleep(20000).then(() => false)]);
+        if (!finished) { running.catch(() => {}); return 'Still checking: some registries are slow to answer. The results show here when the check is done; reload in a minute.'; }
+        const n = await running;
+        const newer = n === 0 ? [] : (await docker.listContainersWithRefs()).filter(c => containerStatus(d.updates!.get(c.Ref), c.ImageID)?.status === 'available');
         const auto = newer.filter(c => d.autoUpdates?.isOn(String(c.Names?.[0] || '').replace(/^\//, ''), c.Id)).length;
         const available = newer.length;
         return `Checked ${n} image${n === 1 ? '' : 's'}: ${available === 0 ? 'every container runs the newest image for its tag' : `${available} container${available === 1 ? ' has' : 's have'} a newer image`}${auto ? `; ${auto} ${auto === 1 ? 'is' : 'are'} being updated automatically` : ''}.`;

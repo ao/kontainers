@@ -170,9 +170,12 @@ export function needsAttention(c: any): boolean {
 }
 
 const nameOf = (c: any) => String(c.Names?.[0] || '').replace(/^\//, '');
+// The image reference a listed container was created with (Ref, from listContainersWithRefs), or the
+// list's own Image field.
+const refOf = (c: any): string => String(c.Ref ?? c.Image ?? '');
 const projectOf = (c: any): string => labelsOf(c)['com.docker.compose.project'] || '';
 // What the search box matches: name, image and compose project, without case.
-const searchText = (c: any) => `${nameOf(c)} ${c.Image || ''} ${projectOf(c)}`.toLowerCase();
+const searchText = (c: any) => `${nameOf(c)} ${refOf(c)} ${projectOf(c)}`.toLowerCase();
 
 export function matchesFilter(c: any, f: ListFilter): boolean {
   if (f.q && !searchText(c).includes(f.q.toLowerCase())) return false;
@@ -199,7 +202,7 @@ export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = 
     const name = nameOf(c);
     const project = projectOf(c);
     return html`<tr data-name="${name}" data-state="${c.State}" data-search="${searchText(c)}"${needsAttention(c) ? raw(' data-attention="1"') : raw('')}${matchesFilter(c, f) ? raw('') : raw(' hidden')}>
-  <td><a href="/containers/${c.Id}">${name}</a>${project && !f.group ? html`<small>compose project ${project}</small>` : ''}</td><td><span class="ref">${c.Image}</span>${updateBadge(updates, c.Image, c.ImageID)}</td>
+  <td><a href="/containers/${c.Id}">${name}</a>${project && !f.group ? html`<small>compose project ${project}</small>` : ''}</td><td><span class="ref">${refOf(c)}</span>${updateBadge(updates, refOf(c), c.ImageID)}</td>
   <td><span class="state ${c.State}">${c.State}</span><small>${c.Status}</small></td><td><span class="ref">${formatPorts(c.Ports)}</span></td>
   <td class="actions">${isSelf(c, me) ? selfNote(c, me) : containerActions(ctx, c.Id, name, c.State)}</td></tr>`;
   };
@@ -221,7 +224,7 @@ export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = 
 
   const running = list.filter(c => c.State === 'running').length;
   const attention = list.filter(needsAttention).length;
-  const newer = list.filter(c => hasNewer(updates, c.Image, c.ImageID)).length;
+  const newer = list.filter(c => hasNewer(updates, refOf(c), c.ImageID)).length;
   const checked = updates
     ? html`<span class="muted">${newer ? `${newer} with a newer image; ` : ''}${updates.lastRun ? `checked for updates ${ago(updates.lastRun)}` : updates.scheduled ? 'not checked for updates yet' : 'update checks are off'}</span>
 ${post(ctx, '/updates/check', 'Check for updates')}`

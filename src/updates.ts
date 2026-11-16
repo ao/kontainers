@@ -58,8 +58,10 @@ export class UpdateChecker {
     if (this.running) return this.running;
     this.running = (async () => {
       const refs = new Set<string>();
-      for (const c of await this.docker.listContainers()) if (checkable(c.Image)) refs.add(c.Image);
-      for (const ref of refs) await this.check(ref);
+      for (const c of await this.docker.listContainersWithRefs()) if (checkable(c.Ref)) refs.add(c.Ref);
+      // Four at a time: a registry that does not answer costs the daemon about 15 s per lookup.
+      const queue = [...refs];
+      await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => { for (let r = queue.shift(); r; r = queue.shift()) await this.check(r); }));
       // Forget references no container uses any more.
       for (const ref of [...this.state.keys()]) if (!refs.has(ref)) this.state.delete(ref);
       this.lastRun = this.now();
@@ -73,15 +75,48 @@ export class UpdateChecker {
     let st: UpdateState;
     try {
       const [local, remote] = await Promise.all([this.docker.inspectImage(ref), this.docker.distribution(ref)]);
-      st = { ...compareDigests(local?.RepoDigests, remote?.Descriptor?.digest), checkedAt: this.now(), imageId: local?.Id, remoteDigest: remote?.Descriptor?.digest };
+      const own = digestsFor(ref, local?.RepoDigests);
+      st = { ...compareDigests(own, remote?.Descriptor?.digest), checkedAt: this.now(), imageId: local?.Id, remoteDigest: remote?.Descriptor?.digest };
+      // A different digest is a newer image only if the registry has ever served ours. Docker's
+      // containerd image store gives locally built images a digest too; one the registry does not
+      // know was built (or changed) here, and "newer image available" would be wrong.
+      if (st.status === 'available') {
+        const known = await Promise.any(own.map(d => this.docker.distribution(`${repoOf(ref)}@${d.split('@')[1]}`))).catch(() => null);
+        if (!known) st = { ...st, status: 'unknown', reason: 'the registry does not have the image this tag points at here, so it was probably built on this host' };
+      }
     } catch (e) {
-      // docker-socket-proxy answers 403 for API sections it was not told to allow.
-      const reason = (e as { status?: number }).status === 403
-        ? 'the Docker API refused the registry lookup; with docker-socket-proxy, set DISTRIBUTION=1 on it'
-        : (e as Error).message.slice(0, 200);
-      st = { status: 'unknown', reason, checkedAt: this.now() };
+      st = { status: 'unknown', reason: lookupReason(e), checkedAt: this.now() };
     }
     this.state.set(ref, st);
     return st;
   }
+}
+
+// "nginx:1.27" -> "nginx", "ghcr.io/org/app:2" -> "ghcr.io/org/app" (a port is not a tag).
+export function repoOf(ref: string): string {
+  const at = ref.indexOf('@');
+  const r = at >= 0 ? ref.slice(0, at) : ref;
+  const colon = r.lastIndexOf(':');
+  return colon > r.lastIndexOf('/') ? r.slice(0, colon) : r;
+}
+
+// Docker Hub names appear in RepoDigests without docker.io/ and library/.
+const shortRepo = (r: string) => r.replace(/^(docker\.io|index\.docker\.io|registry-1\.docker\.io)\//, '').replace(/^library\//, '');
+
+// The RepoDigests that belong to the reference's repository: a digest pulled from another
+// repository says nothing about this one.
+export function digestsFor(ref: string, repoDigests: string[] | undefined | null): string[] {
+  const repo = shortRepo(repoOf(ref));
+  return (repoDigests || []).filter(d => shortRepo(d.split('@')[0]) === repo);
+}
+
+// What a failed lookup means, in words.
+export function lookupReason(e: unknown): string {
+  const status = (e as { status?: number }).status;
+  const msg = String((e as Error)?.message || e);
+  // docker-socket-proxy answers 403 for API sections it was not told to allow.
+  if (status === 403 && !/denied|unauthorized/i.test(msg)) return 'the Docker API refused the registry lookup; with docker-socket-proxy, set DISTRIBUTION=1 on it';
+  if (/denied|unauthorized|not found|manifest unknown|name unknown|repository does not exist/i.test(msg)) return 'the registry has no such image, or it needs a login this host does not have';
+  if (/deadline exceeded|timeout|timed out|no such host|connection refused|i\/o timeout|unreachable/i.test(msg)) return `the registry did not answer (${msg.slice(0, 120)})`;
+  return msg.slice(0, 200);
 }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { checkable, compareDigests, containerStatus, UpdateChecker, type UpdateStatus } from '../../src/updates';
+import { checkable, compareDigests, containerStatus, digestsFor, lookupReason, repoOf, UpdateChecker, type UpdateStatus } from '../../src/updates';
 import { containersPage, containerPage } from '../../src/views';
 
 const D = (n: string) => 'sha256:' + n.repeat(64);
@@ -40,6 +40,7 @@ function fakeDocker(images: Record<string, { local: string[]; remote?: string; f
   return {
     calls,
     listContainers: async () => containers.map(Image => ({ Image })),
+    listContainersWithRefs: async () => containers.map(Image => ({ Image, Ref: Image })),
     inspectImage: async (ref: string) => ({ RepoDigests: images[ref]?.local ?? [] }),
     distribution: async (ref: string) => {
       calls.distribution++;
@@ -55,7 +56,7 @@ describe('UpdateChecker', () => {
       ['nginx:1', 'nginx:1', 'redis:7', D('f')]);
     const u = new UpdateChecker(d as any, 0, () => 1000);
     expect(await u.checkAll()).toBe(2);
-    expect(d.calls.distribution).toBe(2);
+    expect(d.calls.distribution).toBe(3); // two lookups, and for the newer one a check that the registry knows our digest
     expect(u.get('nginx:1')?.status).toBe('available');
     expect(u.get('redis:7')?.status).toBe('current');
     expect(u.lastRun).toBe(1000);
@@ -64,7 +65,7 @@ describe('UpdateChecker', () => {
     const d = fakeDocker({ 'private/app:1': { local: [`private/app@${D('a')}`], fail: true } }, ['private/app:1']);
     const u = new UpdateChecker(d as any, 0);
     await u.checkAll();
-    expect(u.get('private/app:1')).toMatchObject({ status: 'unknown', reason: 'registry unreachable' });
+    expect(u.get('private/app:1')).toMatchObject({ status: 'unknown', reason: 'the registry did not answer (registry unreachable)' });
   });
   test('a socket proxy without DISTRIBUTION=1 gets a reason that says how to fix it', async () => {
     const d = fakeDocker({ 'a:1': { local: [`a@${D('a')}`] } }, ['a:1']);
@@ -117,5 +118,46 @@ describe('pages', () => {
     expect(containersPage(ctx, [{ ...row, ImageID: 'sha256:new' }], null, v)).not.toContain('newer image available');
     const c = { Id: 'b'.repeat(64), Name: '/web', Image: 'sha256:old', State: { Status: 'running' }, Config: { Image: 'nginx:1', Labels: {} }, HostConfig: {} };
     expect(containerPage(ctx, c, null, v)).toContain('recreate the container to use it');
+  });
+});
+
+describe('references and registries', () => {
+  test('repoOf strips the tag and digest, not a registry port', () => {
+    expect(repoOf('nginx:1.27')).toBe('nginx');
+    expect(repoOf('ghcr.io/org/app:2')).toBe('ghcr.io/org/app');
+    expect(repoOf('localhost:5000/kt/app:1')).toBe('localhost:5000/kt/app');
+    expect(repoOf('localhost:5000/kt/app')).toBe('localhost:5000/kt/app');
+    expect(repoOf(`nginx@${D('a')}`)).toBe('nginx');
+  });
+  test('digestsFor keeps the reference\'s own repository, Docker Hub names short or long', () => {
+    const rd = [`nginx@${D('a')}`, `ghcr.io/x/nginx@${D('b')}`, `docker.io/library/nginx@${D('c')}`];
+    expect(digestsFor('nginx:1.27', rd)).toEqual([`nginx@${D('a')}`, `docker.io/library/nginx@${D('c')}`]);
+    expect(digestsFor('docker.io/library/nginx:1.27', rd)).toEqual([`nginx@${D('a')}`, `docker.io/library/nginx@${D('c')}`]);
+    expect(digestsFor('ghcr.io/x/nginx:1', rd)).toEqual([`ghcr.io/x/nginx@${D('b')}`]);
+    expect(digestsFor('other:1', rd)).toEqual([]);
+  });
+  test('lookup failures in words', () => {
+    expect(lookupReason(Object.assign(new Error('Forbidden'), { status: 403 }))).toContain('DISTRIBUTION=1');
+    expect(lookupReason(new Error('errors: denied: requested access to the resource is denied'))).toContain('no such image, or it needs a login');
+    expect(lookupReason(new Error('Get "https://10.255.255.1:5000/v2/": context deadline exceeded'))).toContain('did not answer');
+  });
+  test('a digest the registry never served is a local build, not a newer image', async () => {
+    const d = fakeDocker({ 'mine:1': { local: [`mine@${D('a')}`], remote: D('b') } }, ['mine:1']);
+    const known = new Set([`mine@${D('b')}`]);
+    const plain = d.distribution;
+    d.distribution = async (ref: string) => { if (ref.includes('@') && !known.has(ref)) throw new Error('manifest unknown'); return plain(ref); };
+    const u = new UpdateChecker(d as any, 0);
+    await u.checkAll();
+    expect(u.get('mine:1')).toMatchObject({ status: 'unknown', reason: expect.stringContaining('built on this host') });
+    known.add(`mine@${D('a')}`); // the registry did serve ours once: then it is older
+    await u.checkAll();
+    expect(u.get('mine:1')?.status).toBe('available');
+  });
+  test('a container whose tag moved is checked under its reference, not its image ID', async () => {
+    const d = fakeDocker({ 'web:1': { local: [`web@${D('a')}`], remote: D('a') } }, []);
+    d.listContainersWithRefs = async () => [{ Image: D('9'), Ref: 'web:1' }];
+    const u = new UpdateChecker(d as any, 0);
+    expect(await u.checkAll()).toBe(1);
+    expect(u.get('web:1')?.status).toBe('current');
   });
 });
