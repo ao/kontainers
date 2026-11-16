@@ -343,6 +343,7 @@ export function editContainerPage(ctx: PageCtx, c: any, spec: EditSpec, allowBin
 </form>`, 'Containers');
 }
 export function imagesPage(ctx: PageCtx, list: any[], pulls: { ref: string; state: string; error?: string }[] = []): string {
+  const cleanup = html`<p><a href="/cleanup">Clean up</a> images, networks and volumes no container uses.</p>`;
   // One Remove per tag: removing a tag leaves the image while other tags point at it.
   const remove = (ref: string, label: string, what: string) => post(ctx, '/images/remove', label, { confirm: `Remove ${what}?`, cls: 'danger', fields: { ref } });
   const rows = list.map(i => {
@@ -358,7 +359,8 @@ export function imagesPage(ctx: PageCtx, list: any[], pulls: { ref: string; stat
 <form method="post" action="/images/pull" class="row">${csrfField(ctx)}<input name="ref" required placeholder="alpine:3.20" aria-label="Image to pull"><button>Pull</button></form>
 <p class="muted">Public images only: registry logins are not supported.</p>
 ${pending.length ? html`<ul class="pulls">${pending}</ul>` : ''}
-<table><thead><tr><th>Tags</th><th>ID</th><th>Size</th><th>Created (UTC)</th></tr></thead><tbody>${rows}</tbody></table>`);
+<table><thead><tr><th>Tags</th><th>ID</th><th>Size</th><th>Created (UTC)</th></tr></thead><tbody>${rows}</tbody></table>
+${cleanup}`);
 }
 
 export function networksPage(ctx: PageCtx, list: any[]): string {
@@ -473,4 +475,25 @@ ${rows.length ? html`<table><thead><tr><th>Kind</th><th>Address</th><th>Events</
   <fieldset><legend>Send when</legend>${boxes}</fieldset>
   <button>Add target</button>
 </form>`;
+}
+
+// What can be removed safely, with the size of each group.
+export function cleanupPage(ctx: PageCtx, p: { dangling: { id: string; size: number }[]; unusedTagged: { id: string; tags: string[]; size: number }[]; networks: { name: string }[]; volumes: { name: string }[]; namedUnused: number }): string {
+  const total = (items: { size: number }[]) => fmtSize(items.reduce((s, i) => s + i.size, 0));
+  const tagged = p.unusedTagged.map(i => html`<tr><td>${i.tags.map((t, k) => html`${k ? html`<br>` : ''}<span class="ref">${t}</span>`)}</td><td><code>${shortId(i.id)}</code></td><td>${fmtSize(i.size)}</td></tr>`);
+  return layout('Clean up', ctx, html`
+<p>Only things no container uses are listed. A stopped container still uses its image and volumes, so they stay. Sizes count each image's shared layers in full, so less space may be freed than shown; the result says how much was.</p>
+<h2>Images without a tag</h2>
+${p.dangling.length ? html`<p>${p.dangling.length} image${p.dangling.length === 1 ? '' : 's'}, up to ${total(p.dangling)}. These are left behind when a tag moves to a newer image.</p>
+${post(ctx, '/cleanup/images', `Remove ${p.dangling.length} untagged image${p.dangling.length === 1 ? '' : 's'}`, { confirm: `Remove ${p.dangling.length} untagged images?`, cls: 'danger', fields: { scope: 'dangling' } })}` : html`<p class="muted">None.</p>`}
+<h2>Tagged images no container uses</h2>
+${p.unusedTagged.length ? html`<table><thead><tr><th>Tags</th><th>ID</th><th>Size</th></tr></thead><tbody>${tagged}</tbody></table>
+<p>${post(ctx, '/cleanup/images', `Remove these ${p.unusedTagged.length} and the untagged ones`, { confirm: 'Remove every image no container uses? They can be pulled again.', cls: 'danger', fields: { scope: 'unused' } })}</p>` : html`<p class="muted">None.</p>`}
+<h2>Networks</h2>
+${p.networks.length ? html`<p>${p.networks.map((n, k) => html`${k ? ', ' : ''}<span class="ref">${n.name}</span>`)}: no container is connected.</p>
+${post(ctx, '/cleanup/networks', `Remove ${p.networks.length} unused network${p.networks.length === 1 ? '' : 's'}`, { confirm: 'Remove the networks no container is connected to?', cls: 'danger' })}` : html`<p class="muted">None unused.</p>`}
+<h2>Anonymous volumes</h2>
+${p.volumes.length ? html`<p>${p.volumes.length} anonymous volume${p.volumes.length === 1 ? '' : 's'} no container mounts (created by images that declare a volume, for containers since removed).</p>
+${post(ctx, '/cleanup/volumes', `Remove ${p.volumes.length} anonymous volume${p.volumes.length === 1 ? '' : 's'}`, { confirm: 'Remove the unused anonymous volumes and their data?', cls: 'danger' })}` : html`<p class="muted">None unused.</p>`}
+${p.namedUnused ? html`<p class="muted">${p.namedUnused} named volume${p.namedUnused === 1 ? ' is' : 's are'} not mounted by any container. Named volumes usually hold data, so they are not removed here; remove one on the <a href="/volumes">Volumes</a> page if you are sure.</p>` : ''}`, 'Images');
 }

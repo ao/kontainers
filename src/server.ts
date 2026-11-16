@@ -20,6 +20,7 @@ import { containerStatus, type UpdateChecker } from './updates';
 import { STATIC } from './static';
 import * as v from './validate';
 import * as views from './views';
+import * as cleanup from './cleanup';
 
 export interface Deps {
   cfg: Config;
@@ -387,6 +388,7 @@ export function createHandler(d: Deps): Handler {
       }
       if (p === '/networks') return page(views.networksPage(ctx(s), await docker.listNetworks()));
       if (p === '/volumes') return page(views.volumesPage(ctx(s), await docker.listVolumes()));
+      if (p === '/cleanup') return page(views.cleanupPage(ctx(s), await cleanup.currentPlan(docker)));
       if (p === '/proxy') {
         const list = rules.list();
         const status = (r: (typeof list)[number]) => ({
@@ -547,6 +549,29 @@ export function createHandler(d: Deps): Handler {
         background = true;
         job.catch(() => { /* recorded in pulls */ });
         return `Still pulling ${ref}. It is listed below while it runs; reload to see the result.`;
+      });
+    }
+    if (p === '/cleanup/images' || p === '/cleanup/networks' || p === '/cleanup/volumes') {
+      const what = p.slice('/cleanup/'.length);
+      return act(s, ip, '/cleanup', `cleanup-${what}`, what === 'images' ? (f.scope === 'unused' ? 'unused' : 'dangling') : null, async () => {
+        // Worked out again now, from the daemon: never from what the page showed.
+        const pl = await cleanup.currentPlan(docker);
+        const said = (o: cleanup.Outcome, noun: string, extra = '') =>
+          `Removed ${o.removed} ${noun}${o.removed === 1 ? '' : 's'}${extra}${o.kept ? `; kept ${o.kept} the daemon would not remove (${o.errors.join('; ')})` : ''}.`;
+        if (what === 'images') {
+          const items = f.scope === 'unused' ? [...pl.dangling, ...pl.unusedTagged] : pl.dangling;
+          let freed = 0;
+          const o = await cleanup.removeAll(items, async i => {
+            // Tag by tag (the daemon will not remove a multi-tag image by ID without force); the last
+            // tag takes the image with it. One that came into use since is refused by the daemon.
+            if (i.tags.length) for (const t of i.tags) await docker.removeImage(t, false);
+            else await docker.removeImage(i.id, false);
+            freed += i.size;
+          }, i => i.tags[0] || i.id.slice(7, 19));
+          return said(o, 'image', o.removed ? ` (up to ${(freed / 1e6).toFixed(1)} MB)` : '');
+        }
+        if (what === 'networks') return said(await cleanup.removeAll(pl.networks, n => docker.removeNetwork(n.id), n => n.name), 'network');
+        return said(await cleanup.removeAll(pl.volumes, vol => docker.removeVolume(vol.name), vol => vol.name.slice(0, 12)), 'anonymous volume');
       });
     }
     if (p === '/images/remove') return act(s, ip, '/images', 'image-remove', f.ref ?? null, async () => { await docker.removeImage(f.ref); return `Removed ${f.ref}.`; });

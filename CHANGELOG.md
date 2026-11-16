@@ -23,6 +23,10 @@
   is refused before the old container is stopped. Host paths it already has may stay; new ones
   follow `KONTAINERS_ALLOW_BIND_MOUNTS`.
 - New container: an option to update it automatically.
+- Clean up (linked from Images): untagged images, tagged images no container uses, networks no
+  container uses, and anonymous volumes no container mounts, each listed with sizes before
+  removal. Stopped containers count as users. Named volumes are never removed in bulk. Items are
+  removed one by one and never forced, so anything that came into use meanwhile is kept.
 
 ## 0.3.0
 

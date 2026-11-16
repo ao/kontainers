@@ -86,6 +86,9 @@ What works, and is covered by the test suites below:
   expires in under 14 days. Settings has a test button and shows the last result per target.
 - images: list, pull (public images; registry logins are not supported), remove, per tag
 - networks and volumes: list, create, remove
+- clean up: untagged images, unused tagged images, unused networks and unused anonymous
+  volumes, listed with sizes first; anything a container uses, running or stopped, stays, and
+  named volumes are never removed in bulk
 - proxy rules: hostname and path prefix to a container port, HTTPS with a certificate obtained
   automatically, or plain HTTP; edit, enable, disable, remove; kept across restarts
 - local accounts, first-run setup, database backup
