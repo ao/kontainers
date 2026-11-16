@@ -8,6 +8,7 @@ import { bindProblem, loadConfig } from './config';
 import { openDb, snapshot } from './db';
 import { Auth } from './auth';
 import { Docker } from './docker';
+import { recoverInterrupted } from './update';
 import { ProxyManager, RuleStore } from './proxy';
 import { createHandler } from './server';
 import { UpdateChecker } from './updates';
@@ -75,6 +76,7 @@ if (cfg.inContainer) console.log('kontainers: running in a container; publish th
 const setupToken = auth.issueSetupToken();
 if (setupToken) console.log(`kontainers: no accounts yet. Open /setup and enter this one-time setup token: ${setupToken}`);
 if (!(await docker.ping())) console.error(`kontainers: Docker is not reachable at ${cfg.dockerHost}; pages will show errors until it is`);
+else for (const line of await recoverInterrupted(docker).catch(e => [`could not look for interrupted updates: ${(e as Error).message}`])) console.log(`kontainers: ${line}`);
 
 try {
   await proxy.start();

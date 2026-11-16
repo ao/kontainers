@@ -30,7 +30,7 @@ class FakeDocker {
     });
     return id;
   }
-  async listContainers() { return [...this.containers.values()].map(c => ({ Id: c.Id, Names: [c.Name], Image: c.Config.Image, ImageID: c.Image, State: c.State.Status })); }
+  async listContainers() { return [...this.containers.values()].map(c => ({ Id: c.Id, Names: [c.Name], Image: c.Config.Image, ImageID: c.Image, State: c.State.Status, Labels: c.Config.Labels })); }
   async listContainersWithRefs() { return (await this.listContainers()).map(c => ({ ...c, Ref: c.Image })); }
   async inspect(id: string) { return structuredClone(this.find(id)); }
   async inspectImage(ref: string) {
@@ -228,5 +228,48 @@ describe('Update image safeguards', () => {
     expect(r.changed).toBe(true);
     expect(renames[0].length).toBeLessThanOrEqual(128);
     expect(running(d, long).Image).toBe('i2');
+  });
+});
+
+describe('recoverInterrupted', () => {
+  const aside = (d: FakeDocker, name: string, running: boolean) => {
+    const id = d.run(name, 'app:1');
+    const c = d.find(id);
+    c.Id = 'abcdef12' + c.Id.slice(8); d.containers.delete(id); d.containers.set(c.Id, c);
+    c.Name = `/${name}-old-abcdef12`;
+    c.State = running ? { Running: true, Status: 'running' } : { Running: false, Status: 'exited', ExitCode: 0 };
+    return c.Id;
+  };
+  test('nothing has the name: the old container is put back and started', async () => {
+    const { d } = setup();
+    const id = aside(d, 'web', false);
+    const { recoverInterrupted } = await import('../../src/update');
+    expect(await recoverInterrupted(d as any)).toEqual(['put web back: an update or edit was interrupted before the new container existed']);
+    expect(d.find('web').Id).toBe(id);
+    expect(d.find('web').State.Running).toBe(true);
+  });
+  test('the new one runs: the leftover is removed', async () => {
+    const { d } = setup();
+    const old = aside(d, 'web', false);
+    d.run('web', 'app:1');
+    const { recoverInterrupted } = await import('../../src/update');
+    expect(await recoverInterrupted(d as any)).toEqual(['removed web-old-abcdef12, left over from an interrupted update of web']);
+    expect(d.containers.has(old)).toBe(false);
+  });
+  test('the new one is not running: both are left, with a note', async () => {
+    const { d } = setup();
+    aside(d, 'web', false);
+    const now = d.run('web', 'app:1');
+    d.find(now).State = { Running: false, Status: 'created' };
+    const { recoverInterrupted } = await import('../../src/update');
+    expect((await recoverInterrupted(d as any))[0]).toContain('check them by hand');
+    expect(d.containers.size).toBe(2);
+  });
+  test('names that only look like it are ignored', async () => {
+    const { d } = setup();
+    d.run('backup-old-12345678', 'app:1'); // the ID does not start with 12345678
+    d.run('x-old-abcdef12', 'app:1', false); // not created by kontainers
+    const { recoverInterrupted } = await import('../../src/update');
+    expect(await recoverInterrupted(d as any)).toEqual([]);
   });
 });

@@ -139,3 +139,27 @@ describe.skipIf(!DOCKER)('forms and messages', () => {
     expect(err).toContain('nope-2');
   });
 });
+
+describe.skipIf(!DOCKER)('an update interrupted by a restart', () => {
+  test('the old container is put back when kontainers starts again', async () => {
+    const name = `k-${run}-intr`;
+    const { srv: s1, c: c1 } = await readyServer();
+    expect((await c1.submit('/containers', { image: 'busybox:1.36', name, pull: '', cmd: 'sleep 600', start: 'on' })).error).toBe('');
+    await s1.stop();
+    // What kontainers leaves if it dies between setting the old container aside and creating the new one.
+    const c = await inspect(name);
+    await api(`/containers/${name}/stop?t=1`, { method: 'POST' });
+    expect((await api(`/containers/${name}/rename?name=${name}-old-${c.Id.slice(0, 8)}`, { method: 'POST' })).status).toBe(204);
+    const s2 = await (await import('./helpers')).startServer();
+    try {
+      for (let i = 0; i < 50 && !/put .* back/.test(s2.output()); i++) await Bun.sleep(100);
+      expect(s2.output()).toContain(`put ${name} back: an update or edit was interrupted`);
+      const now = await inspect(name);
+      expect(now.Id).toBe(c.Id);
+      expect(now.State.Running).toBe(true);
+    } finally {
+      await s2.stop();
+      await api(`/containers/${name}?force=1`, { method: 'DELETE' });
+    }
+  }, 60000);
+});

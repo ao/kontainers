@@ -175,3 +175,35 @@ export async function replaceContainer(docker: Docker, c: any, spec: CreateSpec,
   await docker.remove(c.Id, false).catch(err => console.error(`kontainers: could not remove ${aside}: ${(err as Error).message}`));
   return newId;
 }
+
+// After a restart in the middle of a replacement (kontainers stopped while an update or an edit
+// ran), the old container may still be set aside as <name>-old-<id>. If nothing has the name any
+// more, it is put back and started; if the new container is running, the old one is removed.
+// A new container that exists but is not running is left alone, with a log line.
+export async function recoverInterrupted(docker: Docker): Promise<string[]> {
+  const out: string[] = [];
+  const list = await docker.listContainers();
+  const byName = new Map(list.map(c => [String(c.Names?.[0] || '').replace(/^\//, ''), c]));
+  for (const [name, c] of byName) {
+    const m = /^(.+)-old-([0-9a-f]{8})$/.exec(name);
+    if (!m || c.Labels?.['kontainers.managed'] !== 'true' || !String(c.Id).startsWith(m[2])) continue;
+    const base = m[1];
+    const now = byName.get(base);
+    try {
+      if (!now) {
+        await docker.rename(c.Id, base);
+        if (c.State !== 'running') await docker.start(c.Id).catch(() => {});
+        out.push(`put ${base} back: an update or edit was interrupted before the new container existed`);
+      } else if (now.State === 'running') {
+        if (c.State === 'running') await docker.stop(c.Id);
+        await docker.remove(c.Id, false);
+        out.push(`removed ${name}, left over from an interrupted update of ${base}`);
+      } else {
+        out.push(`${name} and ${base} both exist and ${base} is not running; check them by hand`);
+      }
+    } catch (e) {
+      out.push(`could not tidy up ${name}: ${(e as Error).message}`);
+    }
+  }
+  return out;
+}

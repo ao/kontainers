@@ -5,6 +5,9 @@
 - Fixed: Update image, Edit settings and automatic updates dropped anonymous volumes (an image's
   VOLUME, such as a database's data directory): the new container started empty and the data
   was left in a dangling volume. The container's actual mounts are now carried over by name.
+- If kontainers stops in the middle of an update or an edit, it tidies up when it starts again: a
+  container left set aside as `<name>-old-<id>` is put back if nothing has its name, or removed
+  if the new container is running.
 - Fixed: when the image a container was made from was gone (a `docker build` that reused the
   tag deletes it), Update image copied that image's environment and command into the new
   container. It now refuses and points to Edit settings, before pulling or stopping anything.
