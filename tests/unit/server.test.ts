@@ -277,3 +277,21 @@ describe('BoundedLog', () => {
     expect(log.text().length).toBeLessThan(4200);
   });
 });
+
+describe('container page facts', () => {
+  test('command, ports, restarts and why it is unhealthy', () => {
+    const page = containerPage({ user: 'a', csrf: 't' }, {
+      Id: 'd'.repeat(64), Name: '/db', RestartCount: 3, State: { Status: 'running', StartedAt: '2026-11-16T10:00:00Z', Health: { Status: 'unhealthy', FailingStreak: 4, Log: [{ ExitCode: 1, Output: 'pg_isready: no response\n' }] } },
+      Config: { Image: 'postgres:17', Entrypoint: ['docker-entrypoint.sh'], Cmd: ['postgres', '-c', 'max_connections=200'], Labels: {} },
+      HostConfig: { RestartPolicy: { Name: 'always' } },
+      NetworkSettings: { Ports: { '5432/tcp': [{ HostIp: '127.0.0.1', HostPort: '5433' }], '9187/tcp': null } },
+    });
+    expect(page).toContain('<code>docker-entrypoint.sh postgres -c max_connections=200</code>');
+    expect(page).toContain('<span class="ref">127.0.0.1:5433-&gt;5432/tcp</span>');
+    expect(page).toContain('restarted 3 times');
+    expect(page).toContain('unhealthy<small class="muted">failed 4 checks in a row, exit code 1: <code>pg_isready: no response</code></small>');
+  });
+  test('environment lines keep trailing spaces', () => {
+    expect(containerSpec({ image: 'x', env: '  A=1  \r\n\r\nB= \n' }).env).toEqual(['A=1  ', 'B= ']);
+  });
+});

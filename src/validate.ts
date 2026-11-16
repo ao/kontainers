@@ -19,6 +19,7 @@ export function ref(v: unknown, what = 'id'): string {
 }
 
 export function name(v: unknown, what = 'name'): string {
+  check(!(typeof v === 'string' && v.length > 128), `invalid ${what}: at most 128 characters (${String(v).length} given)`);
   check(typeof v === 'string' && NAME.test(v), `invalid ${what}: letters, digits, _ . - only, must not start with a symbol`);
   return v as string;
 }
@@ -46,7 +47,8 @@ export function port(v: unknown, what = 'port'): number {
 
 const ENV = /^[A-Za-z_][A-Za-z0-9_]*=[^\0\n]*$/;
 export function envVar(v: unknown): string {
-  check(typeof v === 'string' && v.length <= 32768 && ENV.test(v), 'invalid environment variable, expected KEY=value');
+  check(!(typeof v === 'string' && v.length > 32768), `environment variable too long: at most 32768 characters (${String(v).length} given)`);
+  check(typeof v === 'string' && ENV.test(v), 'invalid environment variable, expected KEY=value');
   return v as string;
 }
 
@@ -60,7 +62,12 @@ export function hostIp(v: unknown): string {
 const LABEL = /^(?!-)[a-z0-9-]{1,63}(?<!-)$/;
 export function hostname(v: unknown): string {
   check(typeof v === 'string', 'invalid hostname');
-  const s = (v as string).toLowerCase();
+  let s = (v as string).replace(/^ +| +$/g, '').toLowerCase(); // spaces only: a newline stays an error
+  // An internationalised name is stored in its ASCII (punycode) form, as DNS and certificates use it.
+  if (/[^\x00-\x7f]/.test(s)) {
+    const wild = s.startsWith('*.');
+    try { s = (wild ? '*.' : '') + new URL(`http://${wild ? s.slice(2) : s}`).hostname; } catch { check(false, 'invalid hostname'); }
+  }
   check(s.length <= 253, 'hostname too long');
   const labels = s.startsWith('*.') ? s.slice(2).split('.') : s.split('.');
   check(labels.length >= 1 && labels.every(l => LABEL.test(l)), 'invalid hostname');

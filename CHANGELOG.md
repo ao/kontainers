@@ -32,6 +32,13 @@
 - Fixed: a mistake in the New container form discarded everything typed; the form now comes
   back filled in, with the error. Several actions at once in one session (two tabs) each show
   their outcome instead of the last one only.
+- The container page shows the command, published ports, how often the container restarted,
+  and for an unhealthy one the last healthcheck's output; unhealthy rows get the warning stripe.
+  Networks and volumes are sorted and say which containers use each.
+- Input: international hostnames are stored in punycode; length limits for names and
+  environment values say what the limit is; trailing spaces in environment values are kept; a
+  stray space in an image to pull is ignored; creating a volume whose name exists is refused
+  (Docker answered as if it had made it).
 - Container pages, their actions, logs and usage are addressed by container name, not ID, so a
   page left open keeps working after `docker compose up` or an update recreates the container.
 - Fixed: log responses were unbounded (a container that printed a 20 MB line made a 40 MB

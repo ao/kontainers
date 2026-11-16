@@ -133,6 +133,8 @@ async function readForm(req: Request): Promise<Record<string, string>> {
 }
 
 const lines = (s: string | undefined) => (s || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+// Environment lines keep trailing spaces: they can be part of a value.
+const envLines = (s: string | undefined) => (s || '').split(/\r?\n/).map(l => l.trimStart()).filter(l => l.trim() !== '');
 
 // "[host-ip:]host:container[/udp]"; an IPv6 host IP goes in brackets.
 export function parsePort(line: string): NonNullable<CreateSpec['ports']>[number] {
@@ -190,7 +192,7 @@ export function containerSpec(f: Record<string, string>): CreateSpec {
     image: f.image?.trim(),
     name: f.name?.trim() || undefined,
     cmd: f.cmd?.trim() ? splitArgs(f.cmd.trim()) : undefined,
-    env: lines(f.env),
+    env: envLines(f.env),
     ports: lines(f.ports).map(parsePort),
     volumes: lines(f.volumes).map(parseVolume),
     restart: (f.restart as CreateSpec['restart']) || 'no',
@@ -451,8 +453,17 @@ export function createHandler(d: Deps): Handler {
         for (const [k, j] of pulls) if (j.state === 'failed' && Date.now() - j.at > 30 * 60 * 1000) pulls.delete(k);
         return page(views.imagesPage(ctx(s), await docker.listImages(), [...pulls].map(([ref, j]) => ({ ref, ...j }))));
       }
-      if (p === '/networks') return page(views.networksPage(ctx(s), await docker.listNetworks()));
-      if (p === '/volumes') return page(views.volumesPage(ctx(s), await docker.listVolumes()));
+      if (p === '/networks' || p === '/volumes') {
+        // Who uses what, from the container list (names, which the pages link to).
+        const users = new Map<string, string[]>();
+        const add = (k: string, n: string) => (users.get(k) || users.set(k, []).get(k)!).push(n);
+        for (const c of await docker.listContainers()) {
+          const n = String(c.Names?.[0] || '').replace(/^\//, '');
+          if (p === '/networks') for (const net of Object.keys(c.NetworkSettings?.Networks || {})) add(net, n);
+          else for (const m of c.Mounts || []) if (m.Type === 'volume' && m.Name) add(m.Name, n);
+        }
+        return page(p === '/networks' ? views.networksPage(ctx(s), await docker.listNetworks(), users) : views.volumesPage(ctx(s), await docker.listVolumes(), users));
+      }
       if (p === '/activity') {
         const q = (url.searchParams.get('q') || '').trim().slice(0, 100);
         const before = v.intInRange(url.searchParams.get('before'), 1, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
@@ -613,7 +624,7 @@ export function createHandler(d: Deps): Handler {
 
     if (p === '/images/pull') {
       return act(s, ip, '/images', 'image-pull', f.ref ?? null, async () => {
-        const ref = v.image(f.ref);
+        const ref = v.image(String(f.ref ?? '').trim());
         if (pulls.get(ref)?.state === 'pulling') return `${ref} is already being pulled.`;
         pulls.delete(ref);
         // Wait up to 20 s; a longer pull carries on in the background and the Images page shows it.
@@ -659,7 +670,12 @@ export function createHandler(d: Deps): Handler {
     if (p === '/networks') return act(s, ip, '/networks', 'network-create', f.name ?? null, async () => { await docker.createNetwork(f.name); return `Created network ${f.name}.`; });
     if ((r = /^\/networks\/([^/]+)\/remove$/.exec(p))) { const id = r[1]; return act(s, ip, '/networks', 'network-remove', id, () => docker.removeNetwork(id)); }
 
-    if (p === '/volumes') return act(s, ip, '/volumes', 'volume-create', f.name ?? null, async () => { await docker.createVolume(f.name); return `Created volume ${f.name}.`; });
+    if (p === '/volumes') return act(s, ip, '/volumes', 'volume-create', f.name ?? null, async () => {
+      // Docker answers a create for an existing name with that volume, as if it had made it.
+      if ((await docker.listVolumes()).some(x => x.Name === f.name)) throw new v.ValidationError(`a volume named ${f.name} already exists`);
+      await docker.createVolume(f.name);
+      return `Created volume ${f.name}.`;
+    });
     if ((r = /^\/volumes\/([^/]+)\/remove$/.exec(p))) { const name = r[1]; return act(s, ip, '/volumes', 'volume-remove', name, () => docker.removeVolume(name)); }
 
     if (p === '/proxy') {

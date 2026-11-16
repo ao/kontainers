@@ -206,7 +206,7 @@ export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = 
   const row = (c: any) => {
     const name = nameOf(c);
     const project = projectOf(c);
-    return html`<tr data-name="${name}" data-state="${c.State}" data-search="${searchText(c)}"${needsAttention(c) ? raw(' data-attention="1"') : raw('')}${matchesFilter(c, f) ? raw('') : raw(' hidden')}>
+    return html`<tr data-name="${name}" data-state="${c.State}"${/\(unhealthy\)/.test(c.Status || '') ? raw(' data-health="unhealthy"') : raw('')} data-search="${searchText(c)}"${needsAttention(c) ? raw(' data-attention="1"') : raw('')}${matchesFilter(c, f) ? raw('') : raw(' hidden')}>
   <td><a href="/containers/${urlId(c)}">${name}</a>${project && !f.group ? html`<small>compose project ${project}</small>` : ''}</td><td><span class="ref">${refOf(c)}</span>${updateBadge(updates, refOf(c), c.ImageID)}</td>
   <td><span class="state ${c.State}">${c.State}</span><small>${c.Status}</small></td><td><span class="ref">${formatPorts(c.Ports)}</span></td>
   <td class="actions">${isSelf(c, me) ? selfNote(c, me) : containerActions(ctx, urlId(c), name, c.State)}</td></tr>`;
@@ -278,9 +278,11 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
   <dt>Image</dt><dd><code>${c.Config?.Image}</code>${upd ? html`<small class="${upd.status === 'available' ? 'update' : 'muted'}">${updText} (checked ${ago(upd.checkedAt)})</small>` : ''}</dd>
   <dt>State</dt><dd><span class="state ${c.State?.Status}">${c.State?.Status}</span></dd>
   <dt>Started</dt><dd>${!c.State?.StartedAt || c.State.StartedAt.startsWith('0001-') ? 'never' : `${c.State.StartedAt.slice(0, 16).replace('T', ' ')} UTC`}</dd>
-  ${c.State?.Health ? html`<dt>Health</dt><dd>${c.State.Health.Status}</dd>` : ''}
+  ${c.State?.Health ? html`<dt>Health</dt><dd>${c.State.Health.Status}${healthNote(c.State.Health)}</dd>` : ''}
   ${c.State?.Status === 'exited' ? html`<dt>Exit code</dt><dd>${c.State.ExitCode}${c.State.OOMKilled ? ' (out of memory)' : ''}</dd>` : ''}
-  <dt>Restart policy</dt><dd>${c.HostConfig?.RestartPolicy?.Name}</dd>
+  <dt>Restart policy</dt><dd>${c.HostConfig?.RestartPolicy?.Name}${c.RestartCount ? html`<small class="warn">restarted ${c.RestartCount} time${c.RestartCount === 1 ? '' : 's'}</small>` : ''}</dd>
+  ${[...(c.Config?.Entrypoint || []), ...(c.Config?.Cmd || [])].length ? html`<dt>Command</dt><dd><code>${quoteArgs([...(c.Config?.Entrypoint || []), ...(c.Config?.Cmd || [])])}</code></dd>` : ''}
+  ${inspectPorts(c) ? html`<dt>Ports</dt><dd><span class="ref">${inspectPorts(c)}</span></dd>` : ''}
 </dl>
 <div class="actions">${isSelf(c, me) ? selfNote(c, me) : containerActions(ctx, urlId(c), name, c.State?.Status || '', true)}
 ${isSelf(c, me) ? '' : c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project']
@@ -385,21 +387,27 @@ ${pending.length ? html`<ul class="pulls">${pending}</ul>` : ''}
 ${cleanup}`);
 }
 
-export function networksPage(ctx: PageCtx, list: any[]): string {
+// users: container names per network or volume name, from the container list.
+const usedBy = (names: string[] | undefined) => names?.length
+  ? html`${names.slice(0, 3).map((n, i) => html`${i ? ', ' : ''}<a href="/containers/${n}">${n}</a>`)}${names.length > 3 ? ` and ${names.length - 3} more` : ''}`
+  : html`<span class="muted">none</span>`;
+
+export function networksPage(ctx: PageCtx, list: any[], users: Map<string, string[]> = new Map()): string {
   const builtin = new Set(['bridge', 'host', 'none']);
-  const rows = list.map(n => html`<tr><td>${n.Name}</td><td>${n.Driver}</td><td>${n.Scope}</td>
+  const rows = [...list].sort((a, b) => String(a.Name).localeCompare(String(b.Name))).map(n => html`<tr><td>${n.Name}</td><td>${n.Driver}</td><td>${n.Scope}</td><td>${usedBy(users.get(n.Name))}</td>
 <td>${builtin.has(n.Name) ? '' : post(ctx, `/networks/${n.Id}/remove`, 'Remove', { confirm: `Remove network ${n.Name}?`, cls: 'danger' })}</td></tr>`);
   return layout('Networks', ctx, html`
 <form method="post" action="/networks" class="row">${csrfField(ctx)}<input name="name" required placeholder="network name" aria-label="Network name"><button>Create</button></form>
-<table><thead><tr><th>Name</th><th>Driver</th><th>Scope</th><th></th></tr></thead><tbody>${rows}</tbody></table>`);
+<table><thead><tr><th>Name</th><th>Driver</th><th>Scope</th><th>Containers</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+<p><a href="/cleanup">Clean up</a> networks no container uses.</p>`);
 }
-
-export function volumesPage(ctx: PageCtx, list: any[]): string {
-  const rows = list.map(vol => html`<tr><td>${vol.Name}</td><td>${vol.Driver}</td><td>${vol.CreatedAt || ''}</td>
+export function volumesPage(ctx: PageCtx, list: any[], users: Map<string, string[]> = new Map()): string {
+  const rows = [...list].sort((a, b) => String(a.Name).localeCompare(String(b.Name))).map(vol => html`<tr><td>${vol.Name}</td><td>${vol.Driver}</td><td>${vol.CreatedAt || ''}</td><td>${usedBy(users.get(vol.Name))}</td>
 <td>${post(ctx, `/volumes/${vol.Name}/remove`, 'Remove', { confirm: `Remove volume ${vol.Name} and its data?`, cls: 'danger' })}</td></tr>`);
   return layout('Volumes', ctx, html`
 <form method="post" action="/volumes" class="row">${csrfField(ctx)}<input name="name" required placeholder="volume name" aria-label="Volume name"><button>Create</button></form>
-<table><thead><tr><th>Name</th><th>Driver</th><th>Created</th><th></th></tr></thead><tbody>${rows}</tbody></table>`);
+<table><thead><tr><th>Name</th><th>Driver</th><th>Created</th><th>Mounted by</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+<p><a href="/cleanup">Clean up</a> anonymous volumes no container mounts.</p>`);
 }
 
 export interface RuleStatus { target: string | null; cert: { notAfter: Date } | null; refused?: string | null }
@@ -553,4 +561,22 @@ ${older ? html`<p><a href="/activity?before=${older}${q ? `&q=${encodeURICompone
 export function actionsMatching(q: string): string[] {
   const t = q.toLowerCase();
   return t ? Object.entries(ACTIONS).filter(([k, label]) => label.includes(t) || k.includes(t)).map(([k]) => k) : [];
+}
+
+// The last healthcheck's output, when it failed, so "unhealthy" comes with its reason.
+function healthNote(h: any): Html | string {
+  const last = (h?.Log || []).at(-1);
+  if (!last || h.Status === 'healthy') return '';
+  const out = String(last.Output || '').trim().slice(0, 300);
+  return html`<small class="muted">${h.FailingStreak ? `failed ${h.FailingStreak} check${h.FailingStreak === 1 ? '' : 's'} in a row` : 'last check'}${last.ExitCode != null ? `, exit code ${last.ExitCode}` : ''}${out ? html`: <code>${out}</code>` : ''}</small>`;
+}
+
+// Published ports from an inspected container, in the list's format.
+function inspectPorts(c: any): string {
+  const ports: any[] = [];
+  for (const [key, binds] of Object.entries(c?.NetworkSettings?.Ports || {}) as [string, any[] | null][]) {
+    const [port, proto] = key.split('/');
+    for (const b of binds || []) ports.push({ IP: b.HostIp, PublicPort: Number(b.HostPort), PrivatePort: Number(port), Type: proto });
+  }
+  return formatPorts(ports);
 }

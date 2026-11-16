@@ -54,6 +54,7 @@ tr[data-state] td:first-child { box-shadow: inset 5px 0 0 var(--stripe, var(--st
 tr[data-state="running"] { --stripe: var(--run); }
 tr[data-state="restarting"], tr[data-state="paused"] { --stripe: var(--warn); }
 tr[data-state="dead"] { --stripe: var(--rust); }
+tr[data-health="unhealthy"] { --stripe: var(--warn); }
 .state { display: inline-flex; align-items: center; gap: .4rem; font-weight: 600; }
 .state::before { content: ""; width: .55rem; height: .55rem; border-radius: 50%; background: var(--stripe, var(--stop)); }
 .state.running { --stripe: var(--run); color: var(--run); }
