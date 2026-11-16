@@ -6,7 +6,7 @@ import type { Docker } from './docker';
 
 export type UpdateStatus = 'current' | 'available' | 'unknown';
 // imageId: the local image the reference pointed at when checked.
-export interface UpdateState { status: UpdateStatus; checkedAt: number; reason?: string; imageId?: string }
+export interface UpdateState { status: UpdateStatus; checkedAt: number; reason?: string; imageId?: string; remoteDigest?: string }
 
 // What a container's row should say. A container keeps the image it was created from, so after a
 // `docker pull` of its tag it runs an older image than the tag, even when the tag itself is current.
@@ -36,6 +36,8 @@ export class UpdateChecker {
   private timer: ReturnType<typeof setInterval> | null = null;
   private running: Promise<number> | null = null;
   lastRun: number | null = null;
+  // Called, not awaited, after every completed check: automatic updates and notifications.
+  onChecked: (() => Promise<void>) | null = null;
 
   // intervalMs 0 turns scheduled checks off; "Check now" still works.
   constructor(private docker: Docker, private intervalMs: number, private now: () => number = Date.now) {}
@@ -61,6 +63,7 @@ export class UpdateChecker {
       // Forget references no container uses any more.
       for (const ref of [...this.state.keys()]) if (!refs.has(ref)) this.state.delete(ref);
       this.lastRun = this.now();
+      if (this.onChecked) void this.onChecked().catch(e => console.error(`kontainers: after the update check: ${(e as Error).message}`));
       return refs.size;
     })().finally(() => { this.running = null; });
     return this.running;
@@ -70,7 +73,7 @@ export class UpdateChecker {
     let st: UpdateState;
     try {
       const [local, remote] = await Promise.all([this.docker.inspectImage(ref), this.docker.distribution(ref)]);
-      st = { ...compareDigests(local?.RepoDigests, remote?.Descriptor?.digest), checkedAt: this.now(), imageId: local?.Id };
+      st = { ...compareDigests(local?.RepoDigests, remote?.Descriptor?.digest), checkedAt: this.now(), imageId: local?.Id, remoteDigest: remote?.Descriptor?.digest };
     } catch (e) {
       // docker-socket-proxy answers 403 for API sections it was not told to allow.
       const reason = (e as { status?: number }).status === 403

@@ -11,6 +11,9 @@ import { Docker } from './docker';
 import { ProxyManager, RuleStore } from './proxy';
 import { createHandler } from './server';
 import { UpdateChecker } from './updates';
+import { Notifier } from './notify';
+import { AutoUpdates } from './autoupdate';
+import { EventWatcher, checkCertificates } from './events';
 
 const cfg = loadConfig();
 const [cmd, arg] = process.argv.slice(2);
@@ -37,8 +40,18 @@ const proxy = new ProxyManager(cfg, rules, docker);
 // In a container the hostname is the container ID, unless --hostname changed it.
 const selfContainer = process.env.KONTAINERS_SELF_CONTAINER || (cfg.inContainer ? hostname() : undefined);
 const updates = new UpdateChecker(docker, cfg.updateCheckHours * 3600 * 1000);
-const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates });
+const notifier = new Notifier(db);
+const systemAudit = (action: string, target: string) =>
+  db.query('INSERT INTO audit_log (at, username, action, target, ip) VALUES (?, ?, ?, ?, ?)').run(Date.now(), null, action, target, null);
+const autoUpdates = new AutoUpdates(db, docker, updates, notifier, { settleMs: cfg.autoUpdateSettle * 1000, healthTimeoutMs: cfg.autoUpdateHealthTimeout * 1000 }, systemAudit);
+updates.onChecked = () => autoUpdates.afterCheck();
+const events = new EventWatcher(docker, notifier, Date.now, ms => Bun.sleep(ms), name => autoUpdates.busy.has(name));
+const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events });
 updates.start();
+events.start();
+// Certificate trouble, hourly (first check after 5 minutes), when the proxy runs.
+const certCheck = () => void checkCertificates(rules.list(), h => proxy.certificate(h), notifier).catch(e => console.error(`kontainers: certificate check failed: ${(e as Error).message}`));
+const certTimers = cfg.proxy.enabled ? [setTimeout(certCheck, 5 * 60_000), setInterval(certCheck, 3600_000)] : [];
 
 const server = Bun.serve({
   hostname: cfg.host,
@@ -71,6 +84,8 @@ async function shutdown(sig: string) {
   console.log(`kontainers: ${sig}, shutting down`);
   server.stop();
   updates.stop();
+  events.stop();
+  for (const t of certTimers) clearTimeout(t as any);
   await proxy.stop();
   db.close();
   process.exit(0);

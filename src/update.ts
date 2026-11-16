@@ -40,7 +40,62 @@ export function recreateSpec(c: any, oldImage: any): CreateSpec {
   };
 }
 
-export async function updateContainer(docker: Docker, id: string): Promise<string> {
+export interface UpdateOptions {
+  // After starting the new container, watch it this long; if it stops, restarts or turns unhealthy,
+  // put the old one back. 0 checks only that it starts.
+  settleMs?: number;
+  // With a healthcheck, how long after settling to wait for "healthy" before giving up.
+  healthTimeoutMs?: number;
+  // An image ID not to update to (one that failed before); the container is left as it is.
+  skipImage?: string | null;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+export interface UpdateResult { changed: boolean; message: string; oldImage: string; newImage: string; held?: boolean; id: string }
+
+// The update failed and the old container was put back; newImage is the image that failed.
+export class UpdateFailed extends v.ValidationError {
+  constructor(message: string, public newImage: string | null) { super(message); }
+}
+
+// Why a just-started container is not good, or null while it looks fine. "starting" health is fine
+// until the caller stops waiting.
+export function settleProblem(c: any): string | null {
+  const st = c?.State || {};
+  if (st.Restarting) return `the new container is restarting (exit code ${st.ExitCode ?? '?'})`;
+  if (!st.Running) return `the new container stopped${st.OOMKilled ? ' (out of memory)' : ''} with exit code ${st.ExitCode ?? '?'}`;
+  if ((c.RestartCount ?? 0) > 0) return `the new container restarted ${c.RestartCount} time${c.RestartCount === 1 ? '' : 's'}`;
+  if (st.Health?.Status === 'unhealthy') return 'the new container is unhealthy';
+  return null;
+}
+
+async function watchNew(docker: Docker, id: string, opts: UpdateOptions): Promise<string | null> {
+  const sleep = opts.sleep ?? ((ms: number) => Bun.sleep(ms));
+  const settle = opts.settleMs ?? 0;
+  for (let waited = 0; waited < settle; waited += 1000) {
+    await sleep(Math.min(1000, settle - waited));
+    const p = settleProblem(await docker.inspect(id));
+    if (p) return p;
+  }
+  let c = await docker.inspect(id);
+  const p = settleProblem(c);
+  if (p) return p;
+  // With a healthcheck, an update counts only once the container reports healthy.
+  for (let waited = 0; c.State?.Health?.Status === 'starting' && waited < (opts.healthTimeoutMs ?? 0); waited += 1000) {
+    await sleep(1000);
+    c = await docker.inspect(id);
+    const q = settleProblem(c);
+    if (q) return q;
+  }
+  if (c.State?.Health?.Status === 'starting') return 'the new container did not become healthy in time';
+  return null;
+}
+
+export async function updateContainer(docker: Docker, id: string, opts: UpdateOptions = {}): Promise<string> {
+  return (await updateContainerDetailed(docker, id, opts)).message;
+}
+
+export async function updateContainerDetailed(docker: Docker, id: string, opts: UpdateOptions = {}): Promise<UpdateResult> {
   const c = await docker.inspect(id);
   const refusal = updatable(c);
   if (refusal) throw new v.ValidationError(refusal);
@@ -49,7 +104,10 @@ export async function updateContainer(docker: Docker, id: string): Promise<strin
 
   await docker.pull(ref);
   const fresh = await docker.inspectImage(ref);
-  if (fresh.Id === c.Image) return `${name} already runs the newest ${ref}.`;
+  if (fresh.Id === c.Image) return { changed: false, message: `${name} already runs the newest ${ref}.`, oldImage: c.Image, newImage: fresh.Id, id: c.Id };
+  if (opts.skipImage && fresh.Id === opts.skipImage) {
+    return { changed: false, held: true, message: `${name} was not updated: this image of ${ref} failed before.`, oldImage: c.Image, newImage: fresh.Id, id: c.Id };
+  }
 
   const oldImage = await docker.inspectImage(c.Image).catch(() => null);
   const spec = recreateSpec(c, oldImage);
@@ -68,14 +126,18 @@ export async function updateContainer(docker: Docker, id: string): Promise<strin
   try {
     newId = (await docker.create(spec, { keepBindMounts: true })).Id;
     for (const n of networks) await docker.connect(n, newId);
-    if (wasRunning) await docker.start(newId);
+    if (wasRunning) {
+      await docker.start(newId);
+      const problem = await watchNew(docker, newId, opts);
+      if (problem) throw new v.ValidationError(problem);
+    }
   } catch (e) {
     if (newId) await docker.remove(newId, true).catch(() => {});
     await docker.rename(c.Id, name).catch(() => {});
     if (wasRunning) await docker.start(c.Id).catch(() => {});
     const msg = e instanceof DockerError || e instanceof v.ValidationError ? e.message : 'internal error';
-    throw new v.ValidationError(`update failed, so the old container was put back: ${msg}`);
+    throw new UpdateFailed(`update failed, so the old container was put back: ${msg}`, fresh.Id);
   }
   await docker.remove(c.Id, false).catch(err => console.error(`kontainers: could not remove ${aside}: ${(err as Error).message}`));
-  return `Updated ${name} to the newest ${ref}.`;
+  return { changed: true, message: `Updated ${name} to the newest ${ref}.`, oldImage: c.Image, newImage: fresh.Id, id: newId! };
 }

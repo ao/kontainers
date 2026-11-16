@@ -90,6 +90,37 @@ export class Docker {
   // One sample. Without one-shot, Docker waits for a second reading so precpu_stats is filled in.
   stats(id: string) { return this.json<any>('GET', `/containers/${encodeURIComponent(v.ref(id))}/stats?stream=false`, undefined, 15000); }
 
+  // The daemon's container events from `sinceSec` (Unix seconds) on, as they happen, until the
+  // signal aborts or the daemon closes the stream. One parsed event per item.
+  async *events(sinceSec: number, signal: AbortSignal): AsyncGenerator<any> {
+    const filters = encodeURIComponent(JSON.stringify({ type: ['container'] }));
+    const init: RequestInit & { unix?: string } = { method: 'GET', signal };
+    if (this.unix) init.unix = this.unix;
+    let res: Response;
+    try {
+      res = await fetch(`${this.base}${API}/events?since=${Math.floor(sinceSec)}&filters=${filters}`, init);
+    } catch (e) {
+      throw new DockerError(`Docker daemon unreachable: ${(e as Error).message}`, 502);
+    }
+    if (!res.ok || !res.body) throw new DockerError(`the Docker API refused the event stream: HTTP ${res.status}`, res.status === 403 ? 403 : 502);
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      buf += dec.decode(value, { stream: true });
+      let i: number;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (!line) continue;
+        try { yield JSON.parse(line); } catch { /* not an event */ }
+      }
+      if (buf.length > 1 << 20) buf = ''; // a runaway line: drop it
+    }
+  }
+
   async logs(id: string, tail = 200): Promise<string> {
     const t = v.intInRange(tail, 1, 10000, 200);
     const res = await this.req('GET', `/containers/${encodeURIComponent(v.ref(id))}/logs?stdout=1&stderr=1&timestamps=1&tail=${t}`);

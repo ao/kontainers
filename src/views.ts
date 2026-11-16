@@ -2,6 +2,7 @@
 
 import type { Rule } from './proxy';
 import { containerStatus, type UpdateState } from './updates';
+import { EVENTS, EVENT_KINDS, maskUrl, type Target } from './notify';
 
 export function esc(v: unknown): string {
   return String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -238,7 +239,20 @@ ${filters}
 <p class="muted" id="nomatch"${list.length && !shown ? raw('') : raw(' hidden')}>No container matches. <a href="/containers">Show all ${list.length}</a>.</p>`);
 }
 
-export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, updates: UpdateView | null = null): string {
+export interface AutoView { on: boolean; row: { last_at: number | null; last_result: string | null; held_image: string | null } | null }
+
+// The automatic-update switch on a container's page, with the last result.
+function autoForm(ctx: PageCtx, id: string, a: AutoView): Html {
+  const last = a.row?.last_at ? html`<small class="muted">Last automatic update ${ago(a.row.last_at)}: ${a.row.last_result || ''}</small>` : '';
+  const held = a.on && a.row?.held_image ? html`<small class="warn">Image ${shortId(a.row.held_image)} failed when it was tried and is held back; a newer image will be tried.</small>` : '';
+  return html`<form method="post" action="/containers/${id}/autoupdate" class="autoupdate">${csrfField(ctx)}
+<label class="check"><input type="checkbox" name="on"${a.on ? raw(' checked') : raw('')}> Update automatically when a check finds a newer image</label>
+<button>Save</button>
+<small class="muted">The new container is watched while it settles; if it stops, restarts or turns unhealthy, the old one is put back.</small>
+${last}${held}</form>`;
+}
+
+export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, updates: UpdateView | null = null, auto: AutoView | null = null): string {
   const raw = updates?.get(c.Config?.Image) ?? null;
   const upd = raw && { ...containerStatus(raw, c.Image)!, checkedAt: raw.checkedAt };
   const updText = !upd ? '' : upd.status === 'available' ? (raw!.status === 'available' ? 'a newer image is available for this tag' : upd.reason)
@@ -255,13 +269,14 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
   <dt>State</dt><dd><span class="state ${c.State?.Status}">${c.State?.Status}</span></dd>
   <dt>Started</dt><dd>${!c.State?.StartedAt || c.State.StartedAt.startsWith('0001-') ? 'never' : `${c.State.StartedAt.slice(0, 16).replace('T', ' ')} UTC`}</dd>
   ${c.State?.Health ? html`<dt>Health</dt><dd>${c.State.Health.Status}</dd>` : ''}
-  ${c.State?.Status === 'exited' ? html`<dt>Exit code</dt><dd>${c.State.ExitCode}</dd>` : ''}
+  ${c.State?.Status === 'exited' ? html`<dt>Exit code</dt><dd>${c.State.ExitCode}${c.State.OOMKilled ? ' (out of memory)' : ''}</dd>` : ''}
   <dt>Restart policy</dt><dd>${c.HostConfig?.RestartPolicy?.Name}</dd>
 </dl>
 <div class="actions">${isSelf(c, me) ? selfNote(c, me) : containerActions(ctx, c.Id, name, c.State?.Status || '', true)}
 ${isSelf(c, me) ? '' : c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project']
     ? post(ctx, `/containers/${c.Id}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' ? 'primary' : '' })
     : c.Config?.Labels?.['com.docker.compose.project'] ? html`<small class="muted">Part of compose project ${c.Config.Labels['com.docker.compose.project']}: update it with <code>docker compose pull &amp;&amp; docker compose up -d</code>.</small>` : ''}</div>
+${auto && !isSelf(c, me) && c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project'] ? autoForm(ctx, c.Id, auto) : ''}
 ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
 <dl class="facts" id="stats" data-stats="/api/containers/${c.Id}/stats">
   <dt>CPU</dt><dd data-k="cpu">…</dd><dt>Memory</dt><dd data-k="mem">…</dd>
@@ -385,7 +400,7 @@ export function editRulePage(ctx: PageCtx, r: Rule): string {
 </form>`, 'Proxy');
 }
 
-export function settingsPage(ctx: PageCtx, users: { id: number; username: string }[], selfId: number): string {
+export function settingsPage(ctx: PageCtx, users: { id: number; username: string }[], selfId: number, targets: Target[] | null = null, watch: { connected: boolean; error: string | null } | null = null): string {
   const rows = users.map(u => html`<tr><td>${u.username}</td>
 <td>${u.id === selfId ? html`<em>you</em>` : post(ctx, `/settings/users/${u.id}/remove`, 'Remove', { confirm: `Remove user ${u.username}?`, cls: 'danger' })}</td></tr>`);
   return layout('Settings', ctx, html`
@@ -403,6 +418,25 @@ export function settingsPage(ctx: PageCtx, users: { id: number; username: string
   <label>Password <input name="password" type="password" required minlength="12" autocomplete="new-password"></label>
   <button>Add user</button>
 </form>
+${targets ? notifySection(ctx, targets, watch) : ''}
 <h2>Backup</h2>
 <p><a href="/api/backup">Download a database snapshot</a>. Certificates are in the data volume; see the README for a full backup.</p>`);
+}
+
+function notifySection(ctx: PageCtx, targets: Target[], watch: { connected: boolean; error: string | null } | null): Html {
+  const rows = targets.map(t => html`<tr><td>${t.kind}</td><td><code>${maskUrl(t.url)}</code>${t.token ? html` <small class="muted">with a token</small>` : ''}</td>
+<td>${t.events.join(', ')}</td><td>${t.last_at ? html`${t.last_result} <small class="muted">${ago(t.last_at)}</small>` : html`<span class="muted">nothing sent yet</span>`}</td>
+<td class="actions">${post(ctx, `/settings/notify/${t.id}/test`, 'Send test')} ${post(ctx, `/settings/notify/${t.id}/remove`, 'Remove', { confirm: 'Remove this notification target?', cls: 'danger' })}</td></tr>`);
+  const boxes = EVENT_KINDS.map(k => html`<label class="check"><input type="checkbox" name="ev_${k}" checked> ${EVENTS[k]}</label>`);
+  return html`<h2>Notifications</h2>
+<p>kontainers sends a short message when one of these happens. A <strong>webhook</strong> gets a JSON POST with <code>title</code>, <code>message</code>, <code>event</code> and <code>container</code>, and the text again as <code>text</code> and <code>content</code>; an <strong>ntfy</strong> topic URL gets the message as plain text with a Title header. Only the address is shown here, because webhook paths often carry a secret.</p>
+${watch && !watch.connected && watch.error ? html`<p class="warn">The Docker event stream is not connected (${watch.error}), so stopped and unhealthy containers are not reported until it is.</p>` : ''}
+${rows.length ? html`<table><thead><tr><th>Kind</th><th>Address</th><th>Events</th><th>Last result</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : html`<p class="muted">No notification targets yet.</p>`}
+<form method="post" action="/settings/notify" class="stack">${csrfField(ctx)}
+  <label>Kind <select name="kind"><option value="webhook">webhook (JSON POST)</option><option value="ntfy">ntfy topic</option></select></label>
+  <label>URL <input name="url" type="url" required placeholder="https://ntfy.sh/your-topic" autocomplete="off"></label>
+  <label>Token (optional) <input name="token" autocomplete="off" placeholder="sent as Authorization: Bearer"></label>
+  <fieldset><legend>Send when</legend>${boxes}</fieldset>
+  <button>Add target</button>
+</form>`;
 }

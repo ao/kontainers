@@ -11,7 +11,11 @@ import { Auth, RateLimiter, safeEqual, type Session } from './auth';
 import { Docker, DockerError, summarizeStats, type CreateSpec } from './docker';
 import type { ProxyManager, RuleStore } from './proxy';
 import { snapshot } from './db';
-import { updateContainer } from './update';
+import { updateContainerDetailed } from './update';
+import type { Notifier } from './notify';
+import { EVENT_KINDS } from './notify';
+import type { AutoUpdates } from './autoupdate';
+import type { EventWatcher } from './events';
 import { containerStatus, type UpdateChecker } from './updates';
 import { STATIC } from './static';
 import * as v from './validate';
@@ -28,6 +32,9 @@ export interface Deps {
   // The container kontainers runs in (ID or name), when it runs in one.
   selfContainer?: string;
   updates?: UpdateChecker;
+  notifier?: Notifier;
+  autoUpdates?: AutoUpdates;
+  events?: EventWatcher;
 }
 
 export type Handler = (req: Request, socketIp: string) => Promise<Response>;
@@ -354,7 +361,13 @@ export function createHandler(d: Deps): Handler {
       if (p === '/') return redirect('/containers');
       if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainers(), await self(), updateView(), views.parseFilter(url.searchParams)));
       if (p === '/containers/new') return page(views.newContainerPage(ctx(s), cfg.allowBindMounts));
-      if ((r = /^\/containers\/([^/]+)$/.exec(p))) return page(views.containerPage(ctx(s), await docker.inspect(r[1]), await self(), updateView()));
+      if ((r = /^\/containers\/([^/]+)$/.exec(p))) {
+        const c = await docker.inspect(r[1]);
+        const name = String(c.Name || '').replace(/^\//, '');
+        const row = d.autoUpdates?.get(name) ?? null;
+        const auto = d.autoUpdates ? { on: !!row && row.container_id === c.Id, row } : null;
+        return page(views.containerPage(ctx(s), c, await self(), updateView(), auto));
+      }
       if ((r = /^\/api\/containers\/([^/]+)\/stats$/.exec(p))) {
         return new Response(JSON.stringify(summarizeStats(await docker.stats(r[1]))), { headers: { 'content-type': 'application/json' } });
       }
@@ -378,7 +391,7 @@ export function createHandler(d: Deps): Handler {
         const rule = rules.get(Number(r[1]));
         return rule ? page(views.editRulePage(ctx(s), rule)) : text('rule not found\n', 404);
       }
-      if (p === '/settings') return page(views.settingsPage(ctx(s), auth.listUsers(), s.user.id));
+      if (p === '/settings') return page(views.settingsPage(ctx(s), auth.listUsers(), s.user.id, d.notifier ? d.notifier.list() : null, d.events ? { connected: d.events.connected, error: d.events.lastError } : null));
       if (p === '/api/backup') { audit(s, 'backup', null, ip); return backup(); }
       return text('not found\n', 404);
     }
@@ -416,18 +429,52 @@ export function createHandler(d: Deps): Handler {
       // The container gets a new ID, so return to the list.
       return act(s, ip, '/containers', 'container-update', id, async () => {
         await refuseSelf(id);
-        const ref = (await docker.inspect(id)).Config?.Image;
-        const msg = await updateContainer(docker, id);
-        if (ref && d.updates) await d.updates.check(ref).catch(() => {});
-        return msg;
+        const c = await docker.inspect(id);
+        const name = String(c.Name || '').replace(/^\//, '');
+        if (d.autoUpdates?.busy.has(name)) throw new v.ValidationError(`an automatic update of ${name} is running; try again in a minute`);
+        d.autoUpdates?.busy.add(name);
+        try {
+          // Watched for a few seconds, so an image that crashes at once is caught and rolled back.
+          const r = await updateContainerDetailed(docker, id, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, healthTimeoutMs: 0 });
+          if (r.changed) d.autoUpdates?.recreated(name, r.id);
+          if (c.Config?.Image && d.updates) await d.updates.check(c.Config.Image).catch(() => {});
+          return r.message;
+        } finally { d.autoUpdates?.busy.delete(name); }
       });
     }
     if (p === '/updates/check') {
       return act(s, ip, '/containers', 'update-check', null, async () => {
         if (!d.updates) throw new v.ValidationError('update checks are not available');
         const n = await d.updates.checkAll();
-        const available = n === 0 ? 0 : (await docker.listContainers()).filter(c => containerStatus(d.updates!.get(c.Image), c.ImageID)?.status === 'available').length;
-        return `Checked ${n} image${n === 1 ? '' : 's'}: ${available === 0 ? 'every container runs the newest image for its tag' : `${available} container${available === 1 ? ' has' : 's have'} a newer image`}.`;
+        const newer = n === 0 ? [] : (await docker.listContainers()).filter(c => containerStatus(d.updates!.get(c.Image), c.ImageID)?.status === 'available');
+        const auto = newer.filter(c => d.autoUpdates?.isOn(String(c.Names?.[0] || '').replace(/^\//, ''), c.Id)).length;
+        const available = newer.length;
+        return `Checked ${n} image${n === 1 ? '' : 's'}: ${available === 0 ? 'every container runs the newest image for its tag' : `${available} container${available === 1 ? ' has' : 's have'} a newer image`}${auto ? `; ${auto} ${auto === 1 ? 'is' : 'are'} being updated automatically` : ''}.`;
+      });
+    }
+    if ((r = /^\/containers\/([^/]+)\/autoupdate$/.exec(p))) {
+      const id = r[1];
+      return act(s, ip, `/containers/${encodeURIComponent(id)}`, f.on ? 'autoupdate-on' : 'autoupdate-off', id, async () => {
+        if (!d.autoUpdates) throw new v.ValidationError('automatic updates are not available');
+        await refuseSelf(id);
+        return d.autoUpdates.set(id, !!f.on);
+      });
+    }
+    if (p === '/settings/notify') {
+      return act(s, ip, '/settings', 'notify-add', null, async () => {
+        if (!d.notifier) throw new v.ValidationError('notifications are not available');
+        const t = d.notifier.add({ kind: f.kind, url: f.url, token: f.token, events: EVENT_KINDS.filter(k => f[`ev_${k}`]) });
+        return `Added the ${t.kind} target. Send a test to check that it works.`;
+      });
+    }
+    if ((r = /^\/settings\/notify\/(\d+)\/(test|remove)$/.exec(p))) {
+      const id = Number(r[1]), op = r[2];
+      return act(s, ip, '/settings', `notify-${op}`, String(id), async () => {
+        if (!d.notifier) throw new v.ValidationError('notifications are not available');
+        if (op === 'remove') { d.notifier.remove(id); return 'Removed the notification target.'; }
+        const res = await d.notifier.test(id);
+        if (res.startsWith('failed')) throw new v.ValidationError(`the test notification ${res}`);
+        return `Test notification ${res}.`;
       });
     }
     if ((r = /^\/containers\/([^/]+)\/(start|stop|restart|unpause|remove)$/.exec(p))) {
@@ -439,7 +486,11 @@ export function createHandler(d: Deps): Handler {
         else if (op === 'stop') await docker.stop(id);
         else if (op === 'restart') await docker.restart(id);
         else if (op === 'unpause') await docker.unpause(id);
-        else await docker.remove(id, false); // not forced: Docker refuses a running container
+        else {
+          const name = String((await docker.inspect(id)).Name || '').replace(/^\//, '');
+          await docker.remove(id, false); // not forced: Docker refuses a running container
+          d.autoUpdates?.forget(name);
+        }
       });
     }
 

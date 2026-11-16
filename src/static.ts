@@ -67,6 +67,10 @@ form.stack label { display: grid; gap: .3rem; font-weight: 550; }
 form.stack label.check, label.check { display: flex; align-items: center; gap: .5rem; font-weight: 500; }
 form.row { display: flex; gap: .5rem; margin-bottom: 1.2rem; max-width: 36rem; }
 form.row input { flex: 1; }
+form.autoupdate { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin: 1rem 0; padding: .8rem 1rem; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+form.autoupdate small { flex-basis: 100%; }
+fieldset { border: 1px solid var(--line); border-radius: 6px; padding: .6rem .9rem; display: grid; gap: .45rem; margin: 0; }
+legend { font-weight: 550; padding: 0 .3rem; }
 form.filters { display: flex; flex-wrap: wrap; align-items: end; gap: .6rem 1rem; margin-bottom: 1rem; }
 form.filters label { display: grid; gap: .25rem; font-size: .85rem; font-weight: 550; color: var(--muted); }
 form.filters input[type=search] { min-width: 16rem; }

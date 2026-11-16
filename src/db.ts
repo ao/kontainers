@@ -37,6 +37,29 @@ export const MIGRATIONS: string[] = [
      target TEXT,
      ip TEXT
    );`,
+  // 2: v0.4.0: notifications and automatic updates
+  `CREATE TABLE notify_targets (
+     id INTEGER PRIMARY KEY,
+     kind TEXT NOT NULL CHECK (kind IN ('webhook', 'ntfy')),
+     url TEXT NOT NULL,
+     token TEXT,
+     events TEXT NOT NULL,
+     created_at INTEGER NOT NULL,
+     last_at INTEGER,
+     last_result TEXT
+   );
+   CREATE TABLE notify_sent (
+     key TEXT PRIMARY KEY,
+     at INTEGER NOT NULL
+   );
+   CREATE TABLE auto_update (
+     container TEXT PRIMARY KEY,
+     container_id TEXT NOT NULL,
+     created_at INTEGER NOT NULL,
+     last_at INTEGER,
+     last_result TEXT,
+     held_image TEXT
+   );`,
 ];
 
 export function openDb(dataDir: string): Database {

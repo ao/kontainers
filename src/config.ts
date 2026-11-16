@@ -23,6 +23,8 @@ export interface Config {
   inContainer: boolean;
   allowInsecure: boolean;
   updateCheckHours: number; // 0 turns scheduled update checks off
+  autoUpdateSettle: number; // seconds a new container is watched after an automatic update
+  autoUpdateHealthTimeout: number; // seconds to wait for "healthy" after settling, when there is a healthcheck
 }
 
 export function isLoopback(host: string): boolean {
@@ -105,5 +107,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     inContainer: bool(env.KONTAINERS_IN_CONTAINER),
     allowInsecure: bool(env.KONTAINERS_ALLOW_INSECURE),
     updateCheckHours: optionalInt("KONTAINERS_UPDATE_CHECK_HOURS", env.KONTAINERS_UPDATE_CHECK_HOURS, 0, 720) ?? 6,
+    autoUpdateSettle: optionalInt("KONTAINERS_AUTOUPDATE_SETTLE", env.KONTAINERS_AUTOUPDATE_SETTLE, 0, 600) ?? 30,
+    autoUpdateHealthTimeout: optionalInt("KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT", env.KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT, 0, 3600) ?? 120,
   };
 }

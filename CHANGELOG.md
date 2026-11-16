@@ -7,6 +7,16 @@
   running count per project. "Needs attention" means restarting, dead, unhealthy, or exited with
   an error code (not 0, 130, 137 or 143); the count links to the filter. Filters are in the URL
   and work without script.
+- Automatic updates, opted in per container on its page, for containers created in kontainers.
+  The new container is watched while it settles (30 s, then until healthy if it has a
+  healthcheck); if it stops, restarts or turns unhealthy, the old one is put back, the image is
+  held back, and a newer image is tried at a later check. Update image now also watches the new
+  container for 5 s and rolls back if it stops.
+- Notifications to webhooks (JSON) and ntfy topics: newer image, automatic update result,
+  container stopped on its own (crash, error exit, out of memory), unhealthy and recovered,
+  certificate missing or about to expire. Each fact is sent once (crash loops: once per 10
+  minutes). Settings lists targets with their last result and has a test button.
+- The container page says when a container was stopped for running out of memory.
 
 ## 0.3.0
 

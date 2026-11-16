@@ -70,6 +70,17 @@ What works, and is covered by the test suites below:
   this needs `DISTRIBUTION=1`, which `compose.yaml` sets. On Docker Hub, checks count toward the
   pull rate limit: from one address without a login, six checks of six images lowered the
   remaining count by three (Docker 29.9, 2026-11-14); Docker Hub reported a limit of 100 an hour.
+- automatic updates, per container, for containers created in kontainers: after each check that
+  finds a newer image, the container is updated as Update image does it, then watched for
+  `KONTAINERS_AUTOUPDATE_SETTLE` seconds (30), and with a healthcheck until it reports healthy
+  (up to `KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT`, 120). If it stops, restarts or turns unhealthy,
+  the old container is put back and that image is held back; a newer image is tried. A container
+  replaced under the same name outside kontainers is not updated automatically.
+- notifications to webhooks (a JSON POST) and ntfy topics, for: a newer image (once per image),
+  an automatic update and its result, a container that stopped on its own (a crash, an error
+  exit, out of memory; not a stop someone asked for, and not exit code 0), a container that turned
+  unhealthy and recovered, and an HTTPS rule with no certificate after 15 minutes or one that
+  expires in under 14 days. Settings has a test button and shows the last result per target.
 - images: list, pull (public images; registry logins are not supported), remove, per tag
 - networks and volumes: list, create, remove
 - proxy rules: hostname and path prefix to a container port, HTTPS with a certificate obtained
@@ -196,6 +207,8 @@ briefly unavailable; Caddy did not renew certificates in a process that started 
 | `KONTAINERS_ACME_RENEW_CHECK` | unset (Caddy's default) | Seconds between Caddy's checks for certificates due for renewal, 1 to 86400; HTTPS rules only |
 | `KONTAINERS_SELF_CONTAINER` | the container's hostname | ID or name of kontainers' own container, if `--hostname` changed it; kontainers and its compose project get no Stop, Remove or Update |
 | `KONTAINERS_UPDATE_CHECK_HOURS` | `6` | Hours between update checks, 0 to 720; `0` turns scheduled checks off ("Check for updates" still works) |
+| `KONTAINERS_AUTOUPDATE_SETTLE` | `30` | Seconds a new container is watched after an automatic update, 0 to 600 |
+| `KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT` | `120` | Seconds to wait for "healthy" after settling, for images with a healthcheck, 0 to 3600 |
 | `KONTAINERS_HTTP_PORT` / `KONTAINERS_HTTPS_PORT` | `80` / `443` | Proxy ports |
 
 `/healthz` returns 200 while the process runs. `/readyz` returns 200 when the database and the
@@ -203,8 +216,9 @@ Docker API are reachable, 503 otherwise. Neither needs a login.
 
 ## Backup and restore
 
-The data volume holds `kontainers.db` (accounts, sessions, proxy rules) and `caddy/` (ACME account
-and certificates). A consistent copy of the database, while kontainers runs:
+The data volume holds `kontainers.db` (accounts, sessions, proxy rules, notification targets,
+automatic-update settings) and `caddy/` (ACME account and certificates). Notification URLs and
+tokens are stored as given, so treat a backup as a secret. A consistent copy of the database, while kontainers runs:
 
     docker exec kontainers bun src/main.ts backup /data/backup.db
     docker cp kontainers:/data/backup.db .
