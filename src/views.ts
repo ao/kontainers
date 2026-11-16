@@ -410,7 +410,7 @@ export function volumesPage(ctx: PageCtx, list: any[], users: Map<string, string
 <p><a href="/cleanup">Clean up</a> anonymous volumes no container mounts.</p>`);
 }
 
-export interface RuleStatus { target: string | null; cert: { notAfter: Date } | null; refused?: string | null }
+export interface RuleStatus { target: string | null; cert: { notAfter: Date } | null; refused?: string | null; port?: string | null }
 
 function ruleState(r: Rule, st: RuleStatus): Html {
   if (!r.enabled) return html`off`;
@@ -418,6 +418,7 @@ function ruleState(r: Rule, st: RuleStatus): Html {
   const problems: Html[] = [];
   if (st.target === 'missing') problems.push(html`<span class="error">no container named ${r.target_container}</span>`);
   else if (st.target && st.target !== 'running') problems.push(html`<span class="error">target is ${st.target}</span>`);
+  else if (st.port) problems.push(html`<span class="error">nothing answers on port ${r.target_port} of ${r.target_container} (${st.port}), so visitors get an error 502</span>`);
   if (r.tls) {
     if (!st.cert) problems.push(html`<span class="warn">no certificate yet: DNS for ${r.hostname} must point at this host and ports 80 and 443 must be reachable from the internet; the kontainers log has the details</span>`);
     else if (st.cert.notAfter.getTime() < Date.now()) problems.push(html`<span class="error">certificate expired ${st.cert.notAfter.toISOString().slice(0, 10)}</span>`);
@@ -433,7 +434,7 @@ to route domains to containers with automatic HTTPS. See the README.</p>`);
   }
   const rows = rules.map(r => {
     const st = ruleStatus(r);
-    const bad = r.enabled && (!!st.refused || st.target === 'missing' || (st.target && st.target !== 'running') || (r.tls && (!st.cert || st.cert.notAfter.getTime() < Date.now())));
+    const bad = r.enabled && (!!st.refused || !!st.port || st.target === 'missing' || (st.target && st.target !== 'running') || (r.tls && (!st.cert || st.cert.notAfter.getTime() < Date.now())));
     const addr = `${r.tls ? 'https' : 'http'}://${r.hostname}${r.path === '/' ? '' : r.path}`;
     // A wildcard is not an address to visit.
     return html`<tr data-state="${!r.enabled ? 'exited' : bad ? 'restarting' : 'running'}"><td class="addr">${r.hostname.startsWith('*') ? html`<span class="ref">${addr}</span>` : html`<a href="${addr}">${addr}</a>`}</td>

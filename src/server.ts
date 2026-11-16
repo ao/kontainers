@@ -480,6 +480,7 @@ export function createHandler(d: Deps): Handler {
         const list = rules.list();
         const status = (r: (typeof list)[number]) => ({
           target: proxy.targetState.get(r.target_container) ?? null,
+          port: proxy.portState.get(`${r.target_container}:${r.target_port}`),
           cert: r.tls ? proxy.certificate(r.hostname) : null,
           refused: proxy.refusalFor(r.target_container),
         });

@@ -7,6 +7,7 @@ import { mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync } from 
 import { join } from 'node:path';
 import { hostname as osHostname } from 'node:os';
 import { X509Certificate } from 'node:crypto';
+import { createConnection } from 'node:net';
 import type { Config } from './config';
 import type { Docker } from './docker';
 import { DockerError } from './docker';
@@ -314,9 +315,31 @@ export class ProxyManager {
         console.log(`kontainers: disconnected ${name} from ${this.cfg.proxy.network}: ${why ?? 'no enabled proxy rule points at it'}`);
       } catch (e) { console.error(`kontainers: cannot disconnect ${name} from ${this.cfg.proxy.network}: ${(e as Error).message}`); }
     }
+    // Whether something answers on each served target port, as Caddy would connect to it. Only when
+    // kontainers is on the proxy network itself: elsewhere the container names do not resolve.
+    if (this.onNetwork) {
+      const ports = new Map<string, string | null>();
+      for (const r of rules) {
+        const k = `${r.target_container}:${r.target_port}`;
+        if (!served.has(r.target_container) || state.get(r.target_container) !== 'running' || ports.has(k)) continue;
+        ports.set(k, await this.probe(r.target_container, r.target_port));
+      }
+      this.portState = ports;
+    }
     this.targetState = state;
   }
 
+  // "container:port" -> null when something answered, or what went wrong, from the last reconcile.
+  portState = new Map<string, string | null>();
+  private onNetwork = false;
+  // Opens a TCP connection and closes it again; null when it opened within 2 s.
+  probe: (host: string, port: number) => Promise<string | null> = (host, port) => new Promise(resolve => {
+    const s = createConnection({ host, port, timeout: 2000 });
+    const done = (why: string | null) => { s.destroy(); resolve(why); };
+    s.once('connect', () => done(null));
+    s.once('timeout', () => done('no answer within 2 s'));
+    s.once('error', (e: NodeJS.ErrnoException) => done(e.code === 'ECONNREFUSED' ? 'connection refused' : e.code || e.message));
+  });
   // kontainers' own container: its hostname is its short ID, unless KONTAINERS_SELF_CONTAINER names it.
   selfContainer: string | null = null;
   private isOwn(id: string, name: string): boolean {
@@ -434,6 +457,6 @@ export class ProxyManager {
       this.noteSubnets(await this.docker.inspectNetwork(this.cfg.proxy.network).catch(() => null));
     }
     // When kontainers itself runs in a container, its hostname is its container ID: join the network.
-    try { await this.attach(osHostname()); } catch { /* not running in a container, or no permission */ }
+    try { await this.attach(osHostname()); this.onNetwork = true; } catch { /* not running in a container, or no permission */ }
   }
 }

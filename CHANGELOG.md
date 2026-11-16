@@ -42,6 +42,8 @@
   environment values say what the limit is; trailing spaces in environment values are kept; a
   stray space in an image to pull is ignored; creating a volume whose name exists is refused
   (Docker answered as if it had made it).
+- The Proxy page says when nothing answers on a rule's target port (visitors would get a 502):
+  kontainers tries a connection from its own container every 10 seconds.
 - A hostname's rules must all be HTTPS or all plain HTTP. With a mix, each rule answered only on
   its own scheme and the HTTPS rule's redirect from HTTP went to the plain one.
 - Container pages, their actions, logs and usage are addressed by container name, not ID, so a

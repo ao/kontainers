@@ -255,3 +255,27 @@ test('one hostname is all HTTPS or all plain HTTP', () => {
   const only = s.create({ hostname: 'solo.example.net', targetContainer: 'web', targetPort: 80, tls: false });
   expect(s.update(only.id, { hostname: 'solo.example.net', targetContainer: 'web', targetPort: 80, tls: true }).tls).toBe(true);
 });
+
+test('a served target port that does not answer is noted, once per container and port', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'kontainers-pm-'));
+  const c = loadConfig({ KONTAINERS_PROXY: '1', KONTAINERS_DATA: dir, KONTAINERS_CADDY_BIN: '/nonexistent/caddy' });
+  const s = store();
+  const docker = {
+    listContainers: async () => ['web', 'deaf'].map(n => ({ Names: ['/' + n], State: 'running' })),
+    inspectNetwork: async () => ({ IPAM: { Config: [] }, Containers: { a: { Name: 'web' }, b: { Name: 'deaf' } } }),
+    connect: async () => {}, disconnect: async () => {},
+  };
+  const pm = new ProxyManager(c, s, docker as any);
+  const probes: string[] = [];
+  pm.probe = async (h, p) => { probes.push(`${h}:${p}`); return h === 'deaf' ? 'connection refused' : null; };
+  s.create({ hostname: 'web.example.net', targetContainer: 'web', targetPort: 80, tls: false });
+  s.create({ hostname: 'web.example.net', path: '/api', targetContainer: 'web', targetPort: 80, tls: false });
+  s.create({ hostname: 'deaf.example.net', targetContainer: 'deaf', targetPort: 8000, tls: false });
+  await pm.reconcile();
+  expect(probes).toEqual([]); // kontainers is not on the network here: names would not resolve
+  (pm as any).onNetwork = true;
+  await pm.reconcile();
+  expect(probes.sort()).toEqual(['deaf:8000', 'web:80']);
+  expect(pm.portState.get('deaf:8000')).toBe('connection refused');
+  expect(pm.portState.get('web:80')).toBeNull();
+});

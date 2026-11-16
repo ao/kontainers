@@ -145,6 +145,16 @@ describe.skipIf(!URL_)('proxy with ACME', () => {
     expect(await c.page('/proxy')).not.toContain('no container named web');
   }, 60000);
 
+  test('a rule whose target port has nothing listening says so', async () => {
+    expect((await c.submit('/containers', { image: 'busybox:1.36', name: 'deaf', start: 'on', cmd: 'sleep 600' })).error).toBe('');
+    expect((await c.submit('/proxy', { hostname: 'deaf.test', path: '/', targetContainer: 'deaf', targetPort: '8000' })).error).toBe('');
+    await until('the port note', async () => ((await c.page('/proxy')).includes('nothing answers on port 8000 of deaf (connection refused)') ? true : null), 30000);
+    const page = await c.page('/proxy');
+    const id = /<tr[^>]*>(?:(?!<\/tr>)[\s\S])*deaf\.test(?:(?!<\/tr>)[\s\S])*?action="\/proxy\/(\d+)\/remove"/.exec(page)?.[1];
+    expect((await c.submit(`/proxy/${id}/remove`, {})).error).toBe('');
+    await fetch('http://docker/v1.41/containers/deaf?force=1', { method: 'DELETE', unix: '/var/run/docker.sock' } as RequestInit);
+  }, 60000);
+
   test('a container leaves the proxy network when its last rule is removed', async () => {
     const sock = (method: string, path: string, body?: unknown) => fetch(`http://docker/v1.41${path}`,
       { method, unix: '/var/run/docker.sock', headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined } as RequestInit);
