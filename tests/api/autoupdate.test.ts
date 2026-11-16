@@ -232,8 +232,127 @@ describe.skipIf(!DOCKER)('automatic updates and notifications', () => {
     }
   }, 120000);
 
+  // A command that stops at once on SIGTERM, so a replacement does not wait 10 s for the old one.
+  const quick = (cmd = 'sleep 600') => `sh -c 'trap "exit 0" TERM; ${cmd} & wait'`;
+  const mine = async (name: string) => ((await (await api('/containers/json?all=1')).json()) as any[]).filter(x => x.Names.some((n: string) => n === `/${name}` || n.startsWith(`/${name}-old-`)));
+
+  test('two Edit saves at once with Pull ticked: one is refused, and the old container does not come back', async () => {
+    const NAME = `au-edit2-${run}`;
+    expect((await c.submit('/containers', { image: 'busybox:1.36', name: NAME, pull: '', cmd: quick(), start: 'on' })).error).toBe('');
+    try {
+      const c2 = new Client(srv.base);
+      expect((await c2.post('/login', { username: 'admin', password: PW }, { csrf: false })).status).toBe(303);
+      await c2.page(`/containers/${NAME}/edit`);
+      await c.page(`/containers/${NAME}/edit`);
+      const form = { image: 'busybox:1.36', pull: 'on', cmd: quick('sleep 601'), ports: '', env: '', volumes: '', restart: 'no' };
+      const [a, b] = await Promise.all([c.submit(`/containers/${NAME}/edit`, form), c2.submit(`/containers/${NAME}/edit`, form)]);
+      expect([a.flash, b.flash].filter(f => f.startsWith(`Saved the settings of ${NAME}`))).toHaveLength(1);
+      expect([a.error, b.error].filter(e => e.includes('already running'))).toHaveLength(1);
+      const left = await mine(NAME);
+      expect(left.map(x => [x.Names[0], x.State])).toEqual([[`/${NAME}`, 'running']]);
+    } finally {
+      await api(`/containers/${NAME}?force=1`, { method: 'DELETE' });
+    }
+  }, 120000);
+
+  test('a docker stop while the new container settles is not undone, and nothing is held back', async () => {
+    const NAME = `au-stopped-${run}`;
+    expect((await c.submit('/containers', { image: 'busybox:1.36', name: NAME, pull: '', cmd: quick(), start: 'on' })).error).toBe('');
+    try {
+      const old = (await inspect(NAME)).Id;
+      await c.page(`/containers/${NAME}/edit`);
+      const saving = c.submit(`/containers/${NAME}/edit`, { image: 'busybox:1.36', pull: '', cmd: quick('sleep 602'), ports: '', env: '', volumes: '', restart: 'no' });
+      // As a backup script would: stop the new container from outside while it settles.
+      const fresh = await until('the new container', async () => { const x = await inspect(NAME); return x.Id && x.Id !== old && x.State?.Running ? x.Id : null; }, 30000);
+      expect((await post(`/containers/${fresh}/stop?t=2`)).status).toBe(204);
+      const r = await saving;
+      expect(r.error).toBe('');
+      expect(r.flash).toContain('stopped by someone');
+      const now = await inspect(NAME);
+      expect(now.Id).toBe(fresh);
+      expect(now.State.Running).toBe(false);
+      expect((await mine(NAME)).length).toBe(1);
+    } finally {
+      await api(`/containers/${NAME}?force=1`, { method: 'DELETE' });
+    }
+  }, 120000);
+
+  test('Edit to an image that is not on this host, without Pull, changes nothing', async () => {
+    const NAME = `au-typo-${run}`;
+    expect((await c.submit('/containers', { image: 'busybox:1.36', name: NAME, pull: '', cmd: quick(), start: 'on' })).error).toBe('');
+    try {
+      const before = await inspect(NAME);
+      await c.page(`/containers/${NAME}/edit`);
+      const r = await c.submit(`/containers/${NAME}/edit`, { image: 'busybox:no-such-tag', pull: '', cmd: quick('sleep 603'), ports: '8099:80', env: 'KEEP=me', volumes: '', restart: 'always' });
+      expect(r.error).toContain('not on this host');
+      expect(r.error).toContain('Nothing was changed');
+      // The form comes back as it was typed.
+      expect(r.body).toContain('value="busybox:no-such-tag"');
+      expect(r.body).toContain('KEEP=me</textarea>');
+      expect(r.body).toContain('<option selected>always</option>');
+      const after = await inspect(NAME);
+      expect(after.Id).toBe(before.Id);
+      expect(after.State.StartedAt).toBe(before.State.StartedAt);
+    } finally {
+      await api(`/containers/${NAME}?force=1`, { method: 'DELETE' });
+    }
+  }, 60000);
+
+  test('network aliases and a fixed address survive Edit settings', async () => {
+    const NAME = `au-alias-${run}`, NET = `au-net-${run}`;
+    expect((await post('/networks/create', { Name: NET, IPAM: { Config: [{ Subnet: '10.123.0.0/24' }] } })).status).toBe(201);
+    expect((await c.submit('/containers', { image: 'busybox:1.36', name: NAME, pull: '', cmd: quick(), start: 'on' })).error).toBe('');
+    try {
+      expect((await post(`/networks/${NET}/connect`, { Container: NAME, EndpointConfig: { Aliases: ['svc-alias'], IPAMConfig: { IPv4Address: '10.123.0.50' } } })).status).toBe(200);
+      await c.page(`/containers/${NAME}/edit`);
+      const r = await c.submit(`/containers/${NAME}/edit`, { image: 'busybox:1.36', pull: '', cmd: quick('sleep 604'), ports: '', env: '', volumes: '', restart: 'no' });
+      expect(r.error).toBe('');
+      const ep = (await inspect(NAME)).NetworkSettings.Networks[NET];
+      expect(ep.Aliases).toContain('svc-alias');
+      expect(ep.IPAMConfig?.IPv4Address).toBe('10.123.0.50');
+      expect(ep.IPAddress).toBe('10.123.0.50');
+    } finally {
+      await api(`/containers/${NAME}?force=1`, { method: 'DELETE' });
+      await api(`/networks/${NET}`, { method: 'DELETE' });
+    }
+  }, 60000);
+
+  test('Activity: a search for "kontainers" finds what it did on its own', async () => {
+    expect(await c.page('/activity?q=kontainers')).toContain('updated automatically');
+  });
+
+  test('a form over 1 MB gets a page that says so', async () => {
+    await c.page('/containers/new');
+    const res = await c.post('/containers', { image: 'busybox:1.36', name: 'big', env: 'A=' + 'x'.repeat(1_200_000) });
+    expect(res.status).toBe(413);
+    expect(await res.text()).toContain('kontainers accepts at most 1 MB');
+  });
+
   test('the container list shows the unhealthy and exited containers as needing attention', async () => {
     const page = await c.page('/containers?state=attention');
     for (const n of [CRASH, SICK]) expect(page).toMatch(new RegExp(`<tr data-name="${n}"[^>]*data-attention="1"(?! hidden)[^>]*>`));
   });
+
+  // Last: it stops the server.
+  test('stopping kontainers while a new container settles puts the old one back', async () => {
+    const NAME = `au-restart-${run}`;
+    expect((await c.submit('/containers', { image: 'busybox:1.36', name: NAME, pull: '', cmd: quick(), start: 'on' })).error).toBe('');
+    try {
+      const old = (await inspect(NAME)).Id;
+      await c.page(`/containers/${NAME}/edit`);
+      const saving = c.submit(`/containers/${NAME}/edit`, { image: 'busybox:1.36', pull: '', cmd: quick('sleep 605'), ports: '', env: '', volumes: '', restart: 'no' }).catch(() => null);
+      await until('the new container', async () => { const x = await inspect(NAME); return x.Id && x.Id !== old && x.State?.Running; }, 30000);
+      const t = Date.now();
+      await srv.stop();
+      expect(Date.now() - t).toBeLessThan(9000); // before Docker's 10 s would kill it
+      await saving;
+      expect(srv.output()).toContain('SIGTERM, shutting down');
+      const now = await inspect(NAME);
+      expect(now.Id).toBe(old);
+      expect(now.State.Running).toBe(true);
+      expect((await mine(NAME)).length).toBe(1);
+    } finally {
+      await api(`/containers/${NAME}?force=1`, { method: 'DELETE' });
+    }
+  }, 120000);
 });

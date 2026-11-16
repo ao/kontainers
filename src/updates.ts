@@ -53,8 +53,12 @@ export class UpdateChecker {
 
   stop(): void { if (this.timer) clearInterval(this.timer); }
 
-  // Checks every image reference in use. Concurrent calls share one run. Returns how many were checked.
-  checkAll(): Promise<number> {
+  // Checks every image reference in use. Concurrent calls share one run; with `fresh`, a call made
+  // while one runs gets the next run instead, which starts when the current one ends (a person who
+  // clicks Check for updates wants the registries asked now). Returns how many were checked.
+  private next: Promise<number> | null = null;
+  checkAll(fresh = false): Promise<number> {
+    if (this.running && fresh) return (this.next ??= this.running.catch(() => 0).then(() => { this.next = null; return this.checkAll(); }));
     if (this.running) return this.running;
     this.running = (async () => {
       const refs = new Set<string>();

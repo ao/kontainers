@@ -17,8 +17,10 @@ export interface Plan {
 
 const BUILTIN_NETS = new Set(['bridge', 'host', 'none']);
 
+// By the daemon's own label only (Docker 23 and later set it). A name of 64 hex characters is what
+// an anonymous volume gets, but anyone can give a named volume such a name, and its data matters.
 export function isAnonymousVolume(v: any): boolean {
-  return v?.Labels?.['com.docker.volume.anonymous'] !== undefined || /^[0-9a-f]{64}$/.test(String(v?.Name || ''));
+  return v?.Labels?.['com.docker.volume.anonymous'] !== undefined;
 }
 
 export function plan(images: any[], containers: any[], networks: any[], volumes: any[], networkUse: Map<string, number>): Plan {

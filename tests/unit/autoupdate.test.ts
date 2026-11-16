@@ -44,6 +44,7 @@ class FakeDocker {
   async stop(id: string) { const c = this.find(id); c.State = { Running: false, Status: 'exited', ExitCode: 0 }; }
   async start(id: string) {
     const c = this.find(id);
+    if (this.killOnStart) { this.killed.add(c.Id); c.State = { Running: false, Status: 'exited', ExitCode: 143 }; return; }
     const b = this.images.get(c.Image)?.behaviour ?? 'ok';
     c.State = b === 'crash' ? { Running: false, Status: 'exited', ExitCode: 1 }
       : b === 'unhealthy' ? { Running: true, Status: 'running', Health: { Status: 'unhealthy' } } : { Running: true, Status: 'running' };
@@ -63,6 +64,11 @@ class FakeDocker {
     return { Id: id };
   }
   async connect() {}
+  // Containers someone stopped on purpose: the events API reports a kill for them. killOnStart:
+  // every container started from now on is "stopped by someone" at once.
+  killed = new Set<string>();
+  killOnStart = false;
+  async pastEvents(f: { container: string[] }) { return f.container.filter(id => this.killed.has(id)).map(id => ({ Action: 'kill', Actor: { ID: id } })); }
   createBody() { return {}; }
   async remove(id: string) { this.containers.delete(this.find(id).Id); }
 }
@@ -148,14 +154,76 @@ describe('AutoUpdates', () => {
     expect(auto.get('web')!.last_result).toContain('the new container is unhealthy');
   });
 
-  test('containers not opted in get one "newer image" note per new image', async () => {
+  test('containers not opted in get one "newer image" note per new image, naming every container', async () => {
     const { d, sent, cycle } = setup();
     d.run('web', 'app:1');
+    d.run('web2', 'app:1');
+    d.run('web3', 'app:1');
     d.registry.set('app:1', 'i2');
     await cycle();
     await cycle();
     expect(running(d, 'web').Image).toBe('i1');
-    expect(sent.map(s => [s.kind, s.key])).toEqual([['update', 'update:web:sha256:i2'], ['update', 'update:web:sha256:i2']]);
+    // The Notifier's key decides what goes out: the same key each time, one note per check.
+    expect(sent.map(s => [s.kind, s.title, s.key])).toEqual([['update', 'Newer image for app:1', 'update:app:1|sha256:i2'], ['update', 'Newer image for app:1', 'update:app:1|sha256:i2']]);
+  });
+
+  test('a container someone stops while it settles keeps the new image; nothing is held back', async () => {
+    const { d, auto, sent, cycle } = setup();
+    const id = d.run('web', 'app:1');
+    await auto.set(id, true);
+    d.registry.set('app:1', 'i3'); // stops at once, as a container stopped by docker stop would
+    d.killOnStart = true;
+    await cycle();
+    const now = running(d, 'web');
+    expect(now.Id).not.toBe(id);
+    expect(now.Image).toBe('i3');
+    expect(d.containers.size).toBe(1);
+    expect(auto.get('web')).toMatchObject({ held_image: null, container_id: now.Id });
+    expect(auto.get('web')!.last_result).toContain('stopped by someone');
+    expect(sent.map(s => s.title)).toEqual(['Updated web']);
+  });
+
+  test('kontainers stopping while the new container settles: the old one is put back, nothing is held, no note', async () => {
+    const d = new FakeDocker();
+    d.image('i1'); d.image('i2');
+    d.tags.set('app:1', 'i1'); d.registry.set('app:1', 'i1');
+    const db = new Database(':memory:', { strict: true }); migrate(db);
+    const checker = new UpdateChecker(d as any, 0);
+    const sent: string[] = [];
+    const stop = new AbortController();
+    const auto = new AutoUpdates(db, d as any, checker, { send: async (n: any) => { sent.push(n.title); return 1; } } as any, { settleMs: 1000, healthTimeoutMs: 0, signal: stop.signal });
+    const id = d.run('web', 'app:1');
+    await auto.set(id, true);
+    d.registry.set('app:1', 'i2');
+    setTimeout(() => stop.abort(), 200);
+    await checker.checkAll(); await auto.afterCheck();
+    expect(running(d, 'web').Id).toBe(id);
+    expect(running(d, 'web').State.Running).toBe(true);
+    expect(d.containers.size).toBe(1);
+    expect(auto.get('web')).toMatchObject({ held_image: null, container_id: id });
+    expect(auto.get('web')!.last_result).toContain('kontainers was stopped');
+    expect(sent).toEqual([]);
+  });
+
+  test('with a full data volume the new ID is kept in memory, so the container stays opted in', async () => {
+    const { d, db, auto, cycle } = setup();
+    const id = d.run('web', 'app:1');
+    await auto.set(id, true);
+    let full = true;
+    const query = db.query.bind(db);
+    (db as any).query = (sql: string) => {
+      if (full && /^UPDATE auto_update/.test(sql)) throw new Error('database or disk is full');
+      return query(sql);
+    };
+    d.registry.set('app:1', 'i2');
+    await cycle();
+    const now = running(d, 'web');
+    expect(now.Image).toBe('i2');
+    expect(auto.isOn('web', now.Id)).toBe(true);
+    expect(auto.get('web')!.container_id).toBe(id); // not written yet
+    full = false;
+    await cycle();
+    expect(auto.get('web')!.container_id).toBe(now.Id);
   });
 
   test('a container replaced under the same name outside kontainers is not updated automatically', async () => {
@@ -244,7 +312,7 @@ describe('recoverInterrupted', () => {
     const { d } = setup();
     const id = aside(d, 'web', false);
     const { recoverInterrupted } = await import('../../src/update');
-    expect(await recoverInterrupted(d as any)).toEqual(['put web back: an update or edit was interrupted before the new container existed']);
+    expect((await recoverInterrupted(d as any)).map(r => r.text)).toEqual(['put web back: an update or edit was interrupted before the new container existed']);
     expect(d.find('web').Id).toBe(id);
     expect(d.find('web').State.Running).toBe(true);
   });
@@ -253,7 +321,9 @@ describe('recoverInterrupted', () => {
     const old = aside(d, 'web', false);
     d.run('web', 'app:1');
     const { recoverInterrupted } = await import('../../src/update');
-    expect(await recoverInterrupted(d as any)).toEqual(['removed web-old-abcdef12, left over from an interrupted update of web']);
+    const kept: string[] = [];
+    expect((await recoverInterrupted(d as any, (n, id) => kept.push(`${n}=${id}`))).map(r => r.text)).toEqual(['removed web-old-abcdef12, left over from an interrupted update of web; the new web was not watched to the end, so check that it works']);
+    expect(kept.length).toBe(1);
     expect(d.containers.has(old)).toBe(false);
   });
   test('the new one is not running: both are left, with a note', async () => {
@@ -262,7 +332,7 @@ describe('recoverInterrupted', () => {
     const now = d.run('web', 'app:1');
     d.find(now).State = { Running: false, Status: 'created' };
     const { recoverInterrupted } = await import('../../src/update');
-    expect((await recoverInterrupted(d as any))[0]).toContain('not running or not its replacement');
+    expect((await recoverInterrupted(d as any))[0].text).toContain('not running or not its replacement');
     expect(d.containers.size).toBe(2);
   });
   test('names that only look like it are ignored', async () => {
@@ -288,5 +358,23 @@ describe('health while settling', () => {
     const id2 = d.run('api', 'app:1');
     d.find(id2).Image = 'i1';
     await expect(updateContainerDetailed(d as any, id2, { settleMs: 0, healthTimeoutMs: 2000, sleep: async () => {} })).rejects.toThrow('did not become healthy in time');
+  });
+});
+
+describe('replacing a container', () => {
+  test('an image that is not on this host is refused before the old container is stopped', async () => {
+    const { d } = setup();
+    const id = d.run('web', 'app:1');
+    const { replaceContainer } = await import('../../src/update');
+    await expect(replaceContainer(d as any, d.find(id), { name: 'web', image: 'app:nope' }, {}, 'saving the settings')).rejects.toThrow('not on this host');
+    expect(running(d, 'web').Id).toBe(id);
+    expect(running(d, 'web').State.Running).toBe(true);
+  });
+  test('aliases and fixed addresses on a network are carried over; the ones Docker adds are not', async () => {
+    const { endpointOf } = await import('../../src/update');
+    const c = { Id: 'abcdef123456' + '0'.repeat(52), Name: '/web', Config: { Hostname: 'abcdef123456' } };
+    expect(endpointOf(c, { Aliases: ['abcdef123456', 'web', 'api', 'api.internal'], IPAMConfig: { IPv4Address: '10.5.0.9' } }))
+      .toEqual({ Aliases: ['api', 'api.internal'], IPAMConfig: { IPv4Address: '10.5.0.9' } });
+    expect(endpointOf(c, { Aliases: null, IPAMConfig: null })).toEqual({});
   });
 });

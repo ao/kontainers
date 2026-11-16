@@ -120,6 +120,48 @@
   its own container by its address too.
 - Edit settings says when the image the container was made from is gone, so its environment and
   command may include that image's own values.
+- Fixed: a `docker stop` or `docker restart` from outside (a backup script, say) while a new
+  container settled made kontainers put the old one back and hold the good image back as failed.
+  A stop someone asked for (Docker records a kill or stop event) now leaves the new container as
+  they left it, and the result says so.
+- Fixed: stopping or restarting kontainers during an update left the new container running
+  unwatched, the old one stopped beside it, and automatic updates for it silently off. Shutdown
+  now undoes a replacement that is still being watched (the old container is back within a
+  second or two) and records it; at the next start an interrupted one is tidied up, recorded on
+  the Activity page, and the container stays opted in.
+- Fixed: with a full data volume, crash and health notifications were not sent, an automatic
+  update that worked turned the container's automatic updates off, and one error stopped the
+  update pass for every container after it. Notes now go out (repeats are still held back, in
+  memory), the new container ID is kept until it can be written, each container is handled on
+  its own, and every page says the data volume is full.
+- Fixed: containers with names over 128 characters (compose makes them from long project names)
+  could not be opened or acted on; their pages use the container ID.
+- Fixed: Edit settings with an image that is not on the host and Pull unticked stopped the
+  container for 10 s before failing. It is refused before anything changes, and the form comes
+  back with what was typed (it came back with the old values).
+- Fixed: Update image, Edit settings and automatic updates dropped a container's network aliases
+  and fixed addresses; they are carried over.
+- Fixed: a healthcheck that flapped sent "healthy again" every cycle; "healthy again" now follows
+  only an "unhealthy" note that went out.
+- "Newer image" notes go out once per image and name every container that uses it (one new
+  `:latest` used by 21 containers sent 21 notes).
+- Clean up treats a volume as anonymous only by Docker's own label; a named volume with a
+  64-character hex name was listed with them.
+- After an automatic update held an image back, the page and the list no longer recommend that
+  image ("newest image held back"), and Check for updates does not count it as being updated.
+- A container killed with exit code 137 and no stop or kill before it is reported as probably out
+  of memory: on cgroup v2 hosts Docker often sends no `oom` event.
+- Check for updates while a scheduled check runs starts a new check after it, instead of
+  reporting the older result.
+- Certificate warnings follow the certificate's lifetime (a sixth of it left, at most 14 days), so
+  short-lived certificates are not reported as failing soon after they are issued.
+- With host bind mounts off, Edit settings can no longer make a read-only host path writable.
+- Smaller things: a form over 1 MB gets a page that says so instead of a blank one; a Docker host
+  name that does not resolve is reported as the daemon not answering; turning automatic updates
+  off during an update says it still finishes; the Activity search finds kontainers' own entries
+  by "kontainers"; the event stream reconnects within 5 s; the live filter on the Containers page
+  goes into the address, the attention link clears the search, and paused containers count as
+  running; table text on a phone breaks inside long names and addresses only, not inside words.
 
 ## 0.3.0
 

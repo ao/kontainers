@@ -11,6 +11,13 @@ export class DockerError extends Error {
   }
 }
 
+// A name that did not resolve usually means the daemon itself is down or paused: Docker's DNS for
+// container names is part of it.
+function unreachable(e: Error): string {
+  const m = /(?:EAI_AGAIN|ENOTFOUND)\s+(\S+)/.exec(e.message || '');
+  return m ? `the name ${m[1]} did not resolve, which usually means the Docker daemon (or the container serving its API) is not running or not answering` : e.message;
+}
+
 export interface CreateSpec {
   name?: string;
   image: string;
@@ -54,7 +61,7 @@ export class Docker {
     try {
       res = await fetch(this.base + API + path, init);
     } catch (e) {
-      throw new DockerError(`Docker daemon unreachable: ${(e as Error).message}`, 502);
+      throw new DockerError(`Docker daemon unreachable: ${unreachable(e as Error)}`, 502);
     }
     if (!res.ok) {
       let msg = res.statusText;
@@ -102,6 +109,16 @@ export class Docker {
   // One sample. Without one-shot, Docker waits for a second reading so precpu_stats is filled in.
   stats(id: string) { return this.json<any>('GET', `/containers/${encodeURIComponent(v.ref(id))}/stats?stream=false`, undefined, 15000); }
 
+  // Container events that already happened between two times (Unix seconds); the daemon closes the
+  // stream at `untilSec`. filters: Docker's event filters, such as { container: [id], event: ['kill'] }.
+  async pastEvents(filters: Record<string, string[]>, sinceSec: number, untilSec: number): Promise<any[]> {
+    const f = encodeURIComponent(JSON.stringify({ ...filters, type: ['container'] }));
+    const res = await this.req('GET', `/events?since=${sinceSec.toFixed(3)}&until=${untilSec.toFixed(3)}&filters=${f}`, undefined, 10000);
+    const out: any[] = [];
+    for (const line of (await res.text()).split('\n')) { if (line.trim()) try { out.push(JSON.parse(line)); } catch { /* not an event */ } }
+    return out;
+  }
+
   // The daemon's container events from `sinceSec` (Unix seconds) on, as they happen, until the
   // signal aborts or the daemon closes the stream. One parsed event per item.
   async *events(sinceSec: number, signal: AbortSignal): AsyncGenerator<any> {
@@ -112,7 +129,7 @@ export class Docker {
     try {
       res = await fetch(`${this.base}${API}/events?since=${Math.floor(sinceSec)}&filters=${filters}`, init);
     } catch (e) {
-      throw new DockerError(`Docker daemon unreachable: ${(e as Error).message}`, 502);
+      throw new DockerError(`Docker daemon unreachable: ${unreachable(e as Error)}`, 502);
     }
     if (!res.ok || !res.body) throw new DockerError(`the Docker API refused the event stream: HTTP ${res.status}`, res.status === 403 ? 403 : 502);
     const reader = res.body.getReader();
@@ -149,7 +166,7 @@ export class Docker {
 
   // keepBindMounts: an update recreating a container that already has them. allowedBindSources: an
   // edit, which may keep the host paths the container had but not add new ones.
-  async create(spec: CreateSpec, opts: { keepBindMounts?: boolean; allowedBindSources?: string[] } = {}): Promise<{ Id: string }> {
+  async create(spec: CreateSpec, opts: { keepBindMounts?: boolean; allowedBinds?: { source: string; readOnly: boolean }[] } = {}): Promise<{ Id: string }> {
     const body = this.createBody(spec, opts);
     const q = spec.name ? `?name=${encodeURIComponent(v.name(spec.name))}` : '';
     return this.json('POST', `/containers/create${q}`, body);
@@ -157,7 +174,7 @@ export class Docker {
 
   // The request body for create, after every check; throws a ValidationError for bad input. Called
   // on its own before a container is replaced, so bad input never stops the old one.
-  createBody(spec: CreateSpec, opts: { keepBindMounts?: boolean; allowedBindSources?: string[] } = {}): Record<string, unknown> {
+  createBody(spec: CreateSpec, opts: { keepBindMounts?: boolean; allowedBinds?: { source: string; readOnly: boolean }[] } = {}): Record<string, unknown> {
     if (spec.name) v.name(spec.name);
     const image = v.image(spec.image);
     const body: Record<string, unknown> = { Image: image, Env: (spec.env || []).map(v.envVar), Labels: { 'kontainers.managed': 'true' } };
@@ -177,7 +194,13 @@ export class Docker {
       const target = typeof m.target === 'string' && /^\/[^\0:]*$/.test(m.target) ? m.target : null;
       if (!target) throw new v.ValidationError('invalid mount target');
       if (typeof m.source === 'string' && m.source.startsWith('/')) {
-        if (!this.opts.allowBindMounts && !opts.keepBindMounts && !(opts.allowedBindSources || []).includes(m.source)) throw new v.ValidationError('host bind mounts are disabled (KONTAINERS_ALLOW_BIND_MOUNTS)');
+        // With bind mounts off, Edit may keep a host path the container already has, read-only if it
+        // was read-only; it may not add one or make one writable.
+        const had = (opts.allowedBinds || []).filter(b => b.source === m.source);
+        const allowed = had.some(b => !b.readOnly || !!m.readOnly);
+        if (!this.opts.allowBindMounts && !opts.keepBindMounts && !allowed) {
+          throw new v.ValidationError(had.length ? `${m.source} is mounted read-only now, and host bind mounts are disabled (KONTAINERS_ALLOW_BIND_MOUNTS), so it cannot be made writable` : 'host bind mounts are disabled (KONTAINERS_ALLOW_BIND_MOUNTS)');
+        }
         if (/[\0:]/.test(m.source)) throw new v.ValidationError('invalid mount source');
         return { Type: 'bind', Source: m.source, Target: target, ReadOnly: !!m.readOnly };
       }
@@ -222,8 +245,12 @@ export class Docker {
   inspectNetwork(id: string) { return this.json<any>('GET', `/networks/${encodeURIComponent(v.ref(id, 'network'))}`); }
   createNetwork(name: string) { return this.json<{ Id: string }>('POST', '/networks/create', { Name: v.name(name, 'network name'), Driver: 'bridge', CheckDuplicate: true, Labels: { 'kontainers.managed': 'true' } }); }
   async removeNetwork(id: string) { await this.req('DELETE', `/networks/${encodeURIComponent(v.ref(id, 'network'))}`); }
-  async connect(network: string, container: string) {
-    await this.req('POST', `/networks/${encodeURIComponent(v.ref(network, 'network'))}/connect`, { Container: v.ref(container) });
+  // endpoint: aliases and fixed addresses the container had on this network, carried over when it
+  // is recreated.
+  async connect(network: string, container: string, endpoint?: { Aliases?: string[]; IPAMConfig?: Record<string, string> }) {
+    const body: Record<string, unknown> = { Container: v.ref(container) };
+    if (endpoint && (endpoint.Aliases?.length || endpoint.IPAMConfig)) body.EndpointConfig = endpoint;
+    await this.req('POST', `/networks/${encodeURIComponent(v.ref(network, 'network'))}/connect`, body);
   }
   async disconnect(network: string, container: string) {
     await this.req('POST', `/networks/${encodeURIComponent(v.ref(network, 'network'))}/disconnect`, { Container: v.ref(container), Force: false });

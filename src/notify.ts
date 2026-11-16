@@ -8,6 +8,7 @@
 
 import type { Database } from 'bun:sqlite';
 import * as v from './validate';
+import { writeFailed } from './storage';
 
 export const EVENTS = {
   update: 'a container has a newer image',
@@ -81,26 +82,47 @@ export class Notifier {
     if (!this.db.query('DELETE FROM notify_targets WHERE id = ?').run(id).changes) throw Object.assign(new v.ValidationError('notification target not found'), { status: 404 });
   }
 
+  // Claims that could not be written (a full data volume): kept here until kontainers restarts, so
+  // a fact is still reported once, and a note still goes out.
+  private unsaved = new Map<string, number>();
+
   // True if a note with this key went out within `withinMs`; otherwise records it as sent now.
   // Keys name a fact ("update:web:sha256:...") so the same fact is reported once.
   claim(key: string, withinMs: number): boolean {
+    const now = this.now();
+    const mem = this.unsaved.get(key);
+    if (mem !== undefined && now - mem < withinMs) return false;
     const prev = this.db.query('SELECT at FROM notify_sent WHERE key = ?').get(key) as { at: number } | null;
-    if (prev && this.now() - prev.at < withinMs) return false;
-    this.db.query('INSERT INTO notify_sent (key, at) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET at = excluded.at').run(key, this.now());
-    // Keep the table small: facts older than 60 days are forgotten.
-    this.db.query('DELETE FROM notify_sent WHERE at < ?').run(this.now() - 60 * 86400_000);
+    if (prev && now - prev.at < withinMs) return false;
+    try {
+      this.db.query('INSERT INTO notify_sent (key, at) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET at = excluded.at').run(key, now);
+      // Keep the table small: facts older than 60 days are forgotten.
+      this.db.query('DELETE FROM notify_sent WHERE at < ?').run(now - 60 * 86400_000);
+      this.unsaved.delete(key);
+    } catch (e) {
+      writeFailed(e, 'could not record a notification as sent');
+      if (this.unsaved.size >= 10000) this.unsaved.clear();
+      this.unsaved.set(key, now);
+    }
     return true;
   }
 
+  private unclaim(key: string): void {
+    this.unsaved.delete(key);
+    try { this.db.query('DELETE FROM notify_sent WHERE key = ?').run(key); } catch (e) { writeFailed(e, 'could not forget a notification nobody received'); }
+  }
+
   // Sends to every target subscribed to the note's kind. With a key, sends only if that fact was
-  // not reported within `withinMs`. Returns how many targets it was sent to.
-  async send(note: Note, key?: string, withinMs = Infinity): Promise<number> {
+  // not reported within `withinMs`. Returns how many targets it was sent to. `going` is called
+  // before anything is awaited once the note is going out, so a caller knows it at once.
+  async send(note: Note, key?: string, withinMs = Infinity, going?: () => void): Promise<number> {
     const targets = this.list().filter(t => note.kind === 'test' || t.events.includes(note.kind));
     if (!targets.length) return 0;
     if (key && !this.claim(key, withinMs)) return 0;
+    going?.();
     const results = await Promise.all(targets.map(t => this.deliver(t, note)));
     // Nobody got it: forget the claim, so the fact is sent when it comes up again.
-    if (key && results.every(r => r.startsWith('failed'))) this.db.query('DELETE FROM notify_sent WHERE key = ?').run(key);
+    if (key && results.every(r => r.startsWith('failed'))) this.unclaim(key);
     return targets.length;
   }
 
@@ -137,7 +159,7 @@ export class Notifier {
     } catch (e) {
       result = `failed: ${((e as Error).message || String(e)).slice(0, 200)}`;
     }
-    this.db.query('UPDATE notify_targets SET last_at = ?, last_result = ? WHERE id = ?').run(at, result, t.id);
+    try { this.db.query('UPDATE notify_targets SET last_at = ?, last_result = ? WHERE id = ?').run(at, result, t.id); } catch (e) { writeFailed(e, 'could not save the result of a notification'); }
     if (result.startsWith('failed')) console.error(`kontainers: notification to ${maskUrl(t.url)} ${result}`);
     return result;
   }

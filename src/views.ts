@@ -24,6 +24,7 @@ export interface PageCtx {
   user?: string; csrf?: string; flash?: string; error?: string; proxyEnabled?: boolean;
   username?: string; token?: string; // re-filled after a failed login or setup (never the password)
   form?: Record<string, string>; // a failed form, to fill in again
+  alert?: string | null; // trouble with kontainers itself, shown on every page
 }
 
 const csrfField = (ctx: PageCtx) => html`<input type="hidden" name="_csrf" value="${ctx.csrf}">`;
@@ -94,6 +95,7 @@ export function layout(title: string, ctx: PageCtx, body: Html, section = title)
 <link rel="stylesheet" href="/static/app.css"><script src="/static/app.js" defer></script></head>
 <body><header><a class="brand" href="/">kontainers</a>${nav}</header><main>
 <h1>${title}</h1>
+${ctx.alert ? html`<p class="warn" role="alert">${ctx.alert}</p>` : ''}
 ${ctx.flash ? html`<p class="flash" role="status">${ctx.flash}</p>` : ''}
 ${ctx.error ? html`<p class="error" role="alert">${ctx.error}</p>` : ''}
 ${body}
@@ -127,6 +129,8 @@ const fmtSize = (b: number) => b > 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${(b / 
 
 export interface UpdateView {
   get: (ref: string) => UpdateState | null;
+  // The image an automatic update held back for an opted-in container (by name and ID), if any.
+  held?: (name: string, id: string) => string | null;
   lastRun: number | null;
   scheduled: number | null; // hours between scheduled checks, or null when off
 }
@@ -139,8 +143,16 @@ const ago = (t: number) => {
 // ref: the image reference the container was created with; imageId: the image it runs.
 const hasNewer = (u: UpdateView | null, ref: string, imageId: string | undefined) =>
   containerStatus(u?.get(ref) ?? null, imageId)?.status === 'available';
-const updateBadge = (u: UpdateView | null, ref: string, imageId: string | undefined) =>
-  hasNewer(u, ref, imageId) ? html`<small class="update">newer image available</small>` : '';
+// The newer image the tag points at here is the one an automatic update tried and held back, and
+// the registry has nothing newer: recommending it would recommend the image that failed.
+export function heldBack(u: UpdateView | null, name: string, id: string, ref: string): string | null {
+  const held = u?.held?.(name, id);
+  const st = u?.get(ref);
+  return held && st && st.imageId === held && st.status !== 'available' ? held : null;
+}
+
+const updateBadge = (u: UpdateView | null, ref: string, imageId: string | undefined, name = '', id = '') =>
+  !hasNewer(u, ref, imageId) ? '' : heldBack(u, name, id, ref) ? html`<small class="muted">newest image held back</small>` : html`<small class="update">newer image available</small>`;
 
 // The Containers page's search and filters, from its query string.
 export type StateFilter = 'all' | 'running' | 'stopped' | 'attention';
@@ -174,7 +186,9 @@ export function needsAttention(c: any): boolean {
 const nameOf = (c: any) => String(c.Names?.[0] || '').replace(/^\//, '');
 // The name in URLs: it survives a recreation (docker compose up, Update image), so a page left open
 // keeps working; the ID only when a name is unusable.
-const urlId = (c: any): string => { const n = String(c.Names?.[0] || c.Name || '').replace(/^\//, ''); return /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(n) ? n : c.Id; };
+// By name, so a page survives a recreation; by ID when the name is not one kontainers accepts in a
+// URL (Docker allows names longer than 128 characters, which compose makes from long project names).
+const urlId = (c: any): string => { const n = String(c.Names?.[0] || c.Name || '').replace(/^\//, ''); return /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(n) ? n : c.Id; };
 // The image reference a listed container was created with (Ref, from listContainersWithRefs), or the
 // list's own Image field.
 const refOf = (c: any): string => String(c.Ref ?? c.Image ?? '');
@@ -184,8 +198,9 @@ const searchText = (c: any) => `${nameOf(c)} ${refOf(c)} ${projectOf(c)}`.toLowe
 
 export function matchesFilter(c: any, f: ListFilter): boolean {
   if (f.q && !searchText(c).includes(f.q.toLowerCase())) return false;
-  if (f.state === 'running') return c.State === 'running';
-  if (f.state === 'stopped') return c.State !== 'running' && c.State !== 'restarting';
+  // Paused containers count as running, as in docker ps: their processes are still there.
+  if (f.state === 'running') return c.State === 'running' || c.State === 'paused';
+  if (f.state === 'stopped') return c.State !== 'running' && c.State !== 'restarting' && c.State !== 'paused';
   if (f.state === 'attention') return needsAttention(c);
   return true;
 }
@@ -207,7 +222,7 @@ export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = 
     const name = nameOf(c);
     const project = projectOf(c);
     return html`<tr data-name="${name}" data-state="${c.State}"${/\(unhealthy\)/.test(c.Status || '') ? raw(' data-health="unhealthy"') : raw('')} data-search="${searchText(c)}"${needsAttention(c) ? raw(' data-attention="1"') : raw('')}${matchesFilter(c, f) ? raw('') : raw(' hidden')}>
-  <td><a href="/containers/${urlId(c)}">${name}</a>${project && !f.group ? html`<small>compose project ${project}</small>` : ''}</td><td><span class="ref">${refOf(c)}</span>${updateBadge(updates, refOf(c), c.ImageID)}</td>
+  <td><a href="/containers/${urlId(c)}">${name}</a>${project && !f.group ? html`<small>compose project ${project}</small>` : ''}</td><td><span class="ref">${refOf(c)}</span>${updateBadge(updates, refOf(c), c.ImageID, name, c.Id)}</td>
   <td><span class="state ${c.State}">${c.State}</span><small>${c.Status}</small></td><td><span class="ref">${formatPorts(c.Ports)}</span></td>
   <td class="actions">${isSelf(c, me) ? selfNote(c, me) : containerActions(ctx, urlId(c), name, c.State)}</td></tr>`;
   };
@@ -246,7 +261,7 @@ ${post(ctx, '/updates/check', 'Check for updates')}`
 <button>Apply</button>${f.q || f.state !== 'all' || !f.group ? html` <a href="/containers">Clear</a>` : ''}</form>` : '';
   const empty = html`<tr><td colspan="5">No containers yet. <a href="/containers/new">Create one</a>, or start one with docker and it appears here.</td></tr>`;
   return layout('Containers', ctx, html`
-<div class="toolbar"><span class="muted">${running} of ${list.length} running${attention ? html`; <a href="${filterQuery(f, { state: 'attention' })}">${attention} ${attention === 1 ? 'needs' : 'need'} attention</a>` : ''}</span><span class="spread"></span>${checked}<a class="button primary" href="/containers/new">New container</a></div>
+<div class="toolbar"><span class="muted">${running} of ${list.length} running${attention ? html`; <a href="${filterQuery(f, { state: 'attention', q: '' })}">${attention} ${attention === 1 ? 'needs' : 'need'} attention</a>` : ''}</span><span class="spread"></span>${checked}<a class="button primary" href="/containers/new">New container</a></div>
 ${filters}
 <table id="containers"><thead><tr><th>Name</th><th>Image</th><th>State</th><th>Published ports</th><th></th></tr></thead>
 <tbody>${rows.length ? rows : empty}</tbody></table>
@@ -269,9 +284,11 @@ ${last}${held}</form>`;
 export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, updates: UpdateView | null = null, auto: AutoView | null = null): string {
   const raw = updates?.get(c.Config?.Image) ?? null;
   const upd = raw && { ...containerStatus(raw, c.Image)!, checkedAt: raw.checkedAt };
-  const updText = !upd ? '' : upd.status === 'available' ? (raw!.status === 'available' ? 'a newer image is available for this tag' : upd.reason)
-    : upd.status === 'current' ? 'the newest image for this tag' : `update status unknown: ${upd.reason || ''}`;
   const name = String(c.Name || '').replace(/^\//, '');
+  const held = upd?.status === 'available' ? heldBack(updates, name, c.Id, c.Config?.Image) : null;
+  const updText = !upd ? '' : held ? `the newest image for this tag (${shortId(held)}) failed when it was tried automatically and is held back; a newer one will be tried`
+    : upd.status === 'available' ? (raw!.status === 'available' ? 'a newer image is available for this tag' : upd.reason)
+    : upd.status === 'current' ? 'the newest image for this tag' : `update status unknown: ${upd.reason || ''}`;
   const env = (c.Config?.Env || []).map((e: string) => html`<li><code>${e.replace(/=[\s\S]*/, '=…')}</code></li>`);
   const mounts = (c.Mounts || []).map((m: any) => html`<li><code>${m.Type} ${m.Name || m.Source} → ${m.Destination}${m.RW ? '' : ' (ro)'}</code></li>`);
   const nets = Object.keys(c.NetworkSettings?.Networks || {}).map(n => html`<li>${n}</li>`);
@@ -279,7 +296,7 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
 <p><a href="/containers">All containers</a></p>
 <dl class="facts">
   <dt>ID</dt><dd><code>${shortId(c.Id)}</code></dd>
-  <dt>Image</dt><dd><code>${c.Config?.Image}</code>${upd ? html`<small class="${upd.status === 'available' ? 'update' : 'muted'}">${updText} (checked ${ago(upd.checkedAt)})</small>` : ''}</dd>
+  <dt>Image</dt><dd><code>${c.Config?.Image}</code>${upd ? html`<small class="${upd.status === 'available' && !held ? 'update' : 'muted'}">${updText} (checked ${ago(upd.checkedAt)})</small>` : ''}</dd>
   <dt>State</dt><dd><span class="state ${c.State?.Status}">${c.State?.Status}</span></dd>
   <dt>Started</dt><dd>${!c.State?.StartedAt || c.State.StartedAt.startsWith('0001-') ? 'never' : `${c.State.StartedAt.slice(0, 16).replace('T', ' ')} UTC`}</dd>
   ${c.State?.Health ? html`<dt>Health</dt><dd>${c.State.Health.Status}${healthNote(c.State.Health)}</dd>` : ''}
@@ -290,7 +307,7 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
 </dl>
 <div class="actions">${isSelf(c, me) ? selfNote(c, me) : containerActions(ctx, urlId(c), name, c.State?.Status || '', true)}
 ${isSelf(c, me) ? '' : c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project']
-    ? html`${post(ctx, `/containers/${urlId(c)}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' ? 'primary' : '' })} <a class="button" href="/containers/${urlId(c)}/edit">Edit settings</a>`
+    ? html`${post(ctx, `/containers/${urlId(c)}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' && !held ? 'primary' : '' })} <a class="button" href="/containers/${urlId(c)}/edit">Edit settings</a>`
     : c.Config?.Labels?.['com.docker.compose.project'] ? html`<small class="muted">Part of compose project ${c.Config.Labels['com.docker.compose.project']}: update it with <code>docker compose pull &amp;&amp; docker compose up -d</code>.</small>` : ''}</div>
 ${auto && !isSelf(c, me) && c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project'] ? autoForm(ctx, urlId(c), auto) : ''}
 ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
@@ -351,20 +368,24 @@ export interface EditSpec {
 // Change the settings of a container kontainers created; saving recreates it.
 export function editContainerPage(ctx: PageCtx, c: any, spec: EditSpec, allowBind: boolean, imageGone = false): string {
   const name = String(c.Name || '').replace(/^\//, '');
-  const ports = (spec.ports || []).map(p => `${p.hostIp ? (p.hostIp.includes(':') ? `[${p.hostIp}]` : p.hostIp) + ':' : ''}${p.host}:${p.container}${p.protocol === 'udp' ? '/udp' : ''}`).join('\n');
-  const vols = (spec.volumes || []).map(m => `${m.source}:${m.target}${m.readOnly ? ':ro' : ''}`).join('\n');
-  const opt = (v: string) => html`<option${v === (spec.restart || 'no') ? raw(' selected') : raw('')}>${v}</option>`;
+  // After a failed save, the form comes back as it was sent (only on this container's page).
+  const k = ctx.form?._edit;
+  const f = k && (k === name || String(c.Id || '').startsWith(k)) ? ctx.form! : null;
+  const ports = f ? f.ports ?? '' : (spec.ports || []).map(p => `${p.hostIp ? (p.hostIp.includes(':') ? `[${p.hostIp}]` : p.hostIp) + ':' : ''}${p.host}:${p.container}${p.protocol === 'udp' ? '/udp' : ''}`).join('\n');
+  const vols = f ? f.volumes ?? '' : (spec.volumes || []).map(m => `${m.source}:${m.target}${m.readOnly ? ':ro' : ''}`).join('\n');
+  const restart = f ? f.restart : spec.restart;
+  const opt = (v: string) => html`<option${v === (restart || 'no') ? raw(' selected') : raw('')}>${v}</option>`;
   return layout(`Edit ${name}`, ctx, html`
 <p><a href="/containers/${urlId(c)}">Back to ${name}</a></p>
 <p>Saving recreates ${name} with these settings: it is stopped, a new container is made and started, and if the new one cannot start or stops within a few seconds, the old one is put back. The name and networks stay. Environment values are shown here so they can be edited.</p>
 ${imageGone ? html`<p class="warn">The image ${name} was created from is no longer on this host, so its own environment and command cannot be told apart from the ones set for ${name}: the fields below may include the old image's values (PATH, version variables). Remove the ones that belong to the image before saving.</p>` : ''}
 <form method="post" action="/containers/${urlId(c)}/edit" class="stack">${csrfField(ctx)}
-  <label>Image <input name="image" required value="${spec.image}"></label>
-  <label class="check"><input type="checkbox" name="pull"> Pull the image first</label>
-  <label>Command <input name="cmd" value="${spec.cmd ? quoteArgs(spec.cmd) : ''}" placeholder="empty: the image's own command"></label>
+  <label>Image <input name="image" required value="${f ? f.image ?? '' : spec.image}"></label>
+  <label class="check"><input type="checkbox" name="pull"${f?.pull ? raw(' checked') : raw('')}> Pull the image first</label>
+  <label>Command <input name="cmd" value="${f ? f.cmd ?? '' : spec.cmd ? quoteArgs(spec.cmd) : ''}" placeholder="empty: the image's own command"></label>
   <label>Ports, one per line: <code>[host-ip:]host:container[/udp]</code>. Without a host IP the port is published on 127.0.0.1.
     <textarea name="ports" rows="3">${ports}</textarea></label>
-  <label>Environment, one <code>KEY=value</code> per line <textarea name="env" rows="4">${(spec.env || []).join('\n')}</textarea></label>
+  <label>Environment, one <code>KEY=value</code> per line <textarea name="env" rows="4">${f ? f.env ?? '' : (spec.env || []).join('\n')}</textarea></label>
   <label>Volumes, one per line: <code>volume-name:/path[:ro]</code>${allowBind ? raw(' or <code>/host/path:/path[:ro]</code>') : raw('. Host paths are disabled, except ones the container already has.')}
     <textarea name="volumes" rows="2">${vols}</textarea></label>
   <label>Restart policy <select name="restart">${opt('no')}${opt('unless-stopped')}${opt('always')}${opt('on-failure')}</select></label>
@@ -547,6 +568,7 @@ const ACTIONS: Record<string, string> = {
   'container-create': 'created a container', 'container-start': 'started', 'container-stop': 'stopped', 'container-restart': 'restarted',
   'container-unpause': 'unpaused', 'container-remove': 'removed', 'container-update': 'updated the image of', 'container-edit': 'edited the settings of',
   'autoupdate-on': 'turned on automatic updates for', 'autoupdate-off': 'turned off automatic updates for', 'auto-update': 'updated automatically',
+  'recover': 'tidied up after an interrupted update of',
   'update-check': 'checked for updates', 'image-pull': 'pulled', 'image-remove': 'removed the image',
   'network-create': 'created the network', 'network-remove': 'removed the network', 'volume-create': 'created the volume', 'volume-remove': 'removed the volume',
   'proxy-create': 'added the proxy rule', 'proxy-edit': 'edited proxy rule', 'proxy-toggle': 'turned on or off proxy rule', 'proxy-remove': 'removed proxy rule',
@@ -560,7 +582,7 @@ export interface AuditRow { id: number; at: number; username: string | null; act
 export function activityPage(ctx: PageCtx, rows: AuditRow[], q: string, older: number | null): string {
   const who = (r: AuditRow) => r.username ?? (r.ip ? html`<span class="muted">not logged in</span>` : html`<span class="muted">kontainers</span>`);
   const list = rows.map(r => html`<tr${r.result ? raw(' class="failed"') : raw('')}><td>${new Date(r.at).toISOString().slice(0, 19).replace('T', ' ')}</td><td>${who(r)}</td>
-<td>${ACTIONS[r.action] || r.action}${r.target ? html` <span class="ref">${r.target}</span>` : ''}${r.result ? html`<br><small class="error">${r.result}</small>` : ''}</td><td><span class="ref">${r.ip || ''}</span></td></tr>`);
+<td>${ACTIONS[r.action] || r.action}${r.target ? html` <span class="ref">${r.target}</span>` : ''}${r.result ? html`<br><small class="error">${r.result}</small>` : ''}</td><td><span class="ref addr">${r.ip || ''}</span></td></tr>`);
   return layout('Activity', ctx, html`
 <p>Who did what, newest first, including failed attempts and what kontainers did on its own. Entries older than a year are removed.</p>
 <form method="get" action="/activity" class="filters" role="search"><label>Search <input type="search" name="q" value="${q}" placeholder="user, action or name"></label><button>Apply</button>${q ? html` <a href="/activity">Clear</a>` : ''}</form>

@@ -22,6 +22,7 @@ import * as v from './validate';
 import * as views from './views';
 import * as cleanup from './cleanup';
 import { NameLocks } from './locks';
+import { diskFull, DISK_FULL, storageTrouble, writeFailed } from './storage';
 
 export interface Deps {
   cfg: Config;
@@ -37,6 +38,8 @@ export interface Deps {
   notifier?: Notifier;
   autoUpdates?: AutoUpdates;
   events?: EventWatcher;
+  // Aborted at shutdown: replacements being watched are undone instead of left half done.
+  stopping?: AbortSignal;
 }
 
 export type Handler = (req: Request, socketIp: string) => Promise<Response>;
@@ -125,11 +128,20 @@ const text = (body: string, status = 200, headers: Record<string, string> = {}) 
   new Response(body, { status, headers: { 'content-type': 'text/plain; charset=utf-8', ...headers } });
 const redirect = (to: string, headers: Record<string, string> = {}) => new Response(null, { status: 303, headers: { location: to, ...headers } });
 
+// The most a form may be. The server itself takes up to 4 MB (main.ts), so a bigger form gets a
+// page that says what happened instead of a bare 413.
+export const MAX_FORM = 1024 * 1024;
+const tooLarge = (n: number) => Object.assign(new v.ValidationError(`the form was ${(n / 1048576).toFixed(1)} MB; kontainers accepts at most 1 MB (a very large environment paste?). Go back and shorten it`), { status: 413 });
+
 async function readForm(req: Request): Promise<Record<string, string>> {
   const ct = req.headers.get('content-type') || '';
   if (!ct.startsWith('application/x-www-form-urlencoded')) throw new v.ValidationError('expected a form submission');
+  const len = Number(req.headers.get('content-length') || 0);
+  if (len > MAX_FORM) throw tooLarge(len);
+  const body = await req.text();
+  if (body.length > MAX_FORM) throw tooLarge(body.length);
   const out: Record<string, string> = {};
-  for (const [k, val] of new URLSearchParams(await req.text())) if (!(k in out)) out[k] = val;
+  for (const [k, val] of new URLSearchParams(body)) if (!(k in out)) out[k] = val;
   return out;
 }
 
@@ -201,8 +213,6 @@ export function containerSpec(f: Record<string, string>): CreateSpec {
 }
 
 // SQLite cannot write: the data volume is full (or read-only).
-const diskFull = (e: unknown) => /SQLITE_FULL|database or disk is full|SQLITE_READONLY|readonly database/i.test(`${(e as { code?: string })?.code ?? ''} ${(e as Error)?.message ?? ''}`);
-const DISK_FULL = 'kontainers could not write its database: the data volume is full or read-only. Free space on it (/data in the image) and try again';
 
 function errorStatus(e: unknown): number {
   if (diskFull(e)) return 507;
@@ -254,12 +264,12 @@ export function createHandler(d: Deps): Handler {
   const audit = (s: Session | null, action: string, target: string | null, ip: string, result: string | null = null) =>
     db.query('INSERT INTO audit_log (at, username, action, target, ip, result) VALUES (?, ?, ?, ?, ?, ?)').run(Date.now(), s?.user.username ?? null, action, target === null ? null : String(target).slice(0, 200), ip, result);
   // For records that must not stop the request they belong to (a login, a logout).
-  const safeAudit = (...a: Parameters<typeof audit>) => { try { audit(...a); } catch (e) { console.error(`kontainers: could not record ${a[1]}: ${(e as Error).message}`); } };
+  const safeAudit = (...a: Parameters<typeof audit>) => { try { audit(...a); } catch (e) { writeFailed(e, `could not record ${a[1]}`); } };
 
   function ctx(s: Session): views.PageCtx {
     const f = flashes.get(s.idHash);
     flashes.delete(s.idHash);
-    return { user: s.user.username, csrf: s.csrf, flash: f?.flash, error: f?.error, form: f?.form, proxyEnabled: cfg.proxy.enabled };
+    return { user: s.user.username, csrf: s.csrf, flash: f?.flash, error: f?.error, form: f?.form, proxyEnabled: cfg.proxy.enabled, alert: storageTrouble() };
   }
 
   // kontainers' own container and, under compose, the rest of its project (the socket proxy):
@@ -295,7 +305,8 @@ export function createHandler(d: Deps): Handler {
     return null;
   }
   const updateView = (): views.UpdateView | null => d.updates
-    ? { get: (ref: string) => d.updates!.get(ref), lastRun: d.updates.lastRun, scheduled: cfg.updateCheckHours > 0 ? cfg.updateCheckHours : null }
+    ? { get: (ref: string) => d.updates!.get(ref), lastRun: d.updates.lastRun, scheduled: cfg.updateCheckHours > 0 ? cfg.updateCheckHours : null,
+        held: (name: string, id: string) => (d.autoUpdates?.isOn(name, id) ? d.autoUpdates.heldImage(name) : null) }
     : null;
 
   async function refuseSelf(id: string): Promise<void> {
@@ -356,7 +367,7 @@ export function createHandler(d: Deps): Handler {
     try {
       audit(s, action, target, ip, result);
     } catch (e) {
-      console.error(`kontainers: could not record ${action} in the activity log: ${(e as Error).message}`);
+      writeFailed(e, `could not record ${action} in the activity log`);
       const f = flashes.get(s.idHash);
       const note = ' (It could not be recorded in the activity log: the data volume is full or read-only.)';
       if (f?.flash) f.flash += note;
@@ -489,8 +500,9 @@ export function createHandler(d: Deps): Handler {
         const keys = views.actionsMatching(q);
         const rows = db.query(`SELECT id, at, username, action, target, ip, result FROM audit_log WHERE id < ? AND (? = ''
             OR username LIKE ? ESCAPE '\\' OR target LIKE ? ESCAPE '\\' OR ip LIKE ? ESCAPE '\\' OR result LIKE ? ESCAPE '\\'
-            OR action IN (SELECT value FROM json_each(?))) ORDER BY id DESC LIMIT 101`)
-          .all(before, q, like, like, like, like, JSON.stringify(keys)) as views.AuditRow[];
+            OR action IN (SELECT value FROM json_each(?))
+            OR (username IS NULL AND ip IS NULL AND 'kontainers' LIKE ? ESCAPE '\\')) ORDER BY id DESC LIMIT 101`)
+          .all(before, q, like, like, like, like, JSON.stringify(keys), like) as views.AuditRow[];
         return page(views.activityPage(ctx(s), rows.slice(0, 100), q, rows.length > 100 ? rows[99].id : null));
       }
       if (p === '/cleanup') return page(views.cleanupPage(ctx(s), await cleanup.currentPlan(docker)));
@@ -515,7 +527,11 @@ export function createHandler(d: Deps): Handler {
 
     if (m !== 'POST') return text('method not allowed\n', 405, { allow: 'GET, POST' });
 
-    const f = await readForm(req);
+    let f: Record<string, string>;
+    try { f = await readForm(req); } catch (e) {
+      if (errorStatus(e) !== 413) throw e;
+      return page(views.layout('Form too large', ctx(s), views.html`<p class="error">${errorMessage(e)}.</p>`), 413);
+    }
     if (typeof f._csrf !== 'string' || !safeEqual(f._csrf, s.csrf)) return text('invalid or missing CSRF token\n', 403);
 
     if (p === '/logout') {
@@ -558,15 +574,19 @@ export function createHandler(d: Deps): Handler {
         try {
           const spec = containerSpec(f);
           if (f.pull) await docker.pull(spec.image);
-          // Host paths the container already has may stay; new ones follow KONTAINERS_ALLOW_BIND_MOUNTS.
-          const binds = (c.HostConfig?.Mounts || []).filter((m: any) => m.Type === 'bind').map((m: any) => m.Source);
-          const newId = await replaceContainer(docker, c, spec, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, allowedBindSources: binds }, 'saving the settings');
-          try { d.autoUpdates?.recreated(name, newId); } catch (e) { console.error(`kontainers: could not note the new ID of ${name}: ${(e as Error).message}`); }
+          // Host paths the container already has may stay (read-only ones read-only); new ones follow
+          // KONTAINERS_ALLOW_BIND_MOUNTS.
+          const binds = [
+            ...(c.Mounts || []).filter((m: any) => m.Type === 'bind').map((m: any) => ({ source: String(m.Source), readOnly: m.RW === false })),
+            ...(c.HostConfig?.Mounts || []).filter((m: any) => m.Type === 'bind').map((m: any) => ({ source: String(m.Source), readOnly: !!m.ReadOnly })),
+          ];
+          const rep = await replaceContainer(docker, c, spec, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, allowedBinds: binds, signal: d.stopping }, 'saving the settings');
+          d.autoUpdates?.recreated(name, rep.id);
           back = `/containers/${encodeURIComponent(name)}`;
           if (d.updates) await d.updates.check(spec.image).catch(() => {});
+          return `Saved the settings of ${name}; it was recreated${rep.note ? `; ${rep.note}` : ''}.`;
         } finally { release(); }
-        return `Saved the settings of ${name}; it was recreated.`;
-      });
+      }, { ...f, _edit: String(id) });
     }
     if ((r = /^\/containers\/([^/]+)\/update$/.exec(p))) {
       const id = r[1];
@@ -579,8 +599,8 @@ export function createHandler(d: Deps): Handler {
         if (!release) throw new v.ValidationError(`an update or edit of ${name} is already running; try again in a minute`);
         try {
           // Watched for a few seconds, so an image that crashes at once is caught and rolled back.
-          const r = await updateContainerDetailed(docker, id, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, healthTimeoutMs: 0 });
-          if (r.changed) { try { d.autoUpdates?.recreated(name, r.id); } catch (e) { console.error(`kontainers: could not note the new ID of ${name}: ${(e as Error).message}`); } }
+          const r = await updateContainerDetailed(docker, id, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, healthTimeoutMs: 0, signal: d.stopping });
+          if (r.changed) d.autoUpdates?.recreated(name, r.id);
           if (c.Config?.Image && d.updates) await d.updates.check(c.Config.Image).catch(() => {});
           return r.message;
         } finally { release(); }
@@ -590,12 +610,14 @@ export function createHandler(d: Deps): Handler {
       return act(s, ip, '/containers', 'update-check', null, async () => {
         if (!d.updates) throw new v.ValidationError('update checks are not available');
         // Registries that do not answer make a check slow; after 20 s it carries on in the background.
-        const running = d.updates.checkAll();
+        // A scheduled check already running started before this click; a new one follows it.
+        const running = d.updates.checkAll(true);
         const finished = await Promise.race([running.then(() => true, () => true), Bun.sleep(20000).then(() => false)]);
         if (!finished) { running.catch(() => {}); return 'Still checking: some registries are slow to answer. The results show here when the check is done; reload in a minute.'; }
         const n = await running;
         const newer = n === 0 ? [] : (await docker.listContainersWithRefs()).filter(c => containerStatus(d.updates!.get(c.Ref), c.ImageID)?.status === 'available');
-        const auto = newer.filter(c => d.autoUpdates?.isOn(String(c.Names?.[0] || '').replace(/^\//, ''), c.Id)).length;
+        const uv = updateView();
+        const auto = newer.filter(c => { const nm = String(c.Names?.[0] || '').replace(/^\//, ''); return d.autoUpdates?.isOn(nm, c.Id) && !views.heldBack(uv, nm, c.Id, c.Ref); }).length;
         const available = newer.length;
         return `Checked ${n} image${n === 1 ? '' : 's'}: ${available === 0 ? 'every container runs the newest image for its tag' : `${available} container${available === 1 ? ' has' : 's have'} a newer image`}${auto ? `; ${auto} ${auto === 1 ? 'is' : 'are'} being updated automatically` : ''}.`;
       });

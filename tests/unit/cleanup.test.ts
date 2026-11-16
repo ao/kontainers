@@ -25,7 +25,8 @@ describe('plan', () => {
     { Id: 'n-keep', Name: 'keep-me', Scope: 'local', Labels: { 'kontainers.keep': 'true' } },
   ];
   const volumes = [
-    { Name: 'data' }, { Name: 'backups' }, { Name: anon }, { Name: anon.replace(/a/g, 'b') }, { Name: 'named-anon', Labels: { 'com.docker.volume.anonymous': '' } },
+    { Name: 'data' }, { Name: 'backups' }, { Name: anon, Labels: { 'com.docker.volume.anonymous': '' } }, { Name: anon.replace(/a/g, 'b'), Labels: { 'com.docker.volume.anonymous': '' } },
+    { Name: 'named-anon', Labels: { 'com.docker.volume.anonymous': '' } }, { Name: 'c'.repeat(64), Labels: { qa: '1' } },
   ];
   const use = new Map([['n-app', 1]]);
   const p = plan(images, containers, networks, volumes, use);
@@ -40,10 +41,10 @@ describe('plan', () => {
   });
   test('only anonymous volumes no container mounts; named ones are counted, not listed', () => {
     expect(p.volumes.map(v => v.name)).toEqual([anon, 'named-anon']);
-    expect(p.namedUnused).toBe(1); // "backups"; "data" is mounted
+    expect(p.namedUnused).toBe(2); // "backups" and the named one that looks anonymous; "data" is mounted
   });
   test('isAnonymousVolume', () => {
-    expect(isAnonymousVolume({ Name: anon })).toBe(true);
+    expect(isAnonymousVolume({ Name: anon })).toBe(false); // a named volume can have a hex name
     expect(isAnonymousVolume({ Name: 'x', Labels: { 'com.docker.volume.anonymous': '' } })).toBe(true);
     expect(isAnonymousVolume({ Name: 'pgdata' })).toBe(false);
     expect(isAnonymousVolume({ Name: 'a'.repeat(63) })).toBe(false);
@@ -55,7 +56,7 @@ describe('plan', () => {
     expect(page).toContain('Remove 1 unused network');
     expect(page).toContain(`<input type="checkbox" name="vol_${anon}"> <code>${anon.slice(0, 12)}</code>`);
     expect(page).toContain('Remove the selected volumes');
-    expect(page).toContain('1 named volume is not mounted by any container');
+    expect(page).toContain('2 named volumes are not mounted by any container');
     expect(page).not.toContain('backups');
     const empty = cleanupPage({ user: 'a', csrf: 't' }, { dangling: [], unusedTagged: [], networks: [], volumes: [], namedUnused: 0 });
     expect(empty.match(/None/g)?.length).toBe(4);

@@ -134,7 +134,7 @@ describe('EventWatcher', () => {
   function watcher() {
     const sent: any[] = [];
     let now = 10_000_000;
-    const notifier = { send: async (note: any, key?: string, within?: number) => { sent.push({ ...note, key, within }); return 1; } };
+    const notifier = { send: async (note: any, key?: string, within?: number, going?: () => void) => { sent.push({ ...note, key, within }); going?.(); return 1; } };
     const w = new EventWatcher({} as any, notifier as any, () => now);
     const ev = (Action: string, name = 'web', attrs: Record<string, string> = {}, dt = 1000) => {
       now += dt;
@@ -194,6 +194,26 @@ describe('EventWatcher', () => {
     expect(sent.map(s => s.title)).toEqual(['db is unhealthy', 'db is healthy again']);
   });
 
+  test('a flapping healthcheck: one "unhealthy" and one "healthy again" an hour, not one per cycle', async () => {
+    const titles: string[] = [];
+    let now = 10_000_000;
+    const n = new Notifier(db(), async (_u, init) => { titles.push(JSON.parse(String(init.body)).title); return new Response(null, { status: 204 }); }, () => now);
+    n.add({ kind: 'webhook', url: 'https://hooks.example.net/a', events: ['health'] });
+    const w = new EventWatcher({} as any, n, () => now);
+    for (let i = 0; i < 6; i++) {
+      now += 20_000;
+      await w.handle({ Type: 'container', Action: `health_status: ${i % 2 ? 'healthy' : 'unhealthy'}`, Actor: { ID: 'id-f', Attributes: { name: 'flapper', image: 'x:1' } }, timeNano: now * 1e6 });
+    }
+    await Bun.sleep(10);
+    expect(titles).toEqual(['flapper is unhealthy', 'flapper is healthy again']);
+  });
+
+  test('exit code 137 with no stop or kill before it says it was killed, probably for memory', async () => {
+    const { sent, ev } = watcher();
+    await ev('die', 'big', { exitCode: '137' });
+    expect(sent[0].message).toContain('was killed (exit code 137, SIGKILL) without a docker stop or kill; that usually means it ran out of memory');
+  });
+
   test('events of other types and unknown actions are ignored', async () => {
     const { sent, ev } = watcher();
     await ev('exec_create: sh', 'web');
@@ -207,7 +227,7 @@ describe('checkCertificates', () => {
   const rule = (hostname: string, over: any = {}) => ({ hostname, tls: true, enabled: true, created_at: now - 3600_000, ...over });
   test('missing after 15 minutes, expiring within 14 days; each with a daily key', async () => {
     const sent: any[] = [];
-    const notifier = { send: async (note: any, key?: string, within?: number) => { sent.push({ ...note, key, within }); return 1; } };
+    const notifier = { send: async (note: any, key?: string, within?: number, going?: () => void) => { sent.push({ ...note, key, within }); going?.(); return 1; } };
     const certs: Record<string, Date> = { 'ok.example.net': new Date(now + 60 * 86400_000), 'soon.example.net': new Date(now + 5 * 86400_000), 'gone.example.net': new Date(now - 86400_000) };
     await checkCertificates([
       rule('ok.example.net'), rule('soon.example.net'), rule('gone.example.net'), rule('none.example.net'),
@@ -215,6 +235,29 @@ describe('checkCertificates', () => {
     ], h => (certs[h] ? { notAfter: certs[h] } : null), notifier as any, now);
     expect(sent.map(s => s.title)).toEqual(['Certificate for soon.example.net expires in 5 days', 'Certificate for gone.example.net has expired', 'No certificate for none.example.net']);
     expect(sent.every(s => s.kind === 'cert' && s.within === 86400_000)).toBe(true);
+  });
+  test('short-lived certificates: judged by their lifetime, not by 14 days', async () => {
+    const sent: string[] = [];
+    const notifier = { send: async (note: any) => { sent.push(note.title); return 1; } };
+    const week = (left: number) => ({ notBefore: new Date(now + left - 7 * 86400_000), notAfter: new Date(now + left) });
+    const certs: Record<string, any> = { 'fresh.example.net': week(6 * 86400_000), 'late.example.net': week(20 * 3600_000) };
+    await checkCertificates([rule('fresh.example.net'), rule('late.example.net')], h => certs[h], notifier as any, now);
+    expect(sent).toEqual(['Certificate for late.example.net expires within a day']);
+  });
+});
+
+describe('notifications with a full data volume', () => {
+  test('a note still goes out, and the same fact is still sent once', async () => {
+    let calls = 0;
+    const d = db();
+    const n = new Notifier(d, async () => { calls++; return new Response(null, { status: 204 }); });
+    n.add({ kind: 'webhook', url: 'https://hooks.example.net/a', events: ['exit'] });
+    const query = d.query.bind(d);
+    (d as any).query = (sql: string) => { if (/^(INSERT|UPDATE|DELETE)/.test(sql)) throw new Error('database or disk is full'); return query(sql); };
+    const note = { kind: 'exit' as const, title: 'web stopped', message: 'm' };
+    expect(await n.send(note, 'exit:web', 600_000)).toBe(1);
+    expect(await n.send(note, 'exit:web', 600_000)).toBe(0);
+    expect(calls).toBe(1);
   });
 });
 

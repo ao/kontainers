@@ -295,3 +295,54 @@ describe('container page facts', () => {
     expect(containerSpec({ image: 'x', env: '  A=1  \r\n\r\nB= \n' }).env).toEqual(['A=1  ', 'B= ']);
   });
 });
+
+describe('QA round 2', () => {
+  const ctx = { user: 'a', csrf: 't' };
+  test('a name longer than 128 characters is addressed by ID', () => {
+    const long = 'p'.repeat(77) + '-' + 's'.repeat(65) + '-1';
+    const page = containersPage(ctx, [{ Id: 'a'.repeat(64), Names: ['/' + long], Image: 'x:1', State: 'running', Status: '', Ports: [] }]);
+    expect(page).toContain(`href="/containers/${'a'.repeat(64)}"`);
+    expect(page).toContain(`action="/containers/${'a'.repeat(64)}/stop"`);
+    expect(page).not.toContain(`href="/containers/${long}"`);
+  });
+  test('after a failed save the Edit form shows what was typed, only for that container', () => {
+    const spec = { image: 'nginx:1.27', cmd: ['nginx'], env: ['A=1'], ports: [], volumes: [], restart: 'always' as const };
+    const form = { _edit: 'web', image: 'nginx:1.28', cmd: 'nginx -g x', env: 'A=2\nB=3', ports: 'abc', volumes: '', restart: 'on-failure', pull: 'on' };
+    const page = editContainerPage({ ...ctx, form }, { Id: 'e'.repeat(64), Name: '/web' }, spec, false);
+    expect(page).toContain('value="nginx:1.28"');
+    expect(page).toContain('>abc</textarea>');
+    expect(page).toContain('A=2\nB=3</textarea>');
+    expect(page).toContain('<option selected>on-failure</option>');
+    expect(page).toContain('name="pull" checked');
+    const other = editContainerPage({ ...ctx, form }, { Id: 'f'.repeat(64), Name: '/db' }, spec, false);
+    expect(other).toContain('value="nginx:1.27"');
+  });
+  test('the image an automatic update held back is not recommended', () => {
+    const st = { status: 'current' as const, checkedAt: Date.now(), imageId: 'sha256:' + 'b'.repeat(64) };
+    const updates = { get: () => st, lastRun: Date.now(), scheduled: 6, held: () => st.imageId };
+    const c = { Id: 'c'.repeat(64), Name: '/web', Image: 'sha256:' + 'a'.repeat(64), State: { Status: 'running' }, Config: { Image: 'app:1', Labels: { 'kontainers.managed': 'true' } }, HostConfig: {} };
+    const page = containerPage(ctx, c, null, updates as any);
+    expect(page).toContain('failed when it was tried automatically and is held back');
+    expect(page).not.toMatch(/class="primary"[^>]*>Update image/);
+    const list = containersPage(ctx, [{ Id: c.Id, Names: ['/web'], Image: 'app:1', ImageID: c.Image, State: 'running', Status: '', Ports: [] }], null, updates as any);
+    expect(list).toContain('newest image held back');
+    expect(list).not.toContain('newer image available');
+  });
+  test('every page says when kontainers cannot write its database', () => {
+    const page = containersPage({ ...ctx, alert: 'Since 06:41 UTC kontainers cannot write its database' }, []);
+    expect(page).toContain('<p class="warn" role="alert">Since 06:41 UTC kontainers cannot write its database</p>');
+  });
+});
+
+describe('bind mounts when they are off', () => {
+  test('Edit may keep a host path, not add one or make a read-only one writable', async () => {
+    const { Docker } = await import('../../src/docker');
+    const d = new Docker('tcp://127.0.0.1:1', { allowBindMounts: false });
+    const had = [{ source: '/srv/conf', readOnly: true }, { source: '/srv/data', readOnly: false }];
+    const body = (volumes: any[]) => d.createBody({ image: 'x:1', volumes }, { allowedBinds: had });
+    expect(() => body([{ source: '/srv/conf', target: '/etc/app', readOnly: true }])).not.toThrow();
+    expect(() => body([{ source: '/srv/data', target: '/data', readOnly: true }])).not.toThrow();
+    expect(() => body([{ source: '/srv/conf', target: '/etc/app', readOnly: false }])).toThrow('cannot be made writable');
+    expect(() => body([{ source: '/etc', target: '/x' }])).toThrow('host bind mounts are disabled');
+  });
+});

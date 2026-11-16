@@ -40,7 +40,11 @@ h2 { font-size: 1.05rem; font-weight: 650; margin: 2rem 0 .6rem; }
 p { max-width: 70ch; }
 
 table { border-collapse: separate; border-spacing: 0; width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
-th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid var(--line); vertical-align: middle; overflow-wrap: anywhere; }
+th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid var(--line); vertical-align: middle; overflow-wrap: break-word; }
+/* Names, image references, hostnames and addresses can be one very long word: those may break
+   anywhere, so the table fits the screen. Ordinary words (headers, states, buttons) stay whole. */
+td a, td code, td .ref, td small { overflow-wrap: anywhere; }
+td .ref.addr { overflow-wrap: break-word; }
 tr:last-child td { border-bottom: 0; }
 th { font-weight: 600; font-size: .85rem; color: var(--muted); background: var(--ground); }
 tbody tr:hover td { background: color-mix(in srgb, var(--panel) 92%, var(--marine)); }
@@ -100,6 +104,7 @@ button.link { border: 0; padding: 0; background: none; color: var(--link); font-
 .actions button, .actions a.button { padding: .3rem .7rem; font-size: .88rem; }
 div.actions { margin: 1rem 0; white-space: normal; }
 
+p.warn[role=alert] { padding: .6rem .9rem; border-radius: 5px; border-left: 4px solid var(--warn); background: var(--panel); max-width: 70ch; color: var(--ink); }
 .flash, .error { white-space: pre-line; padding: .6rem .9rem; border-radius: 5px; border-left: 4px solid; background: var(--panel); max-width: 70ch; }
 .flash { border-color: var(--run); }
 .error { border-color: var(--rust); color: var(--ink); }
@@ -222,8 +227,8 @@ document.addEventListener('submit', function (e) {
   function keep(r, t, st) {
     if (r.getAttribute('data-search').indexOf(t) === -1) return false;
     var s = r.getAttribute('data-state');
-    if (st === 'running') return s === 'running';
-    if (st === 'stopped') return s !== 'running' && s !== 'restarting';
+    if (st === 'running') return s === 'running' || s === 'paused';
+    if (st === 'stopped') return s !== 'running' && s !== 'restarting' && s !== 'paused';
     if (st === 'attention') return r.hasAttribute('data-attention');
     return true;
   }
@@ -241,6 +246,13 @@ document.addEventListener('submit', function (e) {
     }
     if (head) head.hidden = !seen;
     if (nomatch) nomatch.hidden = any || !total;
+    // The filter goes into the address, so Back from a container returns to the same list.
+    if (window.history && history.replaceState) {
+      var u = new URL(location.href);
+      if (q.value.trim()) u.searchParams.set('q', q.value.trim()); else u.searchParams.delete('q');
+      if (st !== 'all') u.searchParams.set('state', st); else u.searchParams.delete('state');
+      history.replaceState(null, '', u.pathname + u.search);
+    }
   }
   q.addEventListener('input', apply);
   form.elements.state.addEventListener('change', apply);

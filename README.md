@@ -196,8 +196,10 @@ container's page, or when creating it. After a check finds a newer image, the co
 recreated from it with the same settings, volumes and networks, and watched for
 `KONTAINERS_AUTOUPDATE_SETTLE` seconds (30); with a healthcheck, until it is healthy (up to
 `KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT`, 120 s). If it stops, restarts or turns unhealthy, the old
-container is put back and that image is held back until a newer one appears. Compose containers
-are left to `docker compose pull && docker compose up -d`.
+container is put back and that image is held back until a newer one appears. A stop someone
+asks for while it settles (`docker stop`, a backup script) is not a failure: the new container is
+left as they left it. If kontainers itself is stopped meanwhile, it puts the old container back
+before it exits. Compose containers are left to `docker compose pull && docker compose up -d`.
 
 Notification targets are set on the Settings page, with a Send test button:
 
@@ -211,11 +213,14 @@ Notification targets are set on the Settings page, with a Send test button:
 - an ntfy topic URL (`https://ntfy.sh/your-topic`, or your own server) gets the message as plain
   text with `Title` and `Tags` headers.
 
-A token, if given, is sent as `Authorization: Bearer`. The events: a newer image (once per image),
+A token, if given, is sent as `Authorization: Bearer`. The events: a newer image (once per image,
+naming the containers that use it),
 an automatic update and its result, a container that stopped on its own (a crash, an error exit or
 out of memory; not a stop someone asked for, and not exit code 0; once per 10 minutes per
 container), a container that turned unhealthy and healthy again, and an HTTPS rule with no
-certificate 15 minutes after it was added or with one that expires in under 14 days (once a day).
+certificate 15 minutes after it was added or with one close to expiry (once a day): a sixth of its
+lifetime left, at most 14 days, which for a 90-day certificate means renewal has been failing
+for two weeks.
 
 ## Proxy rules and certificates
 

@@ -45,10 +45,12 @@ const updates = new UpdateChecker(docker, cfg.updateCheckHours * 3600 * 1000);
 const notifier = new Notifier(db, undefined, undefined, [dockerApiHost(cfg.dockerHost)].filter((h): h is string => !!h));
 const systemAudit = (action: string, target: string, result?: string) =>
   db.query('INSERT INTO audit_log (at, username, action, target, ip, result) VALUES (?, ?, ?, ?, ?, ?)').run(Date.now(), null, action, target, null, result ?? null);
-const autoUpdates = new AutoUpdates(db, docker, updates, notifier, { settleMs: cfg.autoUpdateSettle * 1000, healthTimeoutMs: cfg.autoUpdateHealthTimeout * 1000 }, systemAudit);
+// Aborted at shutdown, so a replacement being watched is undone instead of left half done.
+const stopping = new AbortController();
+const autoUpdates = new AutoUpdates(db, docker, updates, notifier, { settleMs: cfg.autoUpdateSettle * 1000, healthTimeoutMs: cfg.autoUpdateHealthTimeout * 1000, signal: stopping.signal }, systemAudit);
 updates.onChecked = () => autoUpdates.afterCheck();
 const events = new EventWatcher(docker, notifier, Date.now, ms => Bun.sleep(ms), name => autoUpdates.busy.has(name));
-const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events });
+const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events, stopping: stopping.signal });
 updates.start();
 events.start();
 // Certificate trouble, hourly (first check after 5 minutes), when the proxy runs.
@@ -62,7 +64,8 @@ const auditTimer = setInterval(pruneAudit, 86400_000);
 const server = Bun.serve({
   hostname: cfg.host,
   port: cfg.port,
-  maxRequestBodySize: 1024 * 1024,
+  // Forms are limited to 1 MB in the handler, which says so; above 4 MB the server refuses alone.
+  maxRequestBodySize: 4 * 1024 * 1024,
   // Bun's default of 10 s drops the connection while a Docker call is still waiting (an unreachable
   // daemon, a 20 s image pull); the longest, 255 s, lets those finish with a page instead.
   idleTimeout: 255,
@@ -76,7 +79,15 @@ if (cfg.inContainer) console.log('kontainers: running in a container; publish th
 const setupToken = auth.issueSetupToken();
 if (setupToken) console.log(`kontainers: no accounts yet. Open /setup and enter this one-time setup token: ${setupToken}`);
 if (!(await docker.ping())) console.error(`kontainers: Docker is not reachable at ${cfg.dockerHost}; pages will show errors until it is`);
-else for (const line of await recoverInterrupted(docker).catch(e => [`could not look for interrupted updates: ${(e as Error).message}`])) console.log(`kontainers: ${line}`);
+else {
+  const kept = (name: string, id: string) => { if (autoUpdates.get(name)) autoUpdates.recreated(name, id); };
+  try {
+    for (const r of await recoverInterrupted(docker, kept)) {
+      console.log(`kontainers: ${r.text}`);
+      try { systemAudit('recover', r.name, r.trouble ? `failed: ${r.text}`.slice(0, 500) : undefined); } catch { /* the log line is enough */ }
+    }
+  } catch (e) { console.error(`kontainers: could not look for interrupted updates: ${(e as Error).message}`); }
+}
 
 try {
   await proxy.start();
@@ -89,6 +100,10 @@ async function shutdown(sig: string) {
   if (closing) return;
   closing = true;
   console.log(`kontainers: ${sig}, shutting down`);
+  // Replacements being watched put the old container back; Docker waits 10 s before it kills us.
+  stopping.abort();
+  for (let i = 0; i < 80 && autoUpdates.busy.size; i++) await Bun.sleep(100);
+  if (autoUpdates.busy.size) console.error('kontainers: an update was still running at shutdown; it is tidied up at the next start');
   server.stop();
   updates.stop();
   events.stop();

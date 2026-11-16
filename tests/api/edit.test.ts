@@ -69,8 +69,9 @@ describe.skipIf(!DOCKER)('edit and recreate', () => {
     expect(now.Config.Env).toContain('A=2');
     const all = (await (await api('/containers/json?all=1')).json()) as any[];
     expect(all.filter(x => x.Names.some((n: string) => n.startsWith(`/${NAME}`)))).toHaveLength(1);
-    // Back on the form, which still shows the settings that are in effect.
-    expect(r.body).toContain('A=2\nB=3</textarea>');
+    // Back on the form with what was typed, to correct it; the container keeps its old settings.
+    expect(r.body).toContain('>A=9</textarea>');
+    expect(r.body).toContain('value="sh -c &quot;exit 7&quot;"');
   }, 60000);
 
   test('bad input is refused before anything changes', async () => {

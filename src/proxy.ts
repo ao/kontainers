@@ -354,13 +354,13 @@ export class ProxyManager {
   }
 
   // The certificate Caddy holds for a hostname, if any. Caddy stores <issuer>/<host>/<host>.crt.
-  certificate(host: string): { notAfter: Date } | null {
+  certificate(host: string): { notAfter: Date; notBefore: Date } | null {
     const root = join(this.cfg.dataDir, 'caddy', 'certificates');
     const name = host.replace(/^\*/, 'wildcard_');
     try {
       for (const issuer of readdirSync(root)) {
         const f = join(root, issuer, name, `${name}.crt`);
-        if (existsSync(f)) return { notAfter: new Date(new X509Certificate(readFileSync(f, 'utf8')).validTo) };
+        if (existsSync(f)) { const x = new X509Certificate(readFileSync(f, 'utf8')); return { notAfter: new Date(x.validTo), notBefore: new Date(x.validFrom) }; }
       }
     } catch { /* no certificates yet */ }
     return null;
