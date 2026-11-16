@@ -54,6 +54,9 @@ describe.skipIf(!DOCKER)('edit and recreate', () => {
     expect((await api(`/containers/${before.Id}/json`)).status).toBe(404);
     // The page it lands on is the new container's.
     expect(r.body).toContain(`<h1>${NAME}</h1>`);
+    // Linked by name, so this page still works after the recreation it just did.
+    expect(r.body).toContain(`data-logs="/api/containers/${NAME}/logs"`);
+    expect((await c.get(`/api/containers/${NAME}/logs?tail=5`)).status).toBe(200);
   });
 
   test('settings that make the container stop at once are rolled back', async () => {

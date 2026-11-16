@@ -32,6 +32,8 @@
 - Fixed: a mistake in the New container form discarded everything typed; the form now comes
   back filled in, with the error. Several actions at once in one session (two tabs) each show
   their outcome instead of the last one only.
+- Container pages, their actions, logs and usage are addressed by container name, not ID, so a
+  page left open keeps working after `docker compose up` or an update recreates the container.
 - Fixed: log responses were unbounded (a container that printed a 20 MB line made a 40 MB
   response and spiked memory). Logs are read as a stream and the page keeps the newest 2 MB,
   saying how much earlier output it leaves out; a download keeps up to 50 MB.

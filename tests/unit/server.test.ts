@@ -125,7 +125,7 @@ describe('pages', () => {
     const page = containerPage(ctx, { Id: 'b'.repeat(64), Name: '/web', State: { Status: 'exited', StartedAt: '0001-01-01T00:00:00Z', ExitCode: 42 }, Config: {}, HostConfig: {} });
     expect(page).toContain('<dd>never</dd>');
     expect(page).toContain('<dt>Exit code</dt><dd>42</dd>');
-    expect(page).toMatch(/action="\/containers\/b+\/start"[^>]*>.*name="back" value="detail"/s);
+    expect(page).toMatch(/action="\/containers\/web\/start"[^>]*>.*name="back" value="detail"/s); // by name: it survives a recreation
     expect(page).not.toMatch(/\/remove"[^>]*>(?:(?!<\/form>).)*name="back"/s);
   });
 

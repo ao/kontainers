@@ -172,6 +172,9 @@ export function needsAttention(c: any): boolean {
 }
 
 const nameOf = (c: any) => String(c.Names?.[0] || '').replace(/^\//, '');
+// The name in URLs: it survives a recreation (docker compose up, Update image), so a page left open
+// keeps working; the ID only when a name is unusable.
+const urlId = (c: any): string => { const n = String(c.Names?.[0] || c.Name || '').replace(/^\//, ''); return /^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(n) ? n : c.Id; };
 // The image reference a listed container was created with (Ref, from listContainersWithRefs), or the
 // list's own Image field.
 const refOf = (c: any): string => String(c.Ref ?? c.Image ?? '');
@@ -204,9 +207,9 @@ export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = 
     const name = nameOf(c);
     const project = projectOf(c);
     return html`<tr data-name="${name}" data-state="${c.State}" data-search="${searchText(c)}"${needsAttention(c) ? raw(' data-attention="1"') : raw('')}${matchesFilter(c, f) ? raw('') : raw(' hidden')}>
-  <td><a href="/containers/${c.Id}">${name}</a>${project && !f.group ? html`<small>compose project ${project}</small>` : ''}</td><td><span class="ref">${refOf(c)}</span>${updateBadge(updates, refOf(c), c.ImageID)}</td>
+  <td><a href="/containers/${urlId(c)}">${name}</a>${project && !f.group ? html`<small>compose project ${project}</small>` : ''}</td><td><span class="ref">${refOf(c)}</span>${updateBadge(updates, refOf(c), c.ImageID)}</td>
   <td><span class="state ${c.State}">${c.State}</span><small>${c.Status}</small></td><td><span class="ref">${formatPorts(c.Ports)}</span></td>
-  <td class="actions">${isSelf(c, me) ? selfNote(c, me) : containerActions(ctx, c.Id, name, c.State)}</td></tr>`;
+  <td class="actions">${isSelf(c, me) ? selfNote(c, me) : containerActions(ctx, urlId(c), name, c.State)}</td></tr>`;
   };
   const sorted = [...list].sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
   const shown = sorted.filter(c => matchesFilter(c, f)).length;
@@ -279,13 +282,13 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
   ${c.State?.Status === 'exited' ? html`<dt>Exit code</dt><dd>${c.State.ExitCode}${c.State.OOMKilled ? ' (out of memory)' : ''}</dd>` : ''}
   <dt>Restart policy</dt><dd>${c.HostConfig?.RestartPolicy?.Name}</dd>
 </dl>
-<div class="actions">${isSelf(c, me) ? selfNote(c, me) : containerActions(ctx, c.Id, name, c.State?.Status || '', true)}
+<div class="actions">${isSelf(c, me) ? selfNote(c, me) : containerActions(ctx, urlId(c), name, c.State?.Status || '', true)}
 ${isSelf(c, me) ? '' : c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project']
-    ? html`${post(ctx, `/containers/${c.Id}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' ? 'primary' : '' })} <a class="button" href="/containers/${c.Id}/edit">Edit settings</a>`
+    ? html`${post(ctx, `/containers/${urlId(c)}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' ? 'primary' : '' })} <a class="button" href="/containers/${urlId(c)}/edit">Edit settings</a>`
     : c.Config?.Labels?.['com.docker.compose.project'] ? html`<small class="muted">Part of compose project ${c.Config.Labels['com.docker.compose.project']}: update it with <code>docker compose pull &amp;&amp; docker compose up -d</code>.</small>` : ''}</div>
-${auto && !isSelf(c, me) && c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project'] ? autoForm(ctx, c.Id, auto) : ''}
+${auto && !isSelf(c, me) && c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project'] ? autoForm(ctx, urlId(c), auto) : ''}
 ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
-<dl class="facts" id="stats" data-stats="/api/containers/${c.Id}/stats">
+<dl class="facts" id="stats" data-stats="/api/containers/${urlId(c)}/stats">
   <dt>CPU</dt><dd data-k="cpu">…</dd><dt>Memory</dt><dd data-k="mem">…</dd>
   <dt>Network in / out</dt><dd data-k="net">…</dd><dt>Processes</dt><dd data-k="pids">…</dd>
 </dl>` : ''}
@@ -298,10 +301,10 @@ ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
   <label>Lines <select id="loglines"><option>300</option><option>1000</option><option>5000</option></select></label>
   <label class="check"><input type="checkbox" id="logts" checked> Timestamps</label>
   <label class="check"><input type="checkbox" id="follow" checked> Follow new lines</label>
-  <a href="/api/containers/${c.Id}/logs.txt?tail=10000" id="logdl" download>Download the last 10000 lines</a>
+  <a href="/api/containers/${urlId(c)}/logs.txt?tail=10000" id="logdl" download>Download the last 10000 lines</a>
   <span class="muted" id="logcount" aria-live="polite"></span>
 </div>
-<pre id="logs" data-logs="/api/containers/${c.Id}/logs">loading…</pre>`, 'Containers');
+<pre id="logs" data-logs="/api/containers/${urlId(c)}/logs">loading…</pre>`, 'Containers');
 }
 
 export function newContainerPage(ctx: PageCtx, allowBind: boolean, autoUpdates = false): string {
@@ -346,9 +349,9 @@ export function editContainerPage(ctx: PageCtx, c: any, spec: EditSpec, allowBin
   const vols = (spec.volumes || []).map(m => `${m.source}:${m.target}${m.readOnly ? ':ro' : ''}`).join('\n');
   const opt = (v: string) => html`<option${v === (spec.restart || 'no') ? raw(' selected') : raw('')}>${v}</option>`;
   return layout(`Edit ${name}`, ctx, html`
-<p><a href="/containers/${c.Id}">Back to ${name}</a></p>
+<p><a href="/containers/${urlId(c)}">Back to ${name}</a></p>
 <p>Saving recreates ${name} with these settings: it is stopped, a new container is made and started, and if the new one cannot start or stops within a few seconds, the old one is put back. The name and networks stay. Environment values are shown here so they can be edited.</p>
-<form method="post" action="/containers/${c.Id}/edit" class="stack">${csrfField(ctx)}
+<form method="post" action="/containers/${urlId(c)}/edit" class="stack">${csrfField(ctx)}
   <label>Image <input name="image" required value="${spec.image}"></label>
   <label class="check"><input type="checkbox" name="pull"> Pull the image first</label>
   <label>Command <input name="cmd" value="${spec.cmd ? quoteArgs(spec.cmd) : ''}" placeholder="empty: the image's own command"></label>

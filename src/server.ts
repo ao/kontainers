@@ -531,7 +531,7 @@ export function createHandler(d: Deps): Handler {
         try {
           const newId = await replaceContainer(docker, c, spec, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, allowedBindSources: binds }, 'saving the settings');
           d.autoUpdates?.recreated(name, newId);
-          back = `/containers/${encodeURIComponent(newId)}`;
+          back = `/containers/${encodeURIComponent(name)}`;
         } finally { d.autoUpdates?.busy.delete(name); }
         if (d.updates && v.image(spec.image)) await d.updates.check(spec.image).catch(() => {});
         return `Saved the settings of ${name}; it was recreated.`;
