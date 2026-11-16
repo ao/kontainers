@@ -148,6 +148,54 @@ test('add a second user, who can log in; the proxy page explains how to turn it 
   await expect(page.getByText('KONTAINERS_PROXY=1')).toBeVisible();
 });
 
+test('search, the Show filter and compose grouping on the Containers page', async ({ page, request }) => {
+  // Containers made straight through the socket proxy, the way docker compose would make them.
+  const api = 'http://docker-proxy:2375/v1.41';
+  const mk = async (name: string, labels: Record<string, string>, cmd: string[]) => {
+    expect((await request.post(`${api}/containers/create?name=${name}`, { data: { Image: 'busybox:1.36', Cmd: cmd, Labels: labels } })).status()).toBe(201);
+    expect((await request.post(`${api}/containers/${name}/start`)).status()).toBe(204);
+  };
+  await mk('shop-web-1', { 'com.docker.compose.project': 'shop' }, ['sleep', '600']);
+  await mk('shop-db-1', { 'com.docker.compose.project': 'shop' }, ['sleep', '600']);
+  await mk('lonely', {}, ['sh', '-c', 'exit 3']);
+  await expect.poll(async () => (await (await request.get(`${api}/containers/lonely/json`)).json()).State.Status).toBe('exited');
+  try {
+    await login(page);
+    const rows = page.locator('#containers tbody tr[data-name]:visible');
+    await expect(page.locator('tr.group', { hasText: 'compose project shop' })).toContainText('2 of 2 running');
+    await expect(page.getByText('1 needs attention')).toBeVisible();
+
+    await page.getByLabel('Search').fill('DB');
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toHaveAttribute('data-name', 'shop-db-1');
+    await expect(page.locator('tr.group', { hasText: 'not in a compose project' })).toBeHidden();
+    await page.getByLabel('Search').fill('nothing-is-called-this');
+    await expect(rows).toHaveCount(0);
+    await expect(page.locator('#nomatch')).toBeVisible();
+    await page.getByLabel('Search').fill('');
+    await expect(rows).toHaveCount(3);
+
+    await page.getByLabel('Show').selectOption('attention');
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toHaveAttribute('data-name', 'lonely');
+
+    // The same filter from the server, as the link and the Apply button give it.
+    await page.goto('/containers');
+    await page.getByRole('link', { name: '1 needs attention' }).click();
+    await expect(page).toHaveURL(/state=attention/);
+    await expect(rows).toHaveCount(1);
+    await page.getByLabel('Search').fill('');
+    await page.getByLabel('Show').selectOption('all');
+    await expect(rows).toHaveCount(3);
+    await page.getByLabel('Group').selectOption('none');
+    await page.getByRole('button', { name: 'Apply' }).click();
+    await expect(page.locator('tr.group')).toHaveCount(0);
+    await expect(page.getByText('compose project shop').first()).toBeVisible();
+  } finally {
+    for (const n of ['shop-web-1', 'shop-db-1', 'lonely']) await request.delete(`${api}/containers/${n}?force=1`);
+  }
+});
+
 test('no console errors and no inline script violations', async ({ page }) => {
   const errors: string[] = [];
   page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });

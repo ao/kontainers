@@ -67,6 +67,12 @@ form.stack label { display: grid; gap: .3rem; font-weight: 550; }
 form.stack label.check, label.check { display: flex; align-items: center; gap: .5rem; font-weight: 500; }
 form.row { display: flex; gap: .5rem; margin-bottom: 1.2rem; max-width: 36rem; }
 form.row input { flex: 1; }
+form.filters { display: flex; flex-wrap: wrap; align-items: end; gap: .6rem 1rem; margin-bottom: 1rem; }
+form.filters label { display: grid; gap: .25rem; font-size: .85rem; font-weight: 550; color: var(--muted); }
+form.filters input[type=search] { min-width: 16rem; }
+tr.group th { background: var(--ground); color: var(--ink, inherit); font-size: .9rem; padding-top: .8rem; }
+tr.group th small { color: var(--muted); font-weight: 500; margin-left: .4rem; }
+tr[data-attention] td:nth-child(3) .state { color: var(--rust); }
 input, select, textarea, button { font: inherit; color: inherit; }
 input, select, textarea { padding: .5rem .6rem; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); font-weight: 400; }
 input:focus, select:focus, textarea:focus { border-color: var(--focus); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 25%, transparent); }
@@ -166,6 +172,38 @@ document.addEventListener('submit', function (e) {
   }
   load();
   setInterval(function () { if (!gone && follow && follow.checked && !document.hidden) load(); }, 2000);
+})();
+(function () {
+  // Containers page: the search box and the Show select filter the rows as you type. Rows the
+  // server left out of a filter carry hidden, so clearing the box brings them back.
+  var q = document.getElementById('q'), table = document.getElementById('containers');
+  if (!q || !table || !q.form) return;
+  var form = q.form, nomatch = document.getElementById('nomatch');
+  function keep(r, t, st) {
+    if (r.getAttribute('data-search').indexOf(t) === -1) return false;
+    var s = r.getAttribute('data-state');
+    if (st === 'running') return s === 'running';
+    if (st === 'stopped') return s !== 'running' && s !== 'restarting';
+    if (st === 'attention') return r.hasAttribute('data-attention');
+    return true;
+  }
+  function apply() {
+    var t = q.value.trim().toLowerCase(), st = form.elements.state.value, any = false, total = 0, head = null, seen = false;
+    var rows = table.tBodies[0].rows;
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (r.classList.contains('group')) { if (head) head.hidden = !seen; head = r; seen = false; continue; }
+      if (!r.hasAttribute('data-search')) continue;
+      total++;
+      var ok = keep(r, t, st);
+      r.hidden = !ok;
+      if (ok) { any = true; seen = true; }
+    }
+    if (head) head.hidden = !seen;
+    if (nomatch) nomatch.hidden = any || !total;
+  }
+  q.addEventListener('input', apply);
+  form.elements.state.addEventListener('change', apply);
 })();
 `;
 

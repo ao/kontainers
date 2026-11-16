@@ -137,25 +137,105 @@ const hasNewer = (u: UpdateView | null, ref: string, imageId: string | undefined
 const updateBadge = (u: UpdateView | null, ref: string, imageId: string | undefined) =>
   hasNewer(u, ref, imageId) ? html`<small class="update">newer image available</small>` : '';
 
-export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = null, updates: UpdateView | null = null): string {
-  const rows = list.map(c => {
-    const name = (c.Names?.[0] || '').replace(/^\//, '');
-    const project = c.Labels?.['com.docker.compose.project'];
-    return html`<tr data-name="${name}" data-state="${c.State}">
-  <td><a href="/containers/${c.Id}">${name}</a>${project ? html`<small>compose project ${project}</small>` : ''}</td><td><span class="ref">${c.Image}</span>${updateBadge(updates, c.Image, c.ImageID)}</td>
+// The Containers page's search and filters, from its query string.
+export type StateFilter = 'all' | 'running' | 'stopped' | 'attention';
+export interface ListFilter { q: string; state: StateFilter; group: boolean }
+export const DEFAULT_FILTER: ListFilter = { q: '', state: 'all', group: true };
+
+export function parseFilter(params: URLSearchParams): ListFilter {
+  const state = params.get('state');
+  return {
+    q: (params.get('q') || '').trim().slice(0, 100),
+    state: state === 'running' || state === 'stopped' || state === 'attention' ? state : 'all',
+    group: params.get('group') !== 'none',
+  };
+}
+
+// Exit codes from a stop: 130 (SIGINT), 137 (SIGKILL, also after docker stop's timeout), 143 (SIGTERM).
+const STOP_CODES = new Set(['0', '130', '137', '143']);
+
+// A container someone should look at: restarting (a crash loop), dead, unhealthy, or exited with
+// an error code. OOM kills show up as 137 here, like a stop; the container's page says which.
+export function needsAttention(c: any): boolean {
+  if (c.State === 'restarting' || c.State === 'dead') return true;
+  if (/\(unhealthy\)/.test(c.Status || '')) return true;
+  if (c.State === 'exited') {
+    const m = /^Exited \((-?\d+)\)/.exec(c.Status || '');
+    return !!m && !STOP_CODES.has(m[1]);
+  }
+  return false;
+}
+
+const nameOf = (c: any) => String(c.Names?.[0] || '').replace(/^\//, '');
+const projectOf = (c: any): string => labelsOf(c)['com.docker.compose.project'] || '';
+// What the search box matches: name, image and compose project, without case.
+const searchText = (c: any) => `${nameOf(c)} ${c.Image || ''} ${projectOf(c)}`.toLowerCase();
+
+export function matchesFilter(c: any, f: ListFilter): boolean {
+  if (f.q && !searchText(c).includes(f.q.toLowerCase())) return false;
+  if (f.state === 'running') return c.State === 'running';
+  if (f.state === 'stopped') return c.State !== 'running' && c.State !== 'restarting';
+  if (f.state === 'attention') return needsAttention(c);
+  return true;
+}
+
+const filterQuery = (f: ListFilter, over: Partial<ListFilter> = {}) => {
+  const g = { ...f, ...over };
+  const p = new URLSearchParams();
+  if (g.q) p.set('q', g.q);
+  if (g.state !== 'all') p.set('state', g.state);
+  if (!g.group) p.set('group', 'none');
+  const s = p.toString();
+  return s ? `/containers?${s}` : '/containers';
+};
+
+export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = null, updates: UpdateView | null = null, f: ListFilter = DEFAULT_FILTER): string {
+  // Every container is rendered; the ones the filter leaves out carry `hidden`, so the page works
+  // without script, and the search box can widen the filter as well as narrow it.
+  const row = (c: any) => {
+    const name = nameOf(c);
+    const project = projectOf(c);
+    return html`<tr data-name="${name}" data-state="${c.State}" data-search="${searchText(c)}"${needsAttention(c) ? raw(' data-attention="1"') : raw('')}${matchesFilter(c, f) ? raw('') : raw(' hidden')}>
+  <td><a href="/containers/${c.Id}">${name}</a>${project && !f.group ? html`<small>compose project ${project}</small>` : ''}</td><td><span class="ref">${c.Image}</span>${updateBadge(updates, c.Image, c.ImageID)}</td>
   <td><span class="state ${c.State}">${c.State}</span><small>${c.Status}</small></td><td><span class="ref">${formatPorts(c.Ports)}</span></td>
   <td class="actions">${isSelf(c, me) ? selfNote(c, me) : containerActions(ctx, c.Id, name, c.State)}</td></tr>`;
-  });
+  };
+  const sorted = [...list].sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
+  const shown = sorted.filter(c => matchesFilter(c, f)).length;
+  let rows: Html[];
+  if (f.group) {
+    // Compose projects first, by name, then the containers that are in none.
+    const groups = new Map<string, any[]>();
+    for (const c of sorted) (groups.get(projectOf(c)) || groups.set(projectOf(c), []).get(projectOf(c))!).push(c);
+    const keys = [...groups.keys()].sort((a, b) => (a === '') !== (b === '') ? (a === '' ? 1 : -1) : a.localeCompare(b));
+    rows = keys.flatMap(k => {
+      const members = groups.get(k)!;
+      const up = members.filter(c => c.State === 'running').length;
+      const visible = members.some(c => matchesFilter(c, f));
+      return [html`<tr class="group" data-group="${k}"${visible ? raw('') : raw(' hidden')}><th colspan="5" scope="rowgroup">${k ? html`compose project ${k}` : 'not in a compose project'} <small>${up} of ${members.length} running</small></th></tr>`, ...members.map(row)];
+    });
+  } else rows = sorted.map(row);
+
   const running = list.filter(c => c.State === 'running').length;
+  const attention = list.filter(needsAttention).length;
   const newer = list.filter(c => hasNewer(updates, c.Image, c.ImageID)).length;
   const checked = updates
     ? html`<span class="muted">${newer ? `${newer} with a newer image; ` : ''}${updates.lastRun ? `checked for updates ${ago(updates.lastRun)}` : updates.scheduled ? 'not checked for updates yet' : 'update checks are off'}</span>
 ${post(ctx, '/updates/check', 'Check for updates')}`
     : '';
+  const opt = (v: string, label: string, cur: string) => html`<option value="${v}"${v === cur ? raw(' selected') : raw('')}>${label}</option>`;
+  const filters = list.length ? html`<form method="get" action="/containers" class="filters" role="search">
+<label>Search <input type="search" name="q" id="q" value="${f.q}" placeholder="name, image or project" autocomplete="off"></label>
+<label>Show <select name="state">${opt('all', 'all', f.state)}${opt('running', 'running', f.state)}${opt('stopped', 'stopped', f.state)}${opt('attention', 'needs attention', f.state)}</select></label>
+<label>Group <select name="group">${opt('project', 'by compose project', f.group ? 'project' : 'none')}${opt('none', 'none', f.group ? 'project' : 'none')}</select></label>
+<button>Apply</button>${f.q || f.state !== 'all' || !f.group ? html` <a href="/containers">Clear</a>` : ''}</form>` : '';
+  const empty = html`<tr><td colspan="5">No containers yet. <a href="/containers/new">Create one</a>, or start one with docker and it appears here.</td></tr>`;
   return layout('Containers', ctx, html`
-<div class="toolbar"><span class="muted">${running} of ${list.length} running</span><span class="spread"></span>${checked}<a class="button primary" href="/containers/new">New container</a></div>
-<table><thead><tr><th>Name</th><th>Image</th><th>State</th><th>Published ports</th><th></th></tr></thead>
-<tbody>${rows.length ? rows : html`<tr><td colspan="5">No containers yet. <a href="/containers/new">Create one</a>, or start one with docker and it appears here.</td></tr>`}</tbody></table>`);
+<div class="toolbar"><span class="muted">${running} of ${list.length} running${attention ? html`; <a href="${filterQuery(f, { state: 'attention' })}">${attention} ${attention === 1 ? 'needs' : 'need'} attention</a>` : ''}</span><span class="spread"></span>${checked}<a class="button primary" href="/containers/new">New container</a></div>
+${filters}
+<table id="containers"><thead><tr><th>Name</th><th>Image</th><th>State</th><th>Published ports</th><th></th></tr></thead>
+<tbody>${rows.length ? rows : empty}</tbody></table>
+<p class="muted" id="nomatch"${list.length && !shown ? raw('') : raw(' hidden')}>No container matches. <a href="/containers">Show all ${list.length}</a>.</p>`);
 }
 
 export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, updates: UpdateView | null = null): string {

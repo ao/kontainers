@@ -352,7 +352,7 @@ export function createHandler(d: Deps): Handler {
 
     if (m === 'GET') {
       if (p === '/') return redirect('/containers');
-      if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainers(), await self(), updateView()));
+      if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainers(), await self(), updateView(), views.parseFilter(url.searchParams)));
       if (p === '/containers/new') return page(views.newContainerPage(ctx(s), cfg.allowBindMounts));
       if ((r = /^\/containers\/([^/]+)$/.exec(p))) return page(views.containerPage(ctx(s), await docker.inspect(r[1]), await self(), updateView()));
       if ((r = /^\/api\/containers\/([^/]+)\/stats$/.exec(p))) {

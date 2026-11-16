@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Containers page: a search box (name, image or compose project) that filters as you type, a Show
+  filter (all, running, stopped, needs attention), and rows grouped by compose project with a
+  running count per project. "Needs attention" means restarting, dead, unhealthy, or exited with
+  an error code (not 0, 130, 137 or 143); the count links to the filter. Filters are in the URL
+  and work without script.
+
 ## 0.3.0
 
 - Update checks. Every 6 hours (`KONTAINERS_UPDATE_CHECK_HOURS`, `0` for never) and on "Check for
