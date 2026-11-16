@@ -16,6 +16,15 @@
   action's own outcome is shown with a note that it could not be recorded, logged-in users keep
   working, and the login page says the data volume is full. The activity entry's target is cut
   to 200 characters.
+- Fixed: removing, disabling or retargeting a proxy rule left its container on the proxy
+  network, in reach of every other target. Containers no enabled rule points at are now
+  disconnected (kontainers itself stays). The proxy network is made again if it is missing, for
+  example when the Docker API was not reachable at start, and the Proxy page says when it
+  cannot be.
+- Fixed: editing a rule into another rule's hostname and path gave "internal error"; HTTPS rules
+  for names over 230 characters are refused (Caddy's lock file name was too long, so the
+  certificate never came and the page blamed DNS). A wildcard rule is no longer shown as a link,
+  and the remove prompt names the path too.
 - Changed: only kontainers itself and the container that serves its Docker API (found from
   `DOCKER_HOST`, by name, compose service or address, and looked up again every 30 s) are
   protected from Stop, Restart, Remove and Update. Before, every service in kontainers' compose

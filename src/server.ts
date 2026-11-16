@@ -460,7 +460,7 @@ export function createHandler(d: Deps): Handler {
           cert: r.tls ? proxy.certificate(r.hostname) : null,
           refused: proxy.refusalFor(r.target_container),
         });
-        return page(views.proxyPage(ctx(s), list, { running: proxy.running, lastError: proxy.lastError }, status));
+        return page(views.proxyPage(ctx(s), list, { running: proxy.running, lastError: proxy.lastError, networkError: proxy.networkError }, status));
       }
       if ((r = /^\/proxy\/(\d+)\/edit$/.exec(p))) {
         const rule = rules.get(Number(r[1]));

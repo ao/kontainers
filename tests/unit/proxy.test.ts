@@ -161,7 +161,7 @@ describe('ProxyManager and protected targets', () => {
     s.create({ hostname: 'api.example.com', targetContainer: 'docker-proxy', targetPort: 2375, tls: false });
     s.create({ hostname: 'web.example.com', targetContainer: 'web', targetPort: 80, tls: false });
     await pm.reconcile();
-    expect(calls.disconnect).toEqual(['docker-proxy']);
+    expect(calls.disconnect).toEqual(['id0']); // docker-proxy, by ID
     expect(calls.connect).toEqual(['web']);
     expect(pm.refusalFor('docker-proxy')).toContain('Docker API');
     expect(pm.refusalFor('web')).toBeNull();
@@ -174,9 +174,73 @@ describe('ProxyManager and protected targets', () => {
 
   test('a rule to kontainers itself is not served, but kontainers stays on the network', async () => {
     const { pm, s, calls, config } = manager(['kontainers'], { kontainers: { reason: 'this is kontainers itself', self: true } });
+    pm.selfContainer = 'kontainers';
     s.create({ hostname: 'k.example.com', targetContainer: 'kontainers', targetPort: 8080, tls: false });
     await pm.reconcile();
     expect(calls.disconnect).toEqual([]);
     expect(config()).not.toContain('k.example.com');
+  });
+});
+
+describe('ProxyManager network upkeep', () => {
+  test('containers no enabled rule points at leave the proxy network; kontainers stays', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kontainers-pm-'));
+    const c = loadConfig({ KONTAINERS_PROXY: '1', KONTAINERS_DATA: dir, KONTAINERS_CADDY_BIN: '/nonexistent/caddy' });
+    const s = store();
+    const disconnected: string[] = [];
+    const net = { IPAM: { Config: [{ Subnet: '172.18.0.0/16' }] }, Containers: { aaa: { Name: 'web' }, bbb: { Name: 'old-target' }, ccc: { Name: 'off-target' }, ddd: { Name: 'kontainers' } } };
+    const docker = {
+      listContainers: async () => ['web', 'old-target', 'off-target', 'kontainers'].map(n => ({ Names: ['/' + n], State: 'running' })),
+      inspectNetwork: async () => net, connect: async () => {}, disconnect: async (_n: string, id: string) => { disconnected.push(id); },
+    };
+    const pm = new ProxyManager(c, s, docker as any);
+    pm.selfContainer = 'kontainers';
+    s.create({ hostname: 'web.example.net', targetContainer: 'web', targetPort: 80, tls: false });
+    s.create({ hostname: 'web2.example.net', targetContainer: 'web', targetPort: 81, tls: false });
+    const off = s.create({ hostname: 'off.example.net', targetContainer: 'off-target', targetPort: 80, tls: false });
+    s.setEnabled(off.id, false);
+    await pm.reconcile();
+    expect(disconnected.sort()).toEqual(['bbb', 'ccc']);
+  });
+
+  test('a missing proxy network is made again, and the page can say when it cannot be', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kontainers-pm-'));
+    const c = loadConfig({ KONTAINERS_PROXY: '1', KONTAINERS_DATA: dir, KONTAINERS_CADDY_BIN: '/nonexistent/caddy' });
+    const { DockerError } = await import('../../src/docker');
+    let exists = false, created = 0, up = false;
+    const docker = {
+      listContainers: async () => [],
+      inspectNetwork: async () => { if (!up) throw new DockerError('connect ECONNREFUSED', 502); if (!exists) throw new DockerError('network not found', 404); return { IPAM: { Config: [] }, Containers: {} }; },
+      createNetwork: async () => { created++; exists = true; return { Id: 'n' }; },
+      connect: async () => {}, disconnect: async () => {},
+    };
+    const pm = new ProxyManager(c, store(), docker as any);
+    await expect(pm.reconcile()).rejects.toThrow('ECONNREFUSED');
+    expect(pm.networkError).toContain('is not available');
+    up = true;
+    await pm.reconcile();
+    expect(created).toBe(1);
+    expect(pm.networkError).toBeNull();
+  });
+});
+
+describe('RuleStore edge cases', () => {
+  test('editing a rule into another rule\'s hostname and path is refused plainly', () => {
+    const s = store();
+    s.create({ hostname: 'shop.example.net', path: '/', targetContainer: 'web', targetPort: 80 });
+    const b = s.create({ hostname: 'plain.example.net', path: '/secure', targetContainer: 'api', targetPort: 80 });
+    expect(() => s.update(b.id, { hostname: 'shop.example.net', path: '/', targetContainer: 'api', targetPort: 80 })).toThrow('another rule already has this hostname and path');
+    expect(s.get(b.id)!.hostname).toBe('plain.example.net');
+  });
+  test('HTTPS hostnames longer than 230 characters are refused; plain HTTP may be longer', () => {
+    const s = store();
+    const long = Array.from({ length: 5 }, () => 'a'.repeat(50)).join('.') + '.net'; // 254 is too long for DNS too
+    const ok230 = 'b'.repeat(60) + '.' + 'c'.repeat(60) + '.' + 'd'.repeat(60) + '.' + 'e'.repeat(43) + '.net';
+    expect(ok230.length).toBe(230);
+    expect(() => s.create({ hostname: ok230, targetContainer: 'web', targetPort: 80 })).not.toThrow();
+    const over = 'f'.repeat(60) + '.' + 'g'.repeat(60) + '.' + 'h'.repeat(60) + '.' + 'i'.repeat(50) + '.net';
+    expect(() => s.create({ hostname: over, targetContainer: 'web', targetPort: 80 })).toThrow('over 230 characters');
+    expect(() => s.create({ hostname: over, targetContainer: 'web', targetPort: 80, tls: false })).not.toThrow();
+    expect(long.length).toBeGreaterThan(253);
   });
 });

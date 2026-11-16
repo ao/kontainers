@@ -39,6 +39,7 @@ const rules = new RuleStore(db);
 const proxy = new ProxyManager(cfg, rules, docker);
 // In a container the hostname is the container ID, unless --hostname changed it.
 const selfContainer = process.env.KONTAINERS_SELF_CONTAINER || (cfg.inContainer ? hostname() : undefined);
+proxy.selfContainer = selfContainer ?? null;
 const updates = new UpdateChecker(docker, cfg.updateCheckHours * 3600 * 1000);
 const notifier = new Notifier(db);
 const systemAudit = (action: string, target: string, result?: string) =>

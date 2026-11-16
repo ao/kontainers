@@ -405,7 +405,7 @@ function ruleState(r: Rule, st: RuleStatus): Html {
   return html`on${problems.length ? html`<br><small>${problems.map((p, i) => html`${i ? html`; ` : ''}${p}`)}</small>` : ''}`;
 }
 
-export function proxyPage(ctx: PageCtx, rules: Rule[], status: { running: boolean; lastError: string | null }, ruleStatus: (r: Rule) => RuleStatus = () => ({ target: null, cert: null })): string {
+export function proxyPage(ctx: PageCtx, rules: Rule[], status: { running: boolean; lastError: string | null; networkError?: string | null }, ruleStatus: (r: Rule) => RuleStatus = () => ({ target: null, cert: null })): string {
   if (!ctx.proxyEnabled) {
     return layout('Proxy', ctx, html`<p>The proxy is off. Start kontainers with <code>KONTAINERS_PROXY=1</code> and publish ports 80 and 443
 to route domains to containers with automatic HTTPS. See the README.</p>`);
@@ -413,13 +413,15 @@ to route domains to containers with automatic HTTPS. See the README.</p>`);
   const rows = rules.map(r => {
     const st = ruleStatus(r);
     const bad = r.enabled && (!!st.refused || st.target === 'missing' || (st.target && st.target !== 'running') || (r.tls && (!st.cert || st.cert.notAfter.getTime() < Date.now())));
-    return html`<tr data-state="${!r.enabled ? 'exited' : bad ? 'restarting' : 'running'}"><td><a href="${r.tls ? 'https' : 'http'}://${r.hostname}${r.path === '/' ? '' : r.path}">${r.tls ? 'https' : 'http'}://${r.hostname}${r.path === '/' ? '' : r.path}</a></td>
+    const addr = `${r.tls ? 'https' : 'http'}://${r.hostname}${r.path === '/' ? '' : r.path}`;
+    // A wildcard is not an address to visit.
+    return html`<tr data-state="${!r.enabled ? 'exited' : bad ? 'restarting' : 'running'}"><td class="addr">${r.hostname.startsWith('*') ? html`<span class="ref">${addr}</span>` : html`<a href="${addr}">${addr}</a>`}</td>
 <td><span class="ref">${r.target_container}:${r.target_port}</span></td><td>${ruleState(r, st)}</td>
 <td class="actions"><a class="button" href="/proxy/${r.id}/edit">Edit</a> ${post(ctx, `/proxy/${r.id}/toggle`, r.enabled ? 'Disable' : 'Enable')}
-${post(ctx, `/proxy/${r.id}/remove`, 'Remove', { confirm: `Remove the rule for ${r.hostname}?`, cls: 'danger' })}</td></tr>`;
+${post(ctx, `/proxy/${r.id}/remove`, 'Remove', { confirm: `Remove the rule for ${addr}?`, cls: 'danger' })}</td></tr>`;
   });
   return layout('Proxy', ctx, html`
-<div class="toolbar"><span class="status${status.running ? raw(' on') : raw('')}">Proxy ${status.running ? 'running' : 'not running'}</span>${status.lastError ? html`<span class="error">${status.lastError}</span>` : ''}</div>
+<div class="toolbar"><span class="status${status.running ? raw(' on') : raw('')}">Proxy ${status.running ? 'running' : 'not running'}</span>${status.lastError ? html`<span class="error">${status.lastError}</span>` : ''}${status.networkError ? html`<span class="error">${status.networkError}; kontainers tries again every 10 seconds</span>` : ''}</div>
 <table><thead><tr><th>Address</th><th>Target</th><th>State</th><th></th></tr></thead>
 <tbody>${rows.length ? rows : html`<tr><td colspan="4">No rules yet. Add one below to send a domain to a container.</td></tr>`}</tbody></table>
 <section class="add"><h2>Add a rule</h2>
