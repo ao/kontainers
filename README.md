@@ -67,13 +67,15 @@ What works, and is covered by the test suites below:
 
 - containers: list, inspect, create, start, stop, restart, unpause, remove (stopped containers
   only; kontainers never force-removes), logs (filter, 300 to 5000 lines, timestamps on or off,
-  download).) Commands are split with shell quoting
-  (`sh -c "echo hi; sleep 60"`) but no shell runs and nothing is expanded. The detail page shows
-  CPU, memory, network and process counts, refreshed every 5 seconds.
+  download). Commands are split with shell quoting (`sh -c "echo hi; sleep 60"`) but no shell
+  runs and nothing is expanded. The list has a search, a state filter including "needs
+  attention", and grouping by compose project. The detail page shows the command, ports,
+  restarts and health, and CPU, memory, network and process counts refreshed every 5 seconds.
 - update image, for containers created in kontainers: pull the image again and, if it changed,
   recreate the container with the same name, command, environment, ports, volumes, restart policy
-  and networks. The old container is stopped and set aside first and is put back if the new one
-  cannot be created or started. Compose containers are left to `docker compose pull && docker compose up -d`.
+  networks and volumes, anonymous ones included. The old container is stopped and set aside first
+  and is put back if the new one cannot be created or started or stops within 5 seconds. Compose
+  containers are left to `docker compose pull && docker compose up -d`.
 - edit settings, for containers created in kontainers: change the image, command, ports,
   environment, volumes or restart policy; saving recreates the container the same way, with the
   old one put back if the new one does not stay up. Bad input is refused before anything stops.
@@ -136,6 +138,15 @@ What kontainers does about it:
   There is no way to set privileged mode, capabilities, devices or host namespaces from the UI.
 - The proxy configuration is generated from validated hostnames, path prefixes, container names
   and ports. Caddy's admin API is a unix socket in the data directory, not a TCP port.
+- With the proxy on, kontainers' container shares a network with the proxy targets so Caddy
+  can reach them; the UI refuses connections from that network, so a compromised target cannot
+  reach the login page. Containers no enabled rule points at are taken off it. A rule cannot
+  point at kontainers itself or at the container serving its Docker API.
+- kontainers itself and the container serving its Docker API (the socket proxy) get no Stop,
+  Restart, Remove, Update or Edit, so the UI cannot cut itself off.
+- Every action, including failed ones and logins, is in the Activity log, with who and from where.
+- Notification URLs and tokens are stored in the database as given (only scheme and host are
+  shown); a backup holds them too.
 
 Use `compose.yaml`, which gives kontainers the Docker API through
 [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) rather than the socket
@@ -171,6 +182,40 @@ With `docker run`, mounting the socket directly:
 
 The image runs as an unprivileged user, so it needs the socket's group (`--group-add`). On
 Docker Desktop the socket is owned by root; use the compose file there.
+
+## Updates and notifications
+
+kontainers checks every 6 hours (`KONTAINERS_UPDATE_CHECK_HOURS`), and when you press Check for
+updates, which image each container's tag points at on its registry. It asks the Docker daemon,
+which uses its own registry logins and fetches only the manifest. Containers on an older image are
+marked on the list and on their page. A digest the registry never served counts as a local build,
+not as an older image.
+
+Containers created in kontainers can be updated automatically: tick "Update automatically" on the
+container's page, or when creating it. After a check finds a newer image, the container is
+recreated from it with the same settings, volumes and networks, and watched for
+`KONTAINERS_AUTOUPDATE_SETTLE` seconds (30); with a healthcheck, until it is healthy (up to
+`KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT`, 120 s). If it stops, restarts or turns unhealthy, the old
+container is put back and that image is held back until a newer one appears. Compose containers
+are left to `docker compose pull && docker compose up -d`.
+
+Notification targets are set on the Settings page, with a Send test button:
+
+- a webhook gets a JSON POST:
+
+      {"event": "exit", "title": "web stopped", "message": "web (nginx:1.27) stopped with exit code 1.",
+       "container": "web", "at": "2026-11-16T12:00:00.000Z", "text": "...", "content": "..."}
+
+  `text` and `content` repeat the title and message, for receivers that read one of those fields
+  (Slack-style and Discord-style incoming webhooks; not tested against those services).
+- an ntfy topic URL (`https://ntfy.sh/your-topic`, or your own server) gets the message as plain
+  text with `Title` and `Tags` headers.
+
+A token, if given, is sent as `Authorization: Bearer`. The events: a newer image (once per image),
+an automatic update and its result, a container that stopped on its own (a crash, an error exit or
+out of memory; not a stop someone asked for, and not exit code 0; once per 10 minutes per
+container), a container that turned unhealthy and healthy again, and an HTTPS rule with no
+certificate 15 minutes after it was added or with one that expires in under 14 days (once a day).
 
 ## Proxy rules and certificates
 
@@ -260,6 +305,12 @@ the host.
     scripts/test.sh e2e        # Playwright (Chromium) against the image
     scripts/test.sh proxy      # proxy rules and certificates against Pebble, inside dind
     scripts/test.sh renewal    # Pebble issues 90-second certificates; Caddy must renew them itself
+    scripts/test.sh compose    # the README compose instructions, verbatim, inside dind
+
+The image suite also runs the image with its data volume on a 1 MB tmpfs and fills it; the browser
+suite runs axe-core (WCAG 2 A and AA) on every page at desktop and phone size. Set
+`DIND_MIRROR=https://mirror.gcr.io` when many runs share one address, against Docker Hub's
+anonymous pull limit; CI does.
 
 `KEEP=1` leaves the test environment running for inspection.
 
