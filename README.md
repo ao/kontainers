@@ -72,8 +72,8 @@ What works, and is covered by the test suites below:
   attention", and grouping by compose project. The detail page shows the command, ports,
   restarts and health, and CPU, memory, network and process counts refreshed every 5 seconds.
 - update image, for containers created in kontainers: pull the image again and, if it changed,
-  recreate the container with the same name, command, environment, ports, volumes, restart policy
-  networks and volumes, anonymous ones included. The old container is stopped and set aside first
+  recreate the container with the same name, command, environment, ports, restart policy,
+  networks and volumes (anonymous ones included). The old container is stopped and set aside first
   and is put back if the new one cannot be created or started or stops within 5 seconds. Compose
   containers are left to `docker compose pull && docker compose up -d`.
 - edit settings, for containers created in kontainers: change the image, command, ports,
