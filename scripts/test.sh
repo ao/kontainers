@@ -20,6 +20,9 @@ cd "$(dirname "$0")/.."
 SUITE=${1:-all}
 BUN_IMAGE=${BUN_IMAGE:-oven/bun:1.4.4}
 CACHE=${CACHE_VOLUME:-kontainers-test-cache}
+# The image under test on the outer daemon. Inside dind it is always kontainers:test. A tag per run lets
+# several runs share one daemon (scripts/ptest.sh runs every suite at once).
+IMG=${TEST_IMAGE:-kontainers:test}
 ID=$$
 NET=kontainers-test-$ID
 DIND=kontainers-dind-$ID
@@ -73,14 +76,14 @@ fi
 # No -p: test containers join the app's network namespace and use 127.0.0.1. Sets TOKEN.
 start_app() {
   if ! docker inspect "$SOCKPROXY" >/dev/null 2>&1; then
-    docker build -q -t kontainers:test . >/dev/null
+    docker build -q -t "$IMG" . >/dev/null
     # The proxy reads dind's socket from the shared volume.
     docker run -d --name "$SOCKPROXY" --network "$NET" --network-alias docker-proxy \
       -v "$SOCKVOL":/var/run -e CONTAINERS=1 -e IMAGES=1 -e NETWORKS=1 -e VOLUMES=1 -e POST=1 \
       -e ALLOW_START=1 -e ALLOW_STOP=1 -e ALLOW_RESTARTS=1 -e DISTRIBUTION=1 tecnativa/docker-socket-proxy:0.3.0 >/dev/null
   fi
   docker rm -f "$APP" >/dev/null 2>&1 || true
-  docker run -d --name "$APP" --network "$NET" -e DOCKER_HOST=tcp://docker-proxy:2375 kontainers:test >/dev/null
+  docker run -d --name "$APP" --network "$NET" -e DOCKER_HOST=tcp://docker-proxy:2375 "$IMG" >/dev/null
   i=0
   until docker logs "$APP" 2>&1 | grep -q 'setup token'; do
     i=$((i + 1)); [ $i -gt 30 ] && { docker logs "$APP"; exit 1; }; sleep 1
@@ -116,9 +119,10 @@ CHALL=ghcr.io/letsencrypt/pebble-challtestsrv:latest
 #   ACME_VALIDITY  lifetime in seconds of Pebble's default-profile certificates (default: its own, 90 days)
 #   ACME_ENV       extra "-e NAME=value" options for kontainers
 acme_stack() {
-  docker build -q -t kontainers:test . >/dev/null
+  docker build -q -t "$IMG" . >/dev/null
   docker pull -q "$PEBBLE" >/dev/null && docker pull -q "$CHALL" >/dev/null
-  docker save kontainers:test "$PEBBLE" "$CHALL" | D load -q >/dev/null
+  docker save "$IMG" "$PEBBLE" "$CHALL" | D load -q >/dev/null
+  [ "$IMG" = kontainers:test ] || D tag "$IMG" kontainers:test
 
   D network create kt >/dev/null
   # A clean /work: in "all", proxy and renewal share one dind, and a second `docker cp tests`
@@ -211,10 +215,10 @@ fi
 
 if [ "$SUITE" = all ] || [ "$SUITE" = compose ]; then
   # The README's compose instructions, verbatim, inside dind (so "127.0.0.1" is dind's loopback).
-  docker image inspect kontainers:test >/dev/null 2>&1 || docker build -q -t kontainers:test . >/dev/null
-  docker save kontainers:test | docker exec -i "$DIND" docker load -q >/dev/null
+  docker image inspect "$IMG" >/dev/null 2>&1 || docker build -q -t "$IMG" . >/dev/null
+  docker save "$IMG" | docker exec -i "$DIND" docker load -q >/dev/null
   # Under the tag compose.yaml names, so compose runs this build instead of pulling.
-  docker exec "$DIND" docker tag kontainers:test "$(sed -n 's/^ *image: *\(ataiva\/kontainers:[^ ]*\).*/\1/p' compose.yaml | head -1)"
+  docker exec "$DIND" docker tag "$IMG" "$(sed -n 's/^ *image: *\(ataiva\/kontainers:[^ ]*\).*/\1/p' compose.yaml | head -1)"
   docker exec "$DIND" mkdir -p /compose
   docker cp compose.yaml "$DIND:/compose/compose.yaml"
   C() { docker exec -w /compose "$DIND" docker compose "$@"; }
@@ -263,7 +267,7 @@ if [ "$SUITE" = screenshots ]; then
   ls -l docs/screenshots
 
   echo "--- measurements ($(uname -m) host, Docker $(docker version -f '{{.Server.Version}}'), $(docker info -f '{{.NCPU}} CPUs, {{.MemTotal}} bytes'))"
-  echo "image size (uncompressed, docker image inspect): $(docker image inspect kontainers:test -f '{{.Size}}') bytes"
+  echo "image size (uncompressed, docker image inspect): $(docker image inspect "$IMG" -f '{{.Size}}') bytes"
   sleep 30
   echo "idle memory with Caddy and 2 HTTPS rules, $(docker exec "$DIND" docker ps -q | wc -l | tr -d ' ') containers on the host (docker stats, after 30 s idle):"
   docker exec "$DIND" docker stats --no-stream --format '  {{.Name}} {{.MemUsage}} CPU {{.CPUPerc}}'
