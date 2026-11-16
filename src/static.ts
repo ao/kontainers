@@ -46,6 +46,7 @@ th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid var(-
 /* Long names, references and addresses carry <wbr> break points (views.ts brk); IDs stay whole. */
 code.id { white-space: nowrap; }
 .phone-only { display: none; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 /* A table that is still wider than the screen (a very long name) scrolls inside its own box, not
    the whole page. */
 .scroll { overflow-x: auto; max-width: 100%; }
@@ -254,6 +255,7 @@ document.addEventListener('submit', function (e) {
   }
   mark();
   window.addEventListener('resize', mark);
+  window.kontainersMarkScroll = mark;
 })();
 (function () {
   // Containers page: the search box and the Show select filter the rows as you type. Rows the
@@ -283,6 +285,7 @@ document.addEventListener('submit', function (e) {
     }
     if (head) head.hidden = !seen;
     if (nomatch) nomatch.hidden = any || !total;
+    if (window.kontainersMarkScroll) window.kontainersMarkScroll();
     // The filter goes into the address, so Back from a container returns to the same list.
     if (window.history && history.replaceState) {
       var u = new URL(location.href);

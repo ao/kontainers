@@ -99,12 +99,12 @@ export class Registries {
     return Buffer.from(json).toString('base64').replace(/\+/g, '-').replace(/\//g, '_');
   }
 
-  // The time always moves on. keepUnlessFailed: a result (an update check that worked) that
-  // replaces only a failure or nothing, so the result of the last pull or save stays readable.
+  // keepUnlessFailed: a result (an update check that worked) that replaces only a failure or
+  // nothing, so the last pull or save stays readable; its time moves only with it.
   noteResult(registry: string, result: string, keepUnlessFailed = false): void {
     try {
-      this.db.query(`UPDATE registry_logins SET last_used_at = ?, last_result = CASE WHEN ? = 1 AND last_result IS NOT NULL AND last_result NOT LIKE 'failed%' THEN last_result ELSE ? END WHERE registry = ?`)
-        .run(this.now(), keepUnlessFailed ? 1 : 0, result.slice(0, 300), registry);
+      this.db.query(`UPDATE registry_logins SET last_used_at = ?, last_result = ? WHERE registry = ? AND (? = 0 OR last_result IS NULL OR last_result LIKE 'failed%')`)
+        .run(this.now(), result.slice(0, 300), registry, keepUnlessFailed ? 1 : 0);
     } catch (e) { writeFailed(e, 'could not save the result of a registry login'); }
   }
 

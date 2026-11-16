@@ -143,8 +143,15 @@ export class AutoUpdates {
           continue;
         }
         if (this.busy.has(name)) continue; // a person is updating or editing it
-        // An interrupted update of it is not tidied up yet.
-        if ((() => { try { return this.opts.journal?.all().some(r => r.name === name) ?? false; } catch { return false; } })()) continue;
+        // An interrupted update of it is not tidied up yet. Once its old container is gone (removed
+        // by hand after a "check by hand" note) and the replacement has the name, it is settled.
+        const open = (() => { try { return this.opts.journal?.all().find(r => r.name === name) ?? null; } catch { return null; } })();
+        if (open) {
+          if (list.some(x => String(x.Id) === open.old_id) || c.Labels?.['kontainers.replaces'] !== open.old_id) continue;
+          try { this.opts.journal?.end(name); } catch { /* looked at again next time */ }
+          this.recreated(name, c.Id);
+          continue;
+        }
         // The image that failed is what the tag points at here, and the registry has nothing newer.
         if (row.held_image && st?.imageId === row.held_image && st.status !== 'available') continue;
         if (this.opts.signal?.aborted) return;

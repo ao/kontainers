@@ -156,7 +156,8 @@ export class Docker {
     if (this.unix) init.unix = this.unix;
     let res: Response;
     try {
-      res = await fetch(`${this.base}${API}/events?since=${sinceSec.toFixed(3)}&filters=${filters}`, init);
+      // Rounded up to the millisecond, so the last event seen is not delivered again.
+      res = await fetch(`${this.base}${API}/events?since=${(Math.ceil(sinceSec * 1000) / 1000).toFixed(3)}&filters=${filters}`, init);
     } catch (e) {
       throw new DockerError(`Docker daemon unreachable: ${unreachable(e as Error)}`, 502);
     }

@@ -27,8 +27,8 @@ one container that does the everyday part of both:
   If the new one does not stay up, the old one is put back.
 
 It is also careful about the host, because access to Docker is root on it. It listens on
-127.0.0.1, has no default password, never force-removes a running container, and will not stop or
-remove itself. The Security section below lists every default.
+127.0.0.1, has no default password, never force-removes a container you made (only a
+replacement it is rolling back), and will not stop or remove itself. The Security section below lists every default.
 
 ![HTTPS proxy rules with their certificate status](docs/screenshots/proxy.png)
 
@@ -66,8 +66,8 @@ editing, clean up and an activity log. Releases 0.1.x accepted any login and mus
 What works, and is covered by the test suites below:
 
 - containers: list, inspect, create, start, stop, restart, unpause, remove (stopped containers
-  only; kontainers never force-removes), logs (filter, 300 to 5000 lines, timestamps on or off,
-  download). Commands are split with shell quoting (`sh -c "echo hi; sleep 60"`) but no shell
+  only; kontainers never force-removes them), logs (filter, 300 to 5000 lines, timestamps on or
+  off, download). Commands are split with shell quoting (`sh -c "echo hi; sleep 60"`) but no shell
   runs and nothing is expanded. The list has a search, a state filter including "needs
   attention", and grouping by compose project. The detail page shows the command, ports,
   restarts and health, and CPU, memory, network and process counts refreshed every 5 seconds.
@@ -277,7 +277,7 @@ briefly unavailable; Caddy did not renew certificates in a process that started 
 | `KONTAINERS_ACME_CA` | Let's Encrypt | ACME directory URL |
 | `KONTAINERS_ACME_CA_ROOT` | unset | PEM file to trust for the ACME directory (for a private CA) |
 | `KONTAINERS_ACME_RENEW_CHECK` | unset (Caddy's default) | Seconds between Caddy's checks for certificates due for renewal, 1 to 86400; HTTPS rules only |
-| `KONTAINERS_SELF_CONTAINER` | the container's hostname | ID or name of kontainers' own container, if `--hostname` changed it; kontainers and its compose project get no Stop, Remove or Update |
+| `KONTAINERS_SELF_CONTAINER` | the container's hostname | ID or name of kontainers' own container, if `--hostname` changed it; kontainers and the container serving its Docker API get no Stop, Remove or Update |
 | `KONTAINERS_UPDATE_CHECK_HOURS` | `6` | Hours between update checks, 0 to 720; `0` turns scheduled checks off ("Check for updates" still works) |
 | `KONTAINERS_AUTOUPDATE_SETTLE` | `30` | Seconds a new container is watched after an automatic update, 0 to 600 |
 | `KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT` | `120` | Seconds to wait for "healthy" after settling, for images with a healthcheck, 0 to 3600 |

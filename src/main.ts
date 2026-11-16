@@ -55,7 +55,11 @@ if (db.degraded) {
   setDegraded('kontainers could not use its database\'s shared-memory file at start (the data volume was full, or the file in it is not writable), so it runs with the database locked to itself: the backup command does not work until it restarts. Free space on the data volume (/data in the image) and restart kontainers.');
 }
 const auth = new Auth(db);
-const docker = new Docker(cfg.dockerHost, { allowBindMounts: cfg.allowBindMounts });
+let docker: Docker;
+try { docker = new Docker(cfg.dockerHost, { allowBindMounts: cfg.allowBindMounts }); } catch (e) {
+  console.error(`kontainers: DOCKER_HOST "${cfg.dockerHost}" is not a Docker address (unix:///path, tcp://host:port or http://host:port): ${(e as Error).message}`);
+  process.exit(1);
+}
 const registries = new Registries(db, join(cfg.dataDir, 'registry.key'));
 docker.auth = { header: ref => registries.header(ref), registry: registryOf, saved: r => registries.has(r), noteResult: (r, res, over) => registries.noteResult(r, res, over) };
 const journal = new ReplaceJournal(db);

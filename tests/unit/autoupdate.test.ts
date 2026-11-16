@@ -838,10 +838,66 @@ describe('QA round 6', () => {
     const rows = [{ name: 'web', old_id: c.Id, was_running: 1, at: Date.now() - 1000 }];
     const journal = { begin() {}, end(n: string) { rows.splice(rows.findIndex(r => r.name === n), 1); }, all: () => rows };
     const r = await recoverInterrupted(d as any, () => {}, journal, undefined, false, { held: (n, img) => { held.push(img); return true; } });
-    expect(r[0].text).toContain('stopped by a signal (exit code 137)');
+    expect(r[0].text).toContain('stopped with exit code 137, which a docker stop or Docker going down also gives');
     expect(r[0].text).toContain('check them by hand');
     expect(d.containers.has(now)).toBe(true);
     expect(d.containers.has(c.Id)).toBe(true);
     expect(held).toEqual([]);
+  });
+});
+
+describe('final review', () => {
+  const rowsOf = (rows: any[]) => ({ begin() {}, end(n: string) { const i = rows.findIndex(r => r.name === n); if (i >= 0) rows.splice(i, 1); }, all: () => rows.map(r => ({ at: Date.now() - 1000, ...r })) });
+  const pair = (d: FakeDocker, oldState: any, newState: any) => {
+    const id = d.run('web', 'app:1');
+    const c = d.find(id);
+    c.Id = 'abcdef12' + c.Id.slice(8); d.containers.delete(id); d.containers.set(c.Id, c);
+    c.Name = '/web-old-abcdef12'; c.State = oldState;
+    const now = d.run('web', 'app:1');
+    d.find(now).Config.Labels['kontainers.replaces'] = c.Id;
+    d.find(now).State = newState;
+    return { old: c.Id, now };
+  };
+  test('an old container Docker started again since the first look is stopped before the replacement is judged', async () => {
+    const { d } = setup();
+    const { old } = pair(d, { Running: false, Status: 'exited' }, { Running: true, Status: 'running' });
+    const list = d.listContainers.bind(d);
+    let calls = 0;
+    // The first look sees it stopped; then the daemon starts it (restart policy at boot).
+    d.listContainers = async () => { calls++; if (calls === 2) d.find(old).State = { Running: true, Status: 'running' }; return list(); };
+    const stops: string[] = [];
+    const stop = d.stop.bind(d);
+    d.stop = async (i: string) => { stops.push(i); return stop(i); };
+    const { recoverInterrupted } = await import('../../src/update');
+    await recoverInterrupted(d as any, () => {}, rowsOf([{ name: 'web', old_id: old, was_running: 1 }]), undefined, false, { watch: async () => ({ problem: null }) });
+    expect(stops[0]).toBe(old);
+  });
+  test('long ago, a running replacement that has restarted: both are left', async () => {
+    const { d } = setup();
+    const { old, now } = pair(d, { Running: false, Status: 'exited' }, { Running: true, Status: 'running' });
+    d.find(now).RestartCount = 2;
+    const { recoverInterrupted } = await import('../../src/update');
+    const r = await recoverInterrupted(d as any, () => {}, rowsOf([{ name: 'web', old_id: old, was_running: 1, at: Date.now() - 86400_000 }]), undefined, false, { windowMs: 60_000 });
+    expect(r[0].text).toContain('check them by hand');
+    expect(d.containers.has(old)).toBe(true);
+  });
+  test('a replacement that exited 0 after a daemon restart (nothing remembered) is not blamed', async () => {
+    const { d } = setup();
+    const { old, now } = pair(d, { Running: false, Status: 'exited' }, { Running: false, Status: 'exited', ExitCode: 0 });
+    d.pastEvents = async () => [];
+    const held: string[] = [];
+    const { recoverInterrupted } = await import('../../src/update');
+    const r = await recoverInterrupted(d as any, () => {}, rowsOf([{ name: 'web', old_id: old, was_running: 1 }]), undefined, false, { held: (n, i) => { held.push(i); return true; } });
+    expect(r[0].text).toContain('check them by hand');
+    expect(d.containers.has(now)).toBe(true);
+    expect(held).toEqual([]);
+  });
+  test('a paused replacement: both are left', async () => {
+    const { d } = setup();
+    const { old } = pair(d, { Running: false, Status: 'exited' }, { Running: true, Paused: true, Status: 'paused' });
+    const { recoverInterrupted } = await import('../../src/update');
+    const r = await recoverInterrupted(d as any, () => {}, rowsOf([{ name: 'web', old_id: old, was_running: 1 }]));
+    expect(r[0].text).toContain('paused by someone');
+    expect(d.containers.has(old)).toBe(true);
   });
 });

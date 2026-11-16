@@ -342,16 +342,20 @@ export async function replaceContainer(docker: Docker, c: any, spec: CreateSpec,
 //   ----------------------------      -----------------------------------------------------------
 //   kontainers was rolling back       the old one comes back
 //   dead, or created (never started)  the old one comes back (a created one is kept, the old one
-//     and the old one was running     going, only for an edit of a stopped container that got all
-//                                     its networks)
+//     and the old one was running     going, only when the old one was stopped too and the new one
+//                                     got all its networks)
 //   removing                          tried again later
 //   running, update began recently    watched as the update would have: good, it stays and the
 //                                     old one goes; bad, the old one comes back, image held back
-//   restarting or exited, recently    the old one comes back, image held back (exited: unless
-//                                     someone stopped it, then it stays as they left it)
-//   paused                            it stays as someone left it
-//   running, long ago                 looked at once: no sign of trouble, it stays; trouble, both
-//                                     are left for a look by hand
+//   restarting, recently              the old one comes back, image held back
+//   exited, recently                  someone stopped it: it stays as they left it; the old one
+//                                     was stopped too: it stays; a stop's exit code (0, 130, 137,
+//                                     143) that the daemon cannot explain: both are left for a look
+//                                     by hand; any other: the old one comes back, the image held
+//                                     back only if the daemon remembers no stop of it
+//   paused                            both are left for a look by hand
+//   running, long ago                 looked at once: no sign of trouble, it stays; any sign (it
+//                                     restarted, is unhealthy, stopped), both are left by hand
 //   restarting or exited, long ago    both are left for a look by hand
 // The old container is stopped first only while its replacement runs (the two must not share the
 // data), and started again only if it was running.
@@ -359,9 +363,9 @@ export async function replaceContainer(docker: Docker, c: any, spec: CreateSpec,
 // (after it began, or while kontainers was rolling back): started again.
 // Without a journal entry (another kontainers on this host may be in the middle of its own update,
 // or the entry could not be written), only "nothing has the name" is acted on.
-// A journal entry is crossed out only once its name is settled; anything else comes back with
-// retry set, and on the final attempt as a note to check by hand (the entry kept for the next
-// start). take(name): the name's lock, or null while a replacement of it runs now.
+// A journal entry is crossed out only once its name is settled; a look by hand keeps it (the next
+// start settles it once one container is gone); anything else comes back with retry set, and on
+// the final attempt as a note to check by hand (the entry kept for the next start). take(name): the name's lock, or null while a replacement of it runs now.
 // kept(name, id): the container that stays under the name. more: watch(id) watches a running
 // replacement; held(name, image) holds an image back (false if not opted in); windowMs: how recent
 // an update counts as recent; report(r): each outcome as it is reached; signal: shutdown.
@@ -384,7 +388,9 @@ export async function recoverInterrupted(docker: Docker, kept: (name: string, id
   const later = (base: string, text: string) => push(final
     ? { name: base, trouble: true, text: `${text}; kontainers gave up trying for now (it looks again at its next start), so check them by hand` }
     : { name: base, trouble: true, retry: true, text: `${text}; kontainers tries again shortly` });
-  const byHand = (base: string, text: string) => push({ name: base, trouble: true, text: `${text}; both are left as they are, so check them by hand` });
+  // Names whose old container this tidy-up stopped (it ran beside its replacement).
+  const stoppedOld = new Set<string>();
+  const byHand = (base: string, text: string) => push({ name: base, trouble: true, text: `${text}; both are left${stoppedOld.has(base) ? ' (the old one stopped, so the two do not share data)' : ' as they are'}, so check them by hand; automatic updates of it wait until one of them is gone` });
   const runs = (st: string) => st === 'running' || st === 'restarting' || st === 'paused';
 
   const first = await docker.listContainers();
@@ -404,15 +410,16 @@ export async function recoverInterrupted(docker: Docker, kept: (name: string, id
       if (!row) return;
       const now = first.find(x => nameOf(x) === base);
       const c = first.find(x => asideOf(x) && String(x.Id) === row.old_id);
-      if (c && now && now.Labels?.['kontainers.replaces'] === c.Id && runs(now.State) && runs(c.State)) await docker.stop(c.Id);
+      if (c && now && now.Labels?.['kontainers.replaces'] === c.Id && runs(now.State) && runs(c.State)) { await docker.stop(c.Id); stoppedOld.add(base); }
     } catch { /* judged below */ } finally { release(); }
   }));
 
   // Then every name at once: a watch of one replacement does not hold up the others.
-  await Promise.allSettled([...bases].map(async base => {
+  const settledAll = await Promise.allSettled([...bases].map(async base => {
     const release = take(base);
     if (!release) {
-      if (readRows().some(r => r.name === base)) later(base, `${base} is being updated or edited now, so its interrupted update was not looked at`);
+      // At the final attempt nothing is said: the entry stays for the next start.
+      if (!final && readRows().some(r => r.name === base)) later(base, `${base} is being updated or edited now, so its interrupted update was not looked at`);
       return;
     }
     let row: ReturnType<typeof readRows>[number] | null = null;
@@ -431,8 +438,14 @@ export async function recoverInterrupted(docker: Docker, kept: (name: string, id
           // not get to start it: started again. One stopped since, by someone, stays stopped.
           const finished = Date.parse((await docker.inspect(now.Id))?.State?.FinishedAt || '') || 0;
           if (row.rollback || (finished >= row.at - 5000 && finished <= row.at + 120_000)) {
-            await docker.start(now.Id);
-            push({ name: base, trouble: false, text: `started ${base} again: kontainers stopped while ${base} was stopped for an update or edit` });
+            try {
+              await docker.start(now.Id);
+              push({ name: base, trouble: false, text: `started ${base} again: kontainers stopped while ${base} was stopped for an update or edit` });
+            } catch (e) {
+              // Nothing is set aside to protect: at the end the entry goes, so Edit can fix it.
+              if (!final) throw e;
+              push({ name: base, trouble: true, text: `could not start ${base} again after an interrupted update or edit (${(e as Error).message}); start it, or change its settings with Edit settings` });
+            }
           }
         } else if (now && now.Labels?.['kontainers.replaces'] === row.old_id) {
           kept(base, now.Id); // the replacement finished; only the journal entry was left
@@ -459,6 +472,9 @@ export async function recoverInterrupted(docker: Docker, kept: (name: string, id
       if (now.Labels?.['kontainers.replaces'] !== c.Id) { later(base, `${name} and ${base} both exist, and ${base} is not the container that replaced it`); return; }
       if (now.State === 'removing') { later(base, `${name} and ${base} both exist, and Docker is still removing ${base}`); return; }
 
+      // Docker may have started the old one since the first look (a reboot starts restart-policy
+      // containers alongside kontainers): never two copies on the same data while judging.
+      if (runs(c.State) && runs(now.State)) { await docker.stop(c.Id); stoppedOld.add(base); }
       const recent = Date.now() - row.at < (more.windowMs ?? 10 * 60_000);
       // keep: the replacement stays and the old one goes; back: the old one comes back.
       let verdict: { keep: string } | { back: string; hold: boolean } | null = null;
@@ -471,7 +487,7 @@ export async function recoverInterrupted(docker: Docker, kept: (name: string, id
           const missing = Object.keys(c.NetworkSettings?.Networks || {}).filter(n => !(n in (now.NetworkSettings?.Networks || {})));
           verdict = missing.length ? { back: `before the new container joined ${missing.join(', ')}`, hold: false } : { keep: `the new ${base} is stopped, as ${base} was` };
         }
-      } else if (now.State === 'paused') verdict = { keep: `the new ${base} was paused by someone and is left as it is` };
+      } else if (now.State === 'paused') { byHand(base, `${name} and ${base} both exist, and the new ${base} was paused by someone`); return; }
       else if (now.State === 'running') {
         if (recent && more.watch) {
           const w = await more.watch(now.Id);
@@ -479,7 +495,7 @@ export async function recoverInterrupted(docker: Docker, kept: (name: string, id
           else verdict = { keep: w.note ? `the new ${base} ${w.note.replace(/^it /, '')}` : `the new ${base} was watched after the restart and works` };
         } else {
           const p = settleProblem(await docker.inspect(now.Id));
-          if (p && /unhealthy|restarting/.test(p)) { byHand(base, `${name} and ${base} both exist; the update began a while ago and ${p}`); return; }
+          if (p) { byHand(base, `${name} and ${base} both exist; the update began a while ago and ${p}`); return; }
           verdict = { keep: `the new ${base} ran unwatched since the update began, so check that it works` };
         }
       } else if (now.State === 'restarting' || now.State === 'exited') {
@@ -489,13 +505,14 @@ export async function recoverInterrupted(docker: Docker, kept: (name: string, id
           const purpose = await stoppedOnPurposeSince(docker, now.Id, row.at);
           const info = await docker.inspect(now.Id);
           const code = Number(info?.State?.ExitCode ?? -1);
+          // Codes a stop gives (0, 130 for SIGINT, 137 SIGKILL, 143 SIGTERM) when it was not for memory.
+          const stopCode = [0, 130, 137, 143].includes(code) && !info?.State?.OOMKilled;
           if (purpose === true) verdict = { keep: `the new ${base} was stopped by someone and is left as it is` };
           else if (!wasRunning) verdict = { keep: `the new ${base} is stopped, as ${base} was` };
-          // Ended by SIGTERM or SIGKILL without running out of memory: a docker stop or a daemon
-          // that went down, which the daemon may no longer remember (it keeps 256 events, none from
-          // before a restart). Not a reason to put the old one back or blame the image.
-          else if ((code === 137 || code === 143) && !info?.State?.OOMKilled) { byHand(base, `${name} and ${base} both exist; the new ${base} was stopped by a signal (exit code ${code}), by someone or by Docker going down`); return; }
-          // Held back only when the daemon could say that nobody stopped it.
+          // A stop by someone or by Docker going down, which the daemon may no longer remember: not
+          // a reason to put the old one back or to blame the image.
+          else if (stopCode && (purpose === null || code === 137 || code === 143)) { byHand(base, `${name} and ${base} both exist; the new ${base} stopped with exit code ${code}, which a docker stop or Docker going down also gives`); return; }
+          // Held back only when the daemon remembers the container and no stop of it.
           else verdict = { back: `and the new container then stopped (${now.Status || `exit code ${code}`})`, hold: purpose === false };
         }
       }
@@ -523,23 +540,29 @@ export async function recoverInterrupted(docker: Docker, kept: (name: string, id
       // Held only for a container that is updated automatically; otherwise its tag now points at
       // the image that failed, and Update image would try it again.
       const after = !verdict.hold || !changed ? '' : isHeld ? '; that image is held back' : '; its tag now points at the image that failed, so Update image would try that image again';
-      push({ name: base, trouble: verdict.hold, text: `put ${base} back: an update or edit was interrupted ${verdict.back}${after}` });
+      push({ name: base, trouble: verdict.hold || now.State !== 'created', text: `put ${base} back: an update or edit was interrupted ${verdict.back}${after}` });
       endRow(base);
     } catch (e) {
+      if (e instanceof Interrupted) { if (row) push({ name: base, trouble: false, retry: true, text: `kontainers is shutting down, so the interrupted update of ${base} is finished at its next start` }); return; }
       if (row) later(base, `could not tidy up ${base} yet: ${(e as Error).message}`);
       else push({ name: base, trouble: true, text: `could not tidy up ${base}: ${(e as Error).message}` });
     } finally {
       release();
     }
   }));
+  for (const r of settledAll) if (r.status === 'rejected') console.error(`kontainers: tidy-up failed: ${(r.reason as Error)?.message ?? r.reason}`);
   return out;
 }
 
 // A stop or kill of this container (with a signal that ends a process) since `sinceMs`, as far as
 // the daemon still remembers.
-// null when the daemon could not be asked.
+// null when it cannot be known: the daemon could not be asked, or it does not remember the
+// container being created or started (it keeps 256 events, and none from before a restart), so
+// the absence of a stop says nothing.
 async function stoppedOnPurposeSince(docker: Docker, id: string, sinceMs: number): Promise<boolean | null> {
-  const evs = await docker.pastEvents({ container: [id], event: ['kill', 'stop'] }, sinceMs / 1000 - 60, Date.now() / 1000 + 1).catch(() => null);
+  const evs = await docker.pastEvents({ container: [id], event: ['create', 'start', 'kill', 'stop'] }, sinceMs / 1000 - 60, Date.now() / 1000 + 1).catch(() => null);
   if (!evs) return null;
-  return evs.some(e => (e.Action ?? e.status) === 'stop' || endingSignal(e.Actor?.Attributes?.signal));
+  const act = (e: any) => e.Action ?? e.status;
+  if (evs.some(e => act(e) === 'stop' || (act(e) === 'kill' && endingSignal(e.Actor?.Attributes?.signal)))) return true;
+  return evs.some(e => act(e) === 'create' || act(e) === 'start') ? false : null;
 }
