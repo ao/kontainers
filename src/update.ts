@@ -433,9 +433,16 @@ export async function recoverInterrupted(docker: Docker, kept: (name: string, id
 
       if (!c) {
         if (!row) return;
-        if (now && String(now.Id) === row.old_id && wasRunning && now.State !== 'running') {
+        // A container that carries the replacement label for this entry, under any name: someone
+        // sorted it out by hand (renamed the new one, say), so nothing is started.
+        const replacementElsewhere = list.some(x => x.Labels?.['kontainers.replaces'] === row!.old_id && String(x.Id) !== String(now?.Id));
+        const fresh = Date.now() - row.at < (more.windowMs ?? 10 * 60_000) + 10 * 60_000;
+        // A rollback that did not get to start it is finished however long kontainers was down;
+        // otherwise only while the entry is fresh (an entry left for a look by hand can be days old).
+        if (now && String(now.Id) === row.old_id && wasRunning && now.State !== 'running' && !replacementElsewhere && (row.rollback || fresh)) {
           // Stopped for the replacement and then nothing more, or put back by a rollback that did
-          // not get to start it: started again. One stopped since, by someone, stays stopped.
+          // not get to start it: started again, only while the entry is fresh. One stopped since,
+          // by someone, stays stopped.
           const finished = Date.parse((await docker.inspect(now.Id))?.State?.FinishedAt || '') || 0;
           if (row.rollback || (finished >= row.at - 5000 && finished <= row.at + 120_000)) {
             try {
@@ -478,8 +485,8 @@ export async function recoverInterrupted(docker: Docker, kept: (name: string, id
       const recent = Date.now() - row.at < (more.windowMs ?? 10 * 60_000);
       // keep: the replacement stays and the old one goes; back: the old one comes back.
       let verdict: { keep: string } | { back: string; hold: boolean } | null = null;
-      if (row.rollback) verdict = { back: 'while kontainers was putting the old container back', hold: false };
-      else if (now.State === 'dead') verdict = { back: 'and the new container is dead', hold: false };
+      if (now.State === 'dead') verdict = { back: 'and the new container is dead', hold: false };
+      else if (row.rollback) verdict = { back: 'while kontainers was putting the old container back', hold: false };
       else if (now.State === 'created') {
         if (wasRunning) verdict = { back: 'before the new container started', hold: false };
         else {

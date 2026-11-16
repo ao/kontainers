@@ -901,3 +901,25 @@ describe('final review', () => {
     expect(d.containers.has(old)).toBe(true);
   });
 });
+
+describe('QA round 7', () => {
+  test('an old entry, or a replacement running under another name, never starts the old container', async () => {
+    const { d } = setup();
+    const id = d.run('rcu', 'app:1');
+    d.find(id).State = { Running: false, Status: 'exited', ExitCode: 0, FinishedAt: new Date(Date.now() - 1000).toISOString() };
+    const other = d.run('rcu-new', 'app:1');
+    d.find(other).Config.Labels['kontainers.replaces'] = id;
+    const rows = [{ name: 'rcu', old_id: id, was_running: 1, rollback: 1, at: Date.now() - 2000 }];
+    const journal = { begin() {}, end(n: string) { rows.splice(rows.findIndex(r => r.name === n), 1); }, all: () => rows };
+    const { recoverInterrupted } = await import('../../src/update');
+    await recoverInterrupted(d as any, () => {}, journal);
+    expect(d.find('rcu').State.Running).toBe(false);
+    expect(rows).toHaveLength(0);
+    // Days old (left for a look by hand), no replacement anywhere: not started either.
+    const id2 = d.run('rcs', 'app:1');
+    d.find(id2).State = { Running: false, Status: 'exited', ExitCode: 0, FinishedAt: new Date(Date.now() - 3 * 86400_000 + 1000).toISOString() };
+    rows.push({ name: 'rcs', old_id: id2, was_running: 1, rollback: 0, at: Date.now() - 3 * 86400_000 });
+    await recoverInterrupted(d as any, () => {}, journal);
+    expect(d.find('rcs').State.Running).toBe(false);
+  });
+});

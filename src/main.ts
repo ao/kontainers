@@ -136,12 +136,13 @@ async function tidyUp(attempt: number): Promise<void> {
     // Each outcome is reported as it is reached, not when the slowest watch ends.
     const report = (r: Recovered) => {
       if (r.retry) { again = true; if (attempt === 1) console.log(`kontainers: ${r.text}`); return; }
-      const key = `${r.name}\n${r.text}`;
+      // Counts in the text (restarts) change between attempts; the same outcome is said once.
+      const key = `${r.name}\n${r.text.replace(/\d+/g, '#')}`;
       if (tidied.has(key)) return;
       tidied.add(key);
       console.log(`kontainers: ${r.text}`);
       try { systemAudit('recover', r.name, `${r.trouble ? 'failed' : 'note'}: ${r.text}`.slice(0, 500)); } catch { /* the log line is enough */ }
-      void notifier.send({ kind: 'autoupdate', title: `Interrupted update of ${r.name}`, message: `${r.text}.`, container: r.name }, `recover:${r.name}:${Bun.hash(r.text).toString(36)}`, 3600_000).catch(() => {});
+      void notifier.send({ kind: 'autoupdate', title: `Interrupted update of ${r.name}`, message: `${r.text}.`, container: r.name }, `recover:${r.name}:${Bun.hash(r.text.replace(/\d+/g, '#')).toString(36)}`, 3600_000).catch(() => {});
     };
     await recoverInterrupted(docker, kept, journal, n => autoUpdates.busy.take(n), attempt >= TIDY_ATTEMPTS, { watch, held, windowMs, report, signal: stopping.signal });
     autoUpdates.adopt(await docker.listContainers());

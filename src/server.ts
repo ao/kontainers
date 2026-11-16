@@ -561,11 +561,12 @@ export function createHandler(d: Deps): Handler {
       }
       if ((r = /^\/proxy\/(\d+)\/edit$/.exec(p))) {
         const rule = rules.get(Number(r[1]));
-        return rule ? page(views.editRulePage(ctx(s), rule)) : text('rule not found\n', 404);
+        return rule ? page(views.editRulePage(ctx(s), rule)) : page(views.layout('Not found', ctx(s), views.html`<p>There is no proxy rule ${r[1]}. <a href="/proxy">Proxy</a></p>`), 404);
       }
       if (p === '/settings') return page(views.settingsPage(ctx(s), auth.listUsers(), s.user.id, d.notifier ? d.notifier.list() : null, d.events ? { connected: d.events.connected, error: d.events.lastError } : null, d.registries ? d.registries.list() : null));
       if (p === '/api/backup') { safeAudit(s, 'backup', null, ip); return backup(); }
-      return text('not found\n', 404);
+      if (p.startsWith('/api/')) return text('not found\n', 404);
+      return page(views.layout('Not found', ctx(s), views.html`<p>There is no page at this address. <a href="/containers">Containers</a></p>`), 404);
     }
 
     if (m !== 'POST') return text('method not allowed\n', 405, { allow: 'GET, POST' });
