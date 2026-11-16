@@ -182,6 +182,13 @@ test('search, the Show filter and compose grouping on the Containers page', asyn
     await expect(rows).toHaveCount(1);
     await expect(rows.first()).toHaveAttribute('data-name', 'shop-db-1');
     await expect(page.locator('tr.group', { hasText: 'not in a compose project' })).toBeHidden();
+    // The filter is in the address, so Back from a container returns to the same list.
+    await expect(page).toHaveURL(/\?q=DB$/);
+    await rows.first().getByRole('link', { name: 'shop-db-1' }).click();
+    await expect(page).toHaveURL(/\/containers\/shop-db-1$/);
+    await page.goBack();
+    await expect(page.getByLabel('Search')).toHaveValue('DB');
+    await expect(rows).toHaveCount(1);
     await page.getByLabel('Search').fill('nothing-is-called-this');
     await expect(rows).toHaveCount(0);
     await expect(page.locator('#nomatch')).toBeVisible();
@@ -204,6 +211,16 @@ test('search, the Show filter and compose grouping on the Containers page', asyn
     await page.getByRole('button', { name: 'Apply' }).click();
     await expect(page.locator('tr.group')).toHaveCount(0);
     await expect(page.getByText('compose project shop').first()).toBeVisible();
+
+    // A compose project's containers stopped and started together from its header.
+    await page.goto('/containers');
+    const shop = page.locator('tr.group', { hasText: 'compose project shop' });
+    page.once('dialog', d => d.accept());
+    await shop.getByRole('button', { name: 'Stop all' }).click();
+    await expect(page.getByRole('status')).toContainText('Stopped 2 of 2 containers of shop.');
+    await expect(page.locator('tr.group', { hasText: 'compose project shop' })).toContainText('0 of 2 running');
+    await page.locator('tr.group', { hasText: 'compose project shop' }).getByRole('button', { name: 'Start all' }).click();
+    await expect(page.getByRole('status')).toContainText('Started 2 of 2 containers of shop.');
   } finally {
     for (const n of ['shop-web-1', 'shop-db-1', 'lonely']) await request.delete(`${api}/containers/${n}?force=1`);
   }
