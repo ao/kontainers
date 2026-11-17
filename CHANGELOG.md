@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1
+
+- The image stores the Caddy binary once. 0.4.0 copied it in and then gave it the capability to
+  bind ports 80 and 443 in a second layer, which holds a full copy: the download is about 17 MB
+  smaller (on arm64, 101 MB against 118.5 MB, measured as the compressed image).
+- The 0.4.0 notes below said its download was about 17 MB larger than 0.3.0's; it was 36 MB larger
+  (82.5 to 118.5 MB on arm64, 85.0 to 120.5 MB on amd64), 16.5 MB of it the copy above.
+
 ## 0.4.0
 
 Automatic updates with rollback, notifications, Edit settings, registry logins, Clean up, an

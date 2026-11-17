@@ -2,13 +2,16 @@
 FROM caddy:2.11.8 AS caddy
 
 FROM oven/bun:1.4.4-slim
-RUN apt-get update \
+# Caddy runs as the unprivileged "bun" user and only needs to bind 80 and 443. It is copied in and
+# given that capability in one step: done in two, the image held the 47 MB binary twice (setcap
+# rewrites the file in a layer of its own).
+RUN --mount=type=bind,from=caddy,source=/usr/bin/caddy,target=/tmp/caddy \
+    apt-get update \
  && apt-get install -y --no-install-recommends libcap2-bin \
- && rm -rf /var/lib/apt/lists/*
-COPY --from=caddy /usr/bin/caddy /usr/bin/caddy
-# Caddy runs as the unprivileged "bun" user and only needs to bind 80 and 443.
-RUN setcap cap_net_bind_service=+ep /usr/bin/caddy \
+ && install -m 755 /tmp/caddy /usr/bin/caddy \
+ && setcap cap_net_bind_service=+ep /usr/bin/caddy \
  && apt-get purge -y libcap2-bin && apt-get autoremove -y \
+ && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /data && chown bun:bun /data
 
 WORKDIR /app

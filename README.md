@@ -36,12 +36,13 @@ replacement it is rolling back), and will not stop or remove itself. The Securit
 
 Memory and start time were measured on the 0.4.0 release candidate, on an EC2 m7g.4xlarge (arm64,
 16 vCPUs, Ubuntu 24.04, Docker 29.9.3), by `scripts/test.sh screenshots` in three runs. The download
-size is the published 0.3.0 image's; 0.4 moves to a newer Bun base image that is about 17 MB larger
-compressed (oven/bun 1.3.1-slim is 67.8 MB on Docker Hub for arm64, 1.4.4-slim is 85.3 MB).
+size is the published 0.4.0 image's. It is 36 MB more than 0.3.0's: the Bun base image grew by 16 MB
+(oven/bun 1.4.4-slim against 1.3.1-slim), Caddy and Debian by 4 MB, and 0.4.0 stored the Caddy
+binary twice (16.5 MB), which 0.4.1 fixes.
 
 | | |
 |---|---|
-| Download | 82.5 MB (arm64) and 85.0 MB (amd64) for 0.3.0, compressed layers on Docker Hub |
+| Download | 118.5 MB (arm64) and 120.5 MB (amd64) for 0.4.0, compressed layers on Docker Hub; about 17 MB less from 0.4.1 |
 | Memory at idle | 30 to 34 MiB, with Caddy serving two HTTPS rules and four other containers on the host (`docker stats` after 30 s, three runs) |
 | Start | 239 to 299 ms from `docker start` to a healthy `/healthz` (fifteen starts over three runs) |
 
