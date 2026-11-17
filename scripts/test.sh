@@ -13,13 +13,17 @@
 #   scripts/test.sh screenshots  not a test: regenerates docs/screenshots/ and prints measured
 #                              image size, startup time and idle memory (not part of "all")
 #
-# Env: BUN_IMAGE (default oven/bun:1.4.4, the image's Bun), CACHE_VOLUME (default kontainers-test-cache)
+# Env: BUN_IMAGE (default oven/bun:1.4.4, the image's Bun), CACHE_VOLUME (default kontainers-test-cache),
+#      DIND_MIRROR (a registry mirror for the test daemons, e.g. https://mirror.gcr.io, against Docker Hub's pull limit)
 set -eu
 
 cd "$(dirname "$0")/.."
 SUITE=${1:-all}
 BUN_IMAGE=${BUN_IMAGE:-oven/bun:1.4.4}
 CACHE=${CACHE_VOLUME:-kontainers-test-cache}
+# The image under test on the outer daemon. Inside dind it is always kontainers:test. A tag per run lets
+# several runs share one daemon (scripts/ptest.sh runs every suite at once).
+IMG=${TEST_IMAGE:-kontainers:test}
 ID=$$
 NET=kontainers-test-$ID
 DIND=kontainers-dind-$ID
@@ -38,7 +42,7 @@ cleanup() {
 start_dind() {
   # TLS off is safe here: the daemon is reachable only on this private network and publishes no port.
   docker run -d --privileged --name "$DIND" --network "$NET" --network-alias dind \
-    -v "$SOCKVOL":/var/run -e DOCKER_TLS_CERTDIR= docker:28-dind \
+    -v "$SOCKVOL":/var/run -e DOCKER_TLS_CERTDIR= docker:28-dind ${DIND_MIRROR:+--registry-mirror=$DIND_MIRROR} \
     --host=tcp://0.0.0.0:2375 --host=unix:///var/run/docker.sock >/dev/null
   i=0
   until docker exec "$DIND" docker version >/dev/null 2>&1; do
@@ -71,16 +75,17 @@ fi
 
 # A fresh app container from the image, Docker API through the socket proxy as in compose.yaml.
 # No -p: test containers join the app's network namespace and use 127.0.0.1. Sets TOKEN.
+# $1: more docker run options for the app container.
 start_app() {
   if ! docker inspect "$SOCKPROXY" >/dev/null 2>&1; then
-    docker build -q -t kontainers:test . >/dev/null
+    docker build -q -t "$IMG" . >/dev/null
     # The proxy reads dind's socket from the shared volume.
     docker run -d --name "$SOCKPROXY" --network "$NET" --network-alias docker-proxy \
       -v "$SOCKVOL":/var/run -e CONTAINERS=1 -e IMAGES=1 -e NETWORKS=1 -e VOLUMES=1 -e POST=1 \
       -e ALLOW_START=1 -e ALLOW_STOP=1 -e ALLOW_RESTARTS=1 -e DISTRIBUTION=1 tecnativa/docker-socket-proxy:0.3.0 >/dev/null
   fi
   docker rm -f "$APP" >/dev/null 2>&1 || true
-  docker run -d --name "$APP" --network "$NET" -e DOCKER_HOST=tcp://docker-proxy:2375 kontainers:test >/dev/null
+  docker run -d --name "$APP" --network "$NET" -e DOCKER_HOST=tcp://docker-proxy:2375 ${1:-} "$IMG" >/dev/null
   i=0
   until docker logs "$APP" 2>&1 | grep -q 'setup token'; do
     i=$((i + 1)); [ $i -gt 30 ] && { docker logs "$APP"; exit 1; }; sleep 1
@@ -95,6 +100,11 @@ if [ "$SUITE" = all ] || [ "$SUITE" = image ]; then
     -e KONTAINERS_TEST_URL=http://127.0.0.1:8080 -e KONTAINERS_TEST_SETUP_TOKEN="$TOKEN" \
     -e KONTAINERS_TEST_SOCKET_PROXY=tcp://docker-proxy:2375 \
     "$BUN_IMAGE" bun test --timeout 120000 tests/image
+  # The same image with a data volume that fills up: 1 MB of tmpfs, owned by the image's user.
+  start_app "--tmpfs /data:rw,size=1m,mode=0700,uid=$(docker run --rm --entrypoint id "$IMG" -u)"
+  docker run --rm --network "container:$APP" -v "$CACHE":/cache -v "$PWD":/app -w /app \
+    -e KONTAINERS_TEST_URL=http://127.0.0.1:8080 -e KONTAINERS_TEST_SETUP_TOKEN="$TOKEN" \
+    "$BUN_IMAGE" bun test --timeout 180000 tests/diskfull
 fi
 
 if [ "$SUITE" = all ] || [ "$SUITE" = e2e ]; then
@@ -116,9 +126,11 @@ CHALL=ghcr.io/letsencrypt/pebble-challtestsrv:latest
 #   ACME_VALIDITY  lifetime in seconds of Pebble's default-profile certificates (default: its own, 90 days)
 #   ACME_ENV       extra "-e NAME=value" options for kontainers
 acme_stack() {
-  docker build -q -t kontainers:test . >/dev/null
+  docker build -q -t "$IMG" . >/dev/null
   docker pull -q "$PEBBLE" >/dev/null && docker pull -q "$CHALL" >/dev/null
-  docker save kontainers:test "$PEBBLE" "$CHALL" | D load -q >/dev/null
+  docker save "$IMG" "$PEBBLE" "$CHALL" | D load -q >/dev/null
+  [ "$IMG" = kontainers:test ] || D tag "$IMG" kontainers:test
+  [ -z "${KIMG:-}" ] || D tag kontainers:test "$KIMG"
 
   D network create kt >/dev/null
   # A clean /work: in "all", proxy and renewal share one dind, and a second `docker cp tests`
@@ -141,7 +153,7 @@ acme_stack() {
     -e DOCKER_HOST=unix:///var/run/docker.sock -e KONTAINERS_PROXY=1 \
     -e KONTAINERS_HTTP_PORT=5002 -e KONTAINERS_HTTPS_PORT=5001 \
     -e KONTAINERS_ACME_CA=https://pebble:14000/dir -e KONTAINERS_ACME_CA_ROOT=/etc/pebble-ca.pem \
-    -e KONTAINERS_ACME_EMAIL=ci@kontainers-ci.dev -e KONTAINERS_PROXY_RECONCILE_MS=2000 ${ACME_ENV:-} kontainers:test >/dev/null
+    -e KONTAINERS_ACME_EMAIL=ci@kontainers-ci.dev -e KONTAINERS_PROXY_RECONCILE_MS=2000 ${ACME_ENV:-} "${KIMG:-kontainers:test}" >/dev/null
   docker exec "$DIND" chmod 644 /tmp/pebble.minica.pem
   D cp /tmp/pebble.minica.pem kontainers:/etc/pebble-ca.pem
   D start kontainers >/dev/null
@@ -211,10 +223,10 @@ fi
 
 if [ "$SUITE" = all ] || [ "$SUITE" = compose ]; then
   # The README's compose instructions, verbatim, inside dind (so "127.0.0.1" is dind's loopback).
-  docker image inspect kontainers:test >/dev/null 2>&1 || docker build -q -t kontainers:test . >/dev/null
-  docker save kontainers:test | docker exec -i "$DIND" docker load -q >/dev/null
+  docker image inspect "$IMG" >/dev/null 2>&1 || docker build -q -t "$IMG" . >/dev/null
+  docker save "$IMG" | docker exec -i "$DIND" docker load -q >/dev/null
   # Under the tag compose.yaml names, so compose runs this build instead of pulling.
-  docker exec "$DIND" docker tag kontainers:test "$(sed -n 's/^ *image: *\(ataiva\/kontainers:[^ ]*\).*/\1/p' compose.yaml | head -1)"
+  docker exec "$DIND" docker tag "$IMG" "$(sed -n 's/^ *image: *\(ataiva\/kontainers:[^ ]*\).*/\1/p' compose.yaml | head -1)"
   docker exec "$DIND" mkdir -p /compose
   docker cp compose.yaml "$DIND:/compose/compose.yaml"
   C() { docker exec -w /compose "$DIND" docker compose "$@"; }
@@ -239,7 +251,8 @@ fi
 # container created in kontainers, proxy rules with Pebble certificates) and measures the image.
 if [ "$SUITE" = screenshots ]; then
   PWIMG=mcr.microsoft.com/playwright:v1.56.1-noble
-  acme_stack
+  # Under its release name, as a reader would see it on their own host.
+  KIMG="ataiva/kontainers:$(sed -n 's/.*"version": "\(.*\)".*/\1/p' package.json)" acme_stack
   docker image inspect "$PWIMG" >/dev/null 2>&1 || docker pull -q "$PWIMG" >/dev/null
   docker exec "$DIND" mkdir -p /work/shots-src
   docker cp scripts/screenshots/. "$DIND:/work/shots-src/"
@@ -263,7 +276,7 @@ if [ "$SUITE" = screenshots ]; then
   ls -l docs/screenshots
 
   echo "--- measurements ($(uname -m) host, Docker $(docker version -f '{{.Server.Version}}'), $(docker info -f '{{.NCPU}} CPUs, {{.MemTotal}} bytes'))"
-  echo "image size (uncompressed, docker image inspect): $(docker image inspect kontainers:test -f '{{.Size}}') bytes"
+  echo "image size (uncompressed, docker image inspect): $(docker image inspect "$IMG" -f '{{.Size}}') bytes"
   sleep 30
   echo "idle memory with Caddy and 2 HTTPS rules, $(docker exec "$DIND" docker ps -q | wc -l | tr -d ' ') containers on the host (docker stats, after 30 s idle):"
   docker exec "$DIND" docker stats --no-stream --format '  {{.Name}} {{.MemUsage}} CPU {{.CPUPerc}}'

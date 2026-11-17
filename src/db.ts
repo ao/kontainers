@@ -37,16 +37,81 @@ export const MIGRATIONS: string[] = [
      target TEXT,
      ip TEXT
    );`,
+  // 2: v0.4.0: notifications and automatic updates
+  `CREATE TABLE notify_targets (
+     id INTEGER PRIMARY KEY,
+     kind TEXT NOT NULL CHECK (kind IN ('webhook', 'ntfy')),
+     url TEXT NOT NULL,
+     token TEXT,
+     events TEXT NOT NULL,
+     created_at INTEGER NOT NULL,
+     last_at INTEGER,
+     last_result TEXT
+   );
+   CREATE TABLE notify_sent (
+     key TEXT PRIMARY KEY,
+     at INTEGER NOT NULL
+   );
+   CREATE TABLE auto_update (
+     container TEXT PRIMARY KEY,
+     container_id TEXT NOT NULL,
+     created_at INTEGER NOT NULL,
+     last_at INTEGER,
+     last_result TEXT,
+     held_image TEXT
+   );
+   ALTER TABLE audit_log ADD COLUMN result TEXT;
+   CREATE INDEX audit_log_at ON audit_log (at);`,
+  // 3: v0.4.0: registry logins (secret: AES-256-GCM, key in registry.key beside the database)
+  `CREATE TABLE registry_logins (
+     id INTEGER PRIMARY KEY,
+     registry TEXT NOT NULL UNIQUE,
+     username TEXT NOT NULL,
+     secret BLOB NOT NULL,
+     created_at INTEGER NOT NULL,
+     last_used_at INTEGER,
+     last_result TEXT
+   );`,
+  // 4: v0.4.0: replacements in progress, so a restart in the middle of one can finish it
+  `CREATE TABLE replacing (
+     name TEXT PRIMARY KEY,
+     old_id TEXT NOT NULL,
+     was_running INTEGER NOT NULL,
+     at INTEGER NOT NULL
+   );`,
+  // 5: v0.4.0: a replacement being rolled back
+  `ALTER TABLE replacing ADD COLUMN rollback INTEGER NOT NULL DEFAULT 0;`,
 ];
 
-export function openDb(dataDir: string): Database {
+// degraded: opened without the shared-memory file, because the data volume had no room for it.
+export function openDb(dataDir: string): Database & { degraded?: string } {
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const file = join(dataDir, 'kontainers.db');
-  const db = new Database(file, { create: true, strict: true });
-  try { chmodSync(file, 0o600); } catch { /* not fatal on odd filesystems */ }
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
-  migrate(db);
-  return db;
+  const open = (exclusive: boolean) => {
+    const db = new Database(file, { create: true, strict: true });
+    try {
+      try { chmodSync(file, 0o600); } catch { /* not fatal on odd filesystems */ }
+      // In exclusive locking mode, set before WAL is first used, SQLite keeps the WAL index in
+      // memory and never needs the -shm file, which a full volume cannot grow.
+      // The wait for a lock first, so a second process (kontainers backup) waits instead of failing.
+      db.exec('PRAGMA busy_timeout = 5000;');
+      if (exclusive) db.exec('PRAGMA locking_mode = EXCLUSIVE;');
+      db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+      migrate(db);
+      // SQLite can fall back to a read-only shared-memory file it could not open for writing; then
+      // every write fails later. Taking the write lock once finds that out now.
+      db.exec('BEGIN IMMEDIATE; ROLLBACK;');
+      return db;
+    } catch (e) { db.close(); throw e; }
+  };
+  try {
+    return open(false);
+  } catch (e) {
+    if (!/SHMSIZE|SHMOPEN|SHMMAP|READONLY|readonly database|disk I\/O error|database or disk is full|SQLITE_FULL|ENOSPC/i.test(`${(e as { code?: string }).code ?? ''} ${(e as Error).message}`)) throw e;
+    const db: Database & { degraded?: string } = open(true);
+    db.degraded = `${(e as Error).message}`;
+    return db;
+  }
 }
 
 export function schemaVersion(db: Database): number {

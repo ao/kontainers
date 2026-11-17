@@ -142,7 +142,33 @@ describe.skipIf(!URL_)('proxy with ACME', () => {
       return x.status === 200 ? x.text() : null;
     }, 30000);
     expect(body).toContain('hello-again');
-    expect(await c.page('/proxy')).not.toContain('no container named web');
+    await until('the page to stop reporting the missing target', async () => (!(await c.page('/proxy')).includes('no container named web') ? true : null), 15000);
+  }, 60000);
+
+  test('a rule whose target port has nothing listening says so', async () => {
+    expect((await c.submit('/containers', { image: 'busybox:1.36', name: 'deaf', start: 'on', cmd: 'sleep 600' })).error).toBe('');
+    expect((await c.submit('/proxy', { hostname: 'deaf.test', path: '/', targetContainer: 'deaf', targetPort: '8000' })).error).toBe('');
+    await until('the port note', async () => ((await c.page('/proxy')).includes('nothing answers on port 8000 of deaf (connection refused)') ? true : null), 30000);
+    const page = await c.page('/proxy');
+    const id = /<tr[^>]*>(?:(?!<\/tr>)[\s\S])*deaf\.test(?:(?!<\/tr>)[\s\S])*?action="\/proxy\/(\d+)\/remove"/.exec(page)?.[1];
+    expect((await c.submit(`/proxy/${id}/remove`, {})).error).toBe('');
+    await fetch('http://docker/v1.41/containers/deaf?force=1', { method: 'DELETE', unix: '/var/run/docker.sock' } as RequestInit);
+  }, 60000);
+
+  test('a container leaves the proxy network when its last rule is removed', async () => {
+    const sock = (method: string, path: string, body?: unknown) => fetch(`http://docker/v1.41${path}`,
+      { method, unix: '/var/run/docker.sock', headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined } as RequestInit);
+    const onNet = async () => Object.values(((await (await sock('GET', '/networks/kontainers-proxy')).json()) as any).Containers || {}).map((x: any) => x.Name);
+    expect((await c.submit('/containers', { image: 'busybox:1.36', name: 'lonely', start: 'on', cmd: 'sleep 600' })).error).toBe('');
+    const added = await c.submit('/proxy', { hostname: 'lonely.test', path: '/', targetContainer: 'lonely', targetPort: '80' });
+    expect(added.error).toBe('');
+    expect(await onNet()).toContain('lonely');
+    const ruleId = /<tr[^>]*>(?:(?!<\/tr>)[\s\S])*lonely\.test(?:(?!<\/tr>)[\s\S])*?action="\/proxy\/(\d+)\/remove"/.exec(added.body)?.[1];
+    expect(ruleId).toBeTruthy();
+    expect((await c.submit(`/proxy/${ruleId}/remove`, {})).error).toBe('');
+    await until('lonely to leave the network', async () => !(await onNet()).includes('lonely') || null);
+    expect(await onNet()).toContain('kontainers');
+    await sock('DELETE', '/containers/lonely?force=1');
   }, 60000);
 
   test('a rule for a container that does not exist is refused and not saved', async () => {

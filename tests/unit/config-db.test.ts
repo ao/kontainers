@@ -88,3 +88,21 @@ describe('db', () => {
     expect(schemaVersion(copy)).toBe(MIGRATIONS.length);
   });
 });
+
+describe('opening the database when its shared-memory file cannot be made', () => {
+  test('it still opens (falling back to exclusive mode where SQLite refuses), instead of failing to start', async () => {
+    const { mkdtempSync, mkdirSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { tmpdir } = await import('node:os');
+    const { openDb } = await import('../../src/db');
+    const dir = mkdtempSync(join(tmpdir(), 'kdb-'));
+    openDb(dir).close();
+    // A directory where the -shm file goes: SQLite cannot open it, as on a full volume it cannot grow it.
+    mkdirSync(join(dir, 'kontainers.db-shm'));
+    const db = openDb(dir);
+    expect(db.degraded).toBeTruthy();
+    db.query('CREATE TABLE IF NOT EXISTS t (x)').run();
+    expect((db.query('PRAGMA user_version').get() as any).user_version).toBeGreaterThan(0);
+    db.close();
+  });
+});

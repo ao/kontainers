@@ -76,3 +76,17 @@ describe('scalars', () => {
     expect(() => v.intInRange('11', 1, 10, 5)).toThrow();
   });
 });
+
+describe('messages and international names', () => {
+  test('an international hostname is stored in punycode', () => {
+    expect(v.hostname('Bücher.Example')).toBe('xn--bcher-kva.example');
+    expect(v.hostname('*.bücher.example')).toBe('*.xn--bcher-kva.example');
+    expect(v.hostname(' shop.example.net ')).toBe('shop.example.net');
+    expect(() => v.hostname('bad host.example')).toThrow('invalid hostname');
+  });
+  test('length limits say so', () => {
+    expect(() => v.name('a'.repeat(129))).toThrow('at most 128 characters (129 given)');
+    expect(() => v.envVar('A=' + 'x'.repeat(40000))).toThrow('environment variable too long');
+    expect(() => v.envVar('no equals')).toThrow('expected KEY=value');
+  });
+});

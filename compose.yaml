@@ -8,9 +8,11 @@
 
 services:
   kontainers:
-    image: ataiva/kontainers:0.3.0
+    image: ataiva/kontainers:0.4.0
     build: .
     restart: unless-stopped
+    # Time to put a container back if kontainers is stopped in the middle of an update.
+    stop_grace_period: 30s
     ports:
       - "127.0.0.1:8080:8080"
     environment:
@@ -38,6 +40,7 @@ services:
       ALLOW_STOP: 1
       ALLOW_RESTARTS: 1
       DISTRIBUTION: 1   # registry digests for update checks; reads only
+      AUTH: 1           # checks a registry login when one is saved on the Settings page
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks: [docker-api]

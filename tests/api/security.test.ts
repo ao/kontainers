@@ -22,7 +22,7 @@ describe('before setup', () => {
       expect(r.status).toBe(303);
       expect(r.headers.get('location')).toBe('/setup');
     }
-    for (const p of ['/api/backup', '/api/containers/x/logs']) expect((await c.get(p)).status).toBe(401);
+    for (const p of ['/api/backup', '/api/containers/x/logs', '/api/containers/x/logs.txt', '/api/containers/x/stats']) expect((await c.get(p)).status).toBe(401);
     expect((await c.post('/containers', { image: 'alpine' })).status).toBe(401);
     expect((await c.post('/register', { username: 'x', password: PW })).status).toBe(401);
   });
@@ -63,6 +63,10 @@ describe('with an account', () => {
     expect((await anon.get('/containers')).headers.get('location')).toBe('/login');
     expect((await anon.get('/api/backup')).status).toBe(401);
     expect((await anon.post('/settings/users', { username: 'x', password: PW }, { csrf: false })).status).toBe(401);
+    for (const p of ['/cleanup', '/containers/x/edit']) expect((await anon.get(p)).headers.get('location')).toBe('/login');
+    for (const p of ['/cleanup/images', '/cleanup/volumes', '/cleanup/networks', '/settings/notify', '/settings/notify/1/test', '/containers/x/autoupdate', '/containers/x/edit']) {
+      expect((await anon.post(p, { scope: 'unused', on: 'on' }, { csrf: false })).status).toBe(401);
+    }
   });
 
   test('forged or stolen-looking cookies do not work', async () => {

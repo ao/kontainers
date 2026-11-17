@@ -5,8 +5,9 @@
 import type { Database } from 'bun:sqlite';
 import { mkdirSync, writeFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { hostname as osHostname } from 'node:os';
+import { hostname as osHostname, networkInterfaces } from 'node:os';
 import { X509Certificate } from 'node:crypto';
+import { createConnection } from 'node:net';
 import type { Config } from './config';
 import type { Docker } from './docker';
 import { DockerError } from './docker';
@@ -61,11 +62,24 @@ export class RuleStore {
     if (r.tls && r.hostname.startsWith('*.')) {
       throw new v.ValidationError(`a wildcard hostname cannot get an automatic certificate (that needs a DNS challenge, which kontainers does not do); add one rule per name, or turn HTTPS off for ${r.hostname}`);
     }
+    // Caddy keeps a lock file named issue_cert_<hostname>.lock while it gets a certificate, and
+    // file names stop at 255 bytes: a longer name never got one, and the page blamed DNS.
+    if (r.tls && r.hostname.length > 230) {
+      throw new v.ValidationError(`a hostname over 230 characters cannot get an automatic certificate (${r.hostname.length} given); use a shorter name, or turn HTTPS off`);
+    }
     return r;
+  }
+
+  // One hostname is served over HTTPS or over plain HTTP, not both: with a mix, each rule answered
+  // only on its own scheme, and the HTTPS one's redirect from HTTP was taken by the plain one.
+  private sameScheme(hostname: string, tls: boolean, exceptId: number | null): void {
+    const other = this.db.query('SELECT tls, path FROM proxy_rules WHERE hostname = ? AND tls != ? AND id IS NOT ?').get(hostname, tls ? 1 : 0, exceptId) as { tls: number; path: string } | null;
+    if (other) throw new v.ValidationError(`${hostname} already has a rule over ${other.tls ? 'HTTPS' : 'plain HTTP'} (path ${other.path}); every rule for one hostname must use the same, so turn HTTPS ${other.tls ? 'on' : 'off'} here too`);
   }
 
   create(input: RuleInput, now = Date.now()): Rule {
     const r = this.validate(input);
+    this.sameScheme(r.hostname, r.tls, null);
     try {
       return toRule(this.db.query(
         'INSERT INTO proxy_rules (hostname, path, target_container, target_port, tls, enabled, created_at) VALUES (?, ?, ?, ?, ?, 1, ?) RETURNING *'
@@ -78,9 +92,16 @@ export class RuleStore {
 
   update(id: number, input: RuleInput): Rule {
     const r = this.validate(input);
-    const row = this.db.query(
-      'UPDATE proxy_rules SET hostname = ?, path = ?, target_container = ?, target_port = ?, tls = ? WHERE id = ? RETURNING *'
-    ).get(r.hostname, r.path, r.target, r.port, r.tls ? 1 : 0, id);
+    this.sameScheme(r.hostname, r.tls, id);
+    let row: unknown;
+    try {
+      row = this.db.query(
+        'UPDATE proxy_rules SET hostname = ?, path = ?, target_container = ?, target_port = ?, tls = ? WHERE id = ? RETURNING *'
+      ).get(r.hostname, r.path, r.target, r.port, r.tls ? 1 : 0, id);
+    } catch (e) {
+      if (String(e).includes('UNIQUE')) { const err = new v.ValidationError('another rule already has this hostname and path'); err.status = 409; throw err; }
+      throw e;
+    }
     if (!row) throw Object.assign(new v.ValidationError('rule not found'), { status: 404 });
     return toRule(row);
   }
@@ -183,6 +204,7 @@ export class ProxyManager {
   readonly adminSocket: string;
   private configFile: string;
   lastError: string | null = null;
+  networkError: string | null = null;
 
   constructor(private cfg: Config, private store: RuleStore, private docker: Docker) {
     const dir = join(cfg.dataDir, 'run');
@@ -244,28 +266,37 @@ export class ProxyManager {
   async reconcile(): Promise<void> {
     if (!this.cfg.proxy.enabled) return;
     const rules = this.store.list().filter(r => r.enabled);
-    const [containers, net] = await Promise.all([this.docker.listContainers(), this.docker.inspectNetwork(this.cfg.proxy.network)]);
+    let net: any = null;
+    try {
+      net = await this.docker.inspectNetwork(this.cfg.proxy.network);
+    } catch (e) {
+      // The network is made at start. If the Docker API was not reachable then, or someone removed
+      // the network, make it now, and put kontainers back on it.
+      if (e instanceof DockerError && e.status === 404) {
+        await this.ensureNetwork().catch(() => {});
+        net = await this.docker.inspectNetwork(this.cfg.proxy.network).catch(() => null);
+      }
+      if (!net) {
+        this.networkError = `the proxy network ${this.cfg.proxy.network} is not available: ${(e as Error).message}`;
+        throw e;
+      }
+    }
+    this.networkError = null;
+    const containers = await this.docker.listContainers();
     const byName = new Map<string, string>();
     for (const c of containers) for (const n of c.Names || []) byName.set(String(n).replace(/^\//, ''), c.State);
     this.noteSubnets(net);
     if (await this.checkTargets()) await this.apply().catch(e => console.error(`kontainers: proxy update failed: ${(e as Error).message}`));
-    const attached = new Set(Object.values(net?.Containers || {}).map((x: any) => x.Name));
+    const onNet: [string, string][] = Object.entries(net?.Containers || {}).map(([id, x]: [string, any]) => [id, String(x.Name)]);
+    const attached = new Set(onNet.map(([, n]) => n));
     const state = new Map<string, string>();
+    const served = new Set<string>();
     for (const r of rules) {
+      if (state.has(r.target_container)) continue; // several rules, one container: once
       const s = byName.get(r.target_container) ?? 'missing';
       state.set(r.target_container, s);
-      // Rules saved before 0.2.1 could point at the container serving the Docker API: never
-      // reconnect it, and take it off the network if a rule put it there.
-      const refused = this.refused.get(r.target_container);
-      if (refused) {
-        if (!refused.self && attached.has(r.target_container)) {
-          try {
-            await this.docker.disconnect(this.cfg.proxy.network, r.target_container);
-            console.log(`kontainers: disconnected ${r.target_container} from ${this.cfg.proxy.network}: ${refused.reason}`);
-          } catch (e) { console.error(`kontainers: cannot disconnect ${r.target_container} from ${this.cfg.proxy.network}: ${(e as Error).message}`); }
-        }
-        continue;
-      }
+      if (this.refused.has(r.target_container)) continue;
+      served.add(r.target_container);
       if (s === 'running' && !attached.has(r.target_container)) {
         try {
           await this.attach(r.target_container);
@@ -273,17 +304,65 @@ export class ProxyManager {
         } catch (e) { console.error(`kontainers: cannot connect ${r.target_container} to ${this.cfg.proxy.network}: ${(e as Error).message}`); }
       }
     }
+    // Shown at once: the port checks below can take a few seconds.
+    this.targetState = state;
+    // A container no enabled rule points at leaves the network: otherwise every target could still
+    // reach it. This also takes off a container serving the Docker API that an old rule put there.
+    // kontainers itself stays: Caddy reaches the targets from it.
+    // Only on a network kontainers made: KONTAINERS_PROXY_NETWORK may name one the user shares with
+    // other services, and those must stay connected.
+    const ours = net?.Labels?.['kontainers.managed'] === 'true';
+    for (const [id, name] of ours ? onNet : []) {
+      const ip = String((net?.Containers?.[id] as any)?.IPv4Address || '').split('/')[0];
+      if (served.has(name) || this.isOwn(id, name, ip)) continue;
+      try {
+        await this.docker.disconnect(this.cfg.proxy.network, id);
+        const why = this.refused.get(name)?.reason;
+        console.log(`kontainers: disconnected ${name} from ${this.cfg.proxy.network}: ${why ?? 'no enabled proxy rule points at it'}`);
+      } catch (e) { console.error(`kontainers: cannot disconnect ${name} from ${this.cfg.proxy.network}: ${(e as Error).message}`); }
+    }
+    // Whether something answers on each served target port, as Caddy would connect to it. Only when
+    // kontainers is on the proxy network itself: elsewhere the container names do not resolve.
+    if (this.onNetwork) {
+      const ports = new Map<string, string | null>();
+      for (const r of rules) {
+        const k = `${r.target_container}:${r.target_port}`;
+        if (!served.has(r.target_container) || state.get(r.target_container) !== 'running' || ports.has(k)) continue;
+        ports.set(k, await this.probe(r.target_container, r.target_port));
+      }
+      this.portState = ports;
+    }
     this.targetState = state;
   }
 
+  // "container:port" -> null when something answered, or what went wrong, from the last reconcile.
+  portState = new Map<string, string | null>();
+  private onNetwork = false;
+  // Opens a TCP connection and closes it again; null when it opened within 2 s.
+  probe: (host: string, port: number) => Promise<string | null> = (host, port) => new Promise(resolve => {
+    const s = createConnection({ host, port, timeout: 2000 });
+    const done = (why: string | null) => { s.destroy(); resolve(why); };
+    s.once('connect', () => done(null));
+    s.once('timeout', () => done('no answer within 2 s'));
+    s.once('error', (e: NodeJS.ErrnoException) => done(e.code === 'ECONNREFUSED' ? 'connection refused' : e.code || e.message));
+  });
+  // kontainers' own container: its hostname is its short ID, unless KONTAINERS_SELF_CONTAINER names it.
+  selfContainer: string | null = null;
+  // Its address on the network is one of this process's own, whatever its hostname or name.
+  private isOwn(id: string, name: string, ip = ''): boolean {
+    const h = osHostname();
+    const mine = Object.values(networkInterfaces()).flat().some(a => !!ip && a?.address === ip);
+    return mine || (/^[a-f0-9]{12}$/.test(h) && id.startsWith(h)) || (!!this.selfContainer && (this.selfContainer === name || id.startsWith(this.selfContainer)));
+  }
+
   // The certificate Caddy holds for a hostname, if any. Caddy stores <issuer>/<host>/<host>.crt.
-  certificate(host: string): { notAfter: Date } | null {
+  certificate(host: string): { notAfter: Date; notBefore: Date } | null {
     const root = join(this.cfg.dataDir, 'caddy', 'certificates');
     const name = host.replace(/^\*/, 'wildcard_');
     try {
       for (const issuer of readdirSync(root)) {
         const f = join(root, issuer, name, `${name}.crt`);
-        if (existsSync(f)) return { notAfter: new Date(new X509Certificate(readFileSync(f, 'utf8')).validTo) };
+        if (existsSync(f)) { const x = new X509Certificate(readFileSync(f, 'utf8')); return { notAfter: new Date(x.validTo), notBefore: new Date(x.validFrom) }; }
       }
     } catch { /* no certificates yet */ }
     return null;
@@ -386,6 +465,6 @@ export class ProxyManager {
       this.noteSubnets(await this.docker.inspectNetwork(this.cfg.proxy.network).catch(() => null));
     }
     // When kontainers itself runs in a container, its hostname is its container ID: join the network.
-    try { await this.attach(osHostname()); } catch { /* not running in a container, or no permission */ }
+    try { await this.attach(osHostname()); this.onNetwork = true; } catch { /* not running in a container, or no permission */ }
   }
 }

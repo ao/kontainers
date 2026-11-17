@@ -1,8 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { loadConfig } from '../../src/config';
 import { clientIp, containerSpec, dockerApiHost, splitArgs, hostAllowed, normalizeIp, parseCookies, parsePort, parseVolume, sameOrigin } from '../../src/server';
-import { demux } from '../../src/docker';
-import { esc, html, raw, formatPorts, isSelf, containersPage, containerPage, imagesPage, proxyPage, loginPage, setupPage } from '../../src/views';
+import { BoundedLog, demux } from '../../src/docker';
+import { brk, esc, html, raw, formatPorts, isSelf, containersPage, containerPage, editContainerPage, imagesPage, proxyPage, loginPage, quoteArgs, setupPage } from '../../src/views';
 import type { Rule } from '../../src/proxy';
 
 const local = loadConfig({});
@@ -93,7 +93,7 @@ describe('form parsing', () => {
 describe('pages', () => {
   const ctx = { user: 'admin', csrf: 'tok', proxyEnabled: true };
   const row = (State: string) => ({ Id: 'a'.repeat(64), Names: ['/web'], Image: 'nginx', State, Status: '', Ports: [] });
-  const buttons = (htmlText: string) => [...htmlText.matchAll(/<button[^>]*>([^<]+)<\/button>/g)].map(m => m[1]).filter(b => b !== 'Log out');
+  const buttons = (htmlText: string) => [...htmlText.matchAll(/<button[^>]*>([^<]+)<\/button>/g)].map(m => m[1]).filter(b => b !== 'Log out' && b !== 'Apply' && !b.endsWith(' all'));
 
   test('container actions follow the state; Remove only when stopped', () => {
     expect(buttons(containersPage(ctx, [row('running')]))).toEqual(['Stop', 'Restart']);
@@ -102,20 +102,21 @@ describe('pages', () => {
     for (const s of ['exited', 'created', 'dead']) expect(buttons(containersPage(ctx, [row(s)]))).toEqual(['Start', 'Remove']);
   });
 
-  test("kontainers' own container and its compose siblings get no actions", () => {
-    const me = { id: 'f'.repeat(64), project: 'kontainers' };
+  test("kontainers' own container and the one serving its Docker API get no actions; other siblings do", () => {
+    const me = { id: 'f'.repeat(64), project: 'kontainers', apiId: 'e'.repeat(64) };
     const own = { ...row('running'), Id: me.id, Labels: { 'com.docker.compose.project': 'kontainers' } };
     const sib = { ...row('running'), Id: 'e'.repeat(64), Names: ['/kontainers-docker-proxy-1'], Labels: { 'com.docker.compose.project': 'kontainers' } };
     const other = { ...row('running'), Id: 'd'.repeat(64), Names: ['/other'], Labels: { 'com.docker.compose.project': 'shop' } };
     expect(isSelf(own, me)).toBe(true);
     expect(isSelf(sib, me)).toBe(true);
     expect(isSelf(other, me)).toBe(false);
-    expect(isSelf(other, { id: me.id, project: null })).toBe(false);
     expect(isSelf(own, null)).toBe(false);
-    const page = containersPage(ctx, [own, sib, other], me);
-    expect(buttons(page)).toEqual(['Stop', 'Restart']); // only "other"
+    const app = { ...row('running'), Id: 'c'.repeat(64), Names: ['/kontainers-app-1'], Labels: { 'com.docker.compose.project': 'kontainers' } };
+    expect(isSelf(app, me)).toBe(false); // same compose project, but neither kontainers nor its API
+    const page = containersPage(ctx, [own, sib, other, app], me);
+    expect(buttons(page)).toEqual(['Stop', 'Restart', 'Stop', 'Restart']); // "app" and "other"
     expect(page).toContain('this is kontainers');
-    expect(page).toContain('part of kontainers');
+    expect(page).toContain('kontainers&#39; Docker API: manage it on the host');
     const detail = containerPage(ctx, { Id: me.id, Name: '/kontainers', State: { Status: 'running' }, Config: { Labels: { 'kontainers.managed': 'true' } }, HostConfig: {} }, me);
     expect(buttons(detail)).toEqual([]);
   });
@@ -124,7 +125,7 @@ describe('pages', () => {
     const page = containerPage(ctx, { Id: 'b'.repeat(64), Name: '/web', State: { Status: 'exited', StartedAt: '0001-01-01T00:00:00Z', ExitCode: 42 }, Config: {}, HostConfig: {} });
     expect(page).toContain('<dd>never</dd>');
     expect(page).toContain('<dt>Exit code</dt><dd>42</dd>');
-    expect(page).toMatch(/action="\/containers\/b+\/start"[^>]*>.*name="back" value="detail"/s);
+    expect(page).toMatch(/action="\/containers\/web\/start"[^>]*>.*name="back" value="detail"/s); // by name: it survives a recreation
     expect(page).not.toMatch(/\/remove"[^>]*>(?:(?!<\/form>).)*name="back"/s);
   });
 
@@ -133,7 +134,7 @@ describe('pages', () => {
       { IP: '0.0.0.0', PublicPort: 9001, PrivatePort: 81, Type: 'udp' }, { IP: '::', PublicPort: 9001, PrivatePort: 81, Type: 'udp' },
       { IP: '127.0.0.1', PublicPort: 8080, PrivatePort: 80, Type: 'tcp' }, { IP: '::1', PublicPort: 9100, PrivatePort: 80, Type: 'tcp' },
       { PrivatePort: 5432, Type: 'tcp' },
-    ])).toBe('*:9001->81/udp, 127.0.0.1:8080->80/tcp, [::1]:9100->80/tcp');
+    ])).toBe('127.0.0.1:8080->80/tcp, *:9001->81/udp, [::1]:9100->80/tcp'); // by host port
   });
 
   test('each tag of a multi-tag image has its own Remove', () => {
@@ -210,5 +211,160 @@ describe('container page', () => {
     expect(page).toContain('KEY=…');
     expect(page).toContain('MODE=…');
     expect(page).not.toContain('secret-line');
+  });
+});
+
+describe('quoteArgs', () => {
+  test('splitArgs reads back what quoteArgs writes', () => {
+    const cases = [['sleep', '600'], ['sh', '-c', "echo it's up; sleep 600"], ['a b', '', '"q"', '$HOME', 'back\\slash', 'new\nline', 'tab\there'], ['--flag=x/y:z@1%2+3,4']];
+    for (const args of cases) expect(splitArgs(quoteArgs(args))).toEqual(args);
+    expect(quoteArgs(['sleep', '600'])).toBe('sleep 600');
+    expect(quoteArgs(["it's"])).toBe(`'it'\\''s'`);
+  });
+});
+
+describe('editContainerPage', () => {
+  test('fills the form from the settings and escapes them', () => {
+    const page = editContainerPage({ user: 'admin', csrf: 't' }, { Id: 'e'.repeat(64), Name: '/web' }, {
+      image: 'nginx:1.27', cmd: ['sh', '-c', 'echo <b>'], env: ['A=1', 'X=</textarea><script>'],
+      ports: [{ host: 8080, container: 80, hostIp: '127.0.0.1' }, { host: 53, container: 53, hostIp: '::1', protocol: 'udp' }, { host: 9000, container: 9000, hostIp: '0.0.0.0' }],
+      volumes: [{ source: 'data', target: '/data' }, { source: 'conf', target: '/etc/app', readOnly: true }], restart: 'always',
+    }, false);
+    expect(page).toContain('value="sh -c &#39;echo &lt;b&gt;&#39;"');
+    expect(page).toContain('127.0.0.1:8080:80\n[::1]:53:53/udp\n0.0.0.0:9000:9000</textarea>');
+    expect(page).toContain('A=1\nX=&lt;/textarea&gt;&lt;script&gt;</textarea>');
+    expect(page).toContain('data:/data\nconf:/etc/app:ro</textarea>');
+    expect(page).toContain('<option selected>always</option>');
+    expect(page).toContain('except ones the container already has');
+    expect(page).not.toContain('<script>');
+  });
+});
+
+describe('BoundedLog', () => {
+  const frame = (stream: number, text: string) => {
+    const p = new TextEncoder().encode(text);
+    const h = new Uint8Array(8); h[0] = stream; new DataView(h.buffer).setUint32(4, p.length);
+    const out = new Uint8Array(8 + p.length); out.set(h); out.set(p, 8); return out;
+  };
+  const feed = (log: BoundedLog, data: Uint8Array, step: number) => { for (let i = 0; i < data.length; i += step) log.push(data.subarray(i, i + step)); };
+  test('framed output is read the same however the chunks fall', () => {
+    const all = new Uint8Array([...frame(1, 'hello\n'), ...frame(2, 'oops\n'), ...frame(1, 'ünïcode\n')]);
+    for (const step of [1, 3, 7, 8, 9, 1000]) {
+      const log = new BoundedLog(1 << 20);
+      feed(log, all, step);
+      expect(log.text()).toBe('hello\noops\nünïcode\n');
+    }
+    expect(demux(all)).toBe('hello\noops\nünïcode\n');
+  });
+  test('TTY output (no frames) is kept as it is', () => {
+    const log = new BoundedLog(1 << 20);
+    feed(log, new TextEncoder().encode('\u001b[32mgreen\u001b[0m\r\nline\n'), 4);
+    expect(log.text()).toBe('\u001b[32mgreen\u001b[0m\r\nline\n');
+  });
+  test('only the newest bytes are kept, from a whole line, and the cut is said', () => {
+    const lines = Array.from({ length: 1000 }, (_, i) => `line ${String(i).padStart(4, '0')}\n`).join('');
+    const log = new BoundedLog(1000);
+    feed(log, frame(1, lines), 64);
+    const t = log.text();
+    expect(t).toMatch(/^\[earlier output not shown: [\d.]+ MB more than kontainers shows at once\]\nline \d{4}\n/);
+    expect(t.endsWith('line 0999\n')).toBe(true);
+    expect(t.length).toBeLessThan(1100);
+    expect(log.dropped).toBe(9000);
+  });
+  test('one huge line is cut to the limit', () => {
+    const log = new BoundedLog(4096);
+    feed(log, frame(1, 'x'.repeat(100000) + '\n'), 8192);
+    expect(log.text().length).toBeLessThan(4200);
+  });
+});
+
+describe('container page facts', () => {
+  test('command, ports, restarts and why it is unhealthy', () => {
+    const page = containerPage({ user: 'a', csrf: 't' }, {
+      Id: 'd'.repeat(64), Name: '/db', RestartCount: 3, State: { Status: 'running', StartedAt: '2026-11-16T10:00:00Z', Health: { Status: 'unhealthy', FailingStreak: 4, Log: [{ ExitCode: 1, Output: 'pg_isready: no response\n' }] } },
+      Config: { Image: 'postgres:17', Entrypoint: ['docker-entrypoint.sh'], Cmd: ['postgres', '-c', 'max_connections=200'], Labels: {} },
+      HostConfig: { RestartPolicy: { Name: 'always' } },
+      NetworkSettings: { Ports: { '5432/tcp': [{ HostIp: '127.0.0.1', HostPort: '5433' }], '9187/tcp': null } },
+    });
+    expect(page.replace(/<wbr>/g, '')).toContain('<code>docker-entrypoint.sh postgres -c max_connections=200</code>');
+    expect(page).toContain('<span class="ref">127.0.0.1:5433-&gt;5432/tcp</span>');
+    expect(page).toContain('restarted 3 times');
+    expect(page).toContain('unhealthy<small class="muted">failed 4 checks in a row, exit code 1: <code>pg_isready: no response</code></small>');
+  });
+  test('environment lines keep trailing spaces', () => {
+    expect(containerSpec({ image: 'x', env: '  A=1  \r\n\r\nB= \n' }).env).toEqual(['A=1  ', 'B= ']);
+  });
+});
+
+describe('QA round 2', () => {
+  const ctx = { user: 'a', csrf: 't' };
+  test('a name longer than 128 characters is addressed by ID', () => {
+    const long = 'p'.repeat(77) + '-' + 's'.repeat(65) + '-1';
+    const page = containersPage(ctx, [{ Id: 'a'.repeat(64), Names: ['/' + long], Image: 'x:1', State: 'running', Status: '', Ports: [] }]);
+    expect(page).toContain(`href="/containers/${'a'.repeat(64)}"`);
+    expect(page).toContain(`action="/containers/${'a'.repeat(64)}/stop"`);
+    expect(page).not.toContain(`href="/containers/${long}"`);
+  });
+  test('after a failed save the Edit form shows what was typed, only for that container', () => {
+    const spec = { image: 'nginx:1.27', cmd: ['nginx'], env: ['A=1'], ports: [], volumes: [], restart: 'always' as const };
+    const form = { _edit: 'web', image: 'nginx:1.28', cmd: 'nginx -g x', env: 'A=2\nB=3', ports: 'abc', volumes: '', restart: 'on-failure', pull: 'on' };
+    const page = editContainerPage({ ...ctx, form }, { Id: 'e'.repeat(64), Name: '/web' }, spec, false);
+    expect(page).toContain('value="nginx:1.28"');
+    expect(page).toContain('>abc</textarea>');
+    expect(page).toContain('A=2\nB=3</textarea>');
+    expect(page).toContain('<option selected>on-failure</option>');
+    expect(page).toContain('name="pull" checked');
+    const other = editContainerPage({ ...ctx, form }, { Id: 'f'.repeat(64), Name: '/db' }, spec, false);
+    expect(other).toContain('value="nginx:1.27"');
+  });
+  test('the image an automatic update held back is not recommended', () => {
+    const st = { status: 'current' as const, checkedAt: Date.now(), imageId: 'sha256:' + 'b'.repeat(64) };
+    const updates = { get: () => st, lastRun: Date.now(), scheduled: 6, held: () => st.imageId };
+    const c = { Id: 'c'.repeat(64), Name: '/web', Image: 'sha256:' + 'a'.repeat(64), State: { Status: 'running' }, Config: { Image: 'app:1', Labels: { 'kontainers.managed': 'true' } }, HostConfig: {} };
+    const page = containerPage(ctx, c, null, updates as any);
+    expect(page).toContain('failed when it was tried automatically and is held back');
+    expect(page).not.toMatch(/class="primary"[^>]*>Update image/);
+    const list = containersPage(ctx, [{ Id: c.Id, Names: ['/web'], Image: 'app:1', ImageID: c.Image, State: 'running', Status: '', Ports: [] }], null, updates as any);
+    expect(list).toContain('newest image held back');
+    expect(list).not.toContain('newer image available');
+  });
+  test('every page says when kontainers cannot write its database', () => {
+    const page = containersPage({ ...ctx, alert: 'Since 06:41 UTC kontainers cannot write its database' }, []);
+    expect(page).toContain('<p class="warn" role="alert">Since 06:41 UTC kontainers cannot write its database</p>');
+  });
+});
+
+describe('bind mounts when they are off', () => {
+  test('Edit may keep a host path, not add one or make a read-only one writable', async () => {
+    const { Docker } = await import('../../src/docker');
+    const d = new Docker('tcp://127.0.0.1:1', { allowBindMounts: false });
+    const had = [{ source: '/srv/conf', readOnly: true }, { source: '/srv/data', readOnly: false }];
+    const body = (volumes: any[]) => d.createBody({ image: 'x:1', volumes }, { allowedBinds: had });
+    expect(() => body([{ source: '/srv/conf', target: '/etc/app', readOnly: true }])).not.toThrow();
+    expect(() => body([{ source: '/srv/data', target: '/data', readOnly: true }])).not.toThrow();
+    expect(() => body([{ source: '/srv/conf', target: '/etc/app', readOnly: false }])).toThrow('cannot be made writable');
+    expect(() => body([{ source: '/etc', target: '/x' }])).toThrow('host bind mounts are disabled');
+  });
+});
+
+describe('round 3', () => {
+  const ctx = { user: 'a', csrf: 't' };
+  test('brk leaves short text whole and gives long tokens break points', () => {
+    expect(brk('busybox:1.36').__html).toBe('busybox:1.36');
+    expect(brk('a'.repeat(64)).__html).toBe(['a'.repeat(16), 'a'.repeat(16), 'a'.repeat(16), 'a'.repeat(16)].join('<wbr>'));
+    expect(brk('ghcr.io/org/some-long-name:2026.11').__html).toBe('ghcr.<wbr>io/<wbr>org/<wbr>some-<wbr>long-<wbr>name:<wbr>2026.<wbr>11');
+    expect(brk('<script>alert(1)</script>-xxxxxxxxxx').__html).not.toContain('<script>');
+    const emoji = '🐳'.repeat(30);
+    expect(brk(emoji).__html.replace(/<wbr>/g, '')).toBe(emoji);
+    expect(brk(emoji).__html.split('<wbr>').every(p => Array.from(p).every(ch => ch === '🐳'))).toBe(true);
+  });
+  test('a container being replaced shows what is happening instead of its buttons', () => {
+    const busy = (n: string) => n === 'web' ? 'being updated or edited' : n === 'web-old-12345678' ? 'old container of web, kept until its update or edit finishes' : null;
+    const rows = [{ Id: 'a'.repeat(64), Names: ['/web'], Image: 'x:1', State: 'running', Status: '', Ports: [] }, { Id: '12345678' + 'b'.repeat(56), Names: ['/web-old-12345678'], Image: 'x:1', State: 'exited', Status: '', Ports: [] }];
+    const page = containersPage({ ...ctx, busy }, rows);
+    expect(page).toContain('being updated or edited');
+    expect(page).toContain('old container of web');
+    expect(page).not.toContain('>Stop<');
+    expect(page).not.toContain('>Remove<');
   });
 });

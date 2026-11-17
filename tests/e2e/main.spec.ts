@@ -61,7 +61,7 @@ test('pull an image, create a container, read its logs, stop and remove it', asy
   await page.getByLabel('Image', { exact: true }).fill('busybox:1.36');
   await page.getByLabel('Pull the image first').uncheck();
   await page.getByLabel('Name', { exact: true }).fill('e2e-web');
-  await page.getByLabel('Command').fill('sh -c "echo hello-e2e; sleep 600"');
+  await page.getByLabel('Command').fill('sh -c "echo hello-e2e; echo alpha; echo beta; echo gamma; sleep 600"');
   await page.getByLabel(/^Environment/).fill('MODE=test');
   await page.getByRole('button', { name: 'Create' }).click();
   await expect(page.getByRole('status')).toContainText('Created e2e-web');
@@ -71,6 +71,19 @@ test('pull an image, create a container, read its logs, stop and remove it', asy
   await row.getByRole('link', { name: 'e2e-web' }).click();
   await expect(page.getByRole('heading', { name: 'e2e-web' })).toBeVisible();
   await expect(page.locator('#logs')).toContainText('hello-e2e');
+  // The log filter, the timestamps switch and the download link.
+  await expect(page.locator('#logs')).toContainText('gamma');
+  await expect(page.locator('#logs')).toContainText(/^\d{4}-\d\d-\d\dT/);
+  await page.getByLabel('Filter').fill('BET');
+  await expect(page.locator('#logs')).toHaveText(/^\S+ beta$/);
+  await expect(page.locator('#logcount')).toHaveText('1 of 4 lines');
+  await page.getByLabel('Filter').fill('');
+  await page.getByLabel('Timestamps').uncheck();
+  await expect(page.locator('#logs')).toHaveText('hello-e2e\nalpha\nbeta\ngamma');
+  await expect(page.getByRole('link', { name: /Download/ })).toHaveAttribute('href', /logs\.txt\?tail=10000&timestamps=0$/);
+  const dl = await page.request.get(await page.getByRole('link', { name: /Download/ }).getAttribute('href') as string);
+  expect(dl.headers()['content-disposition']).toMatch(/^attachment; filename="e2e-web-\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d\.log"$/);
+  expect(await dl.text()).toBe('hello-e2e\nalpha\nbeta\ngamma\n');
   await expect(page.getByText('MODE=…')).toBeVisible();
 
   // Live usage is filled in by app.js; containers created here can be updated.
@@ -146,6 +159,71 @@ test('add a second user, who can log in; the proxy page explains how to turn it 
 
   await page.getByRole('link', { name: 'Proxy' }).click();
   await expect(page.getByText('KONTAINERS_PROXY=1')).toBeVisible();
+});
+
+test('search, the Show filter and compose grouping on the Containers page', async ({ page, request }) => {
+  // Containers made straight through the socket proxy, the way docker compose would make them.
+  const api = 'http://docker-proxy:2375/v1.41';
+  const mk = async (name: string, labels: Record<string, string>, cmd: string[]) => {
+    expect((await request.post(`${api}/containers/create?name=${name}`, { data: { Image: 'busybox:1.36', Cmd: cmd, Labels: labels } })).status()).toBe(201);
+    expect((await request.post(`${api}/containers/${name}/start`)).status()).toBe(204);
+  };
+  await mk('shop-web-1', { 'com.docker.compose.project': 'shop' }, ['sleep', '600']);
+  await mk('shop-db-1', { 'com.docker.compose.project': 'shop' }, ['sleep', '600']);
+  await mk('lonely', {}, ['sh', '-c', 'exit 3']);
+  await expect.poll(async () => (await (await request.get(`${api}/containers/lonely/json`)).json()).State.Status).toBe('exited');
+  try {
+    await login(page);
+    const rows = page.locator('#containers tbody tr[data-name]:visible');
+    await expect(page.locator('tr.group', { hasText: 'compose project shop' })).toContainText('2 of 2 running');
+    await expect(page.getByText('1 needs attention')).toBeVisible();
+
+    await page.getByLabel('Search').fill('DB');
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toHaveAttribute('data-name', 'shop-db-1');
+    await expect(page.locator('tr.group', { hasText: 'not in a compose project' })).toBeHidden();
+    // The filter is in the address, so Back from a container returns to the same list.
+    await expect(page).toHaveURL(/\?q=DB$/);
+    await rows.first().getByRole('link', { name: 'shop-db-1' }).click();
+    await expect(page).toHaveURL(/\/containers\/shop-db-1$/);
+    await page.goBack();
+    await expect(page.getByLabel('Search')).toHaveValue('DB');
+    await expect(rows).toHaveCount(1);
+    await page.getByLabel('Search').fill('nothing-is-called-this');
+    await expect(rows).toHaveCount(0);
+    await expect(page.locator('#nomatch')).toBeVisible();
+    await page.getByLabel('Search').fill('');
+    await expect(rows).toHaveCount(3);
+
+    await page.getByLabel('Show').selectOption('attention');
+    await expect(rows).toHaveCount(1);
+    await expect(rows.first()).toHaveAttribute('data-name', 'lonely');
+
+    // The same filter from the server, as the link and the Apply button give it.
+    await page.goto('/containers');
+    await page.getByRole('link', { name: '1 needs attention' }).click();
+    await expect(page).toHaveURL(/state=attention/);
+    await expect(rows).toHaveCount(1);
+    await page.getByLabel('Search').fill('');
+    await page.getByLabel('Show').selectOption('all');
+    await expect(rows).toHaveCount(3);
+    await page.getByLabel('Group').selectOption('none');
+    await page.getByRole('button', { name: 'Apply' }).click();
+    await expect(page.locator('tr.group')).toHaveCount(0);
+    await expect(page.getByText('compose project shop').first()).toBeVisible();
+
+    // A compose project's containers stopped and started together from its header.
+    await page.goto('/containers');
+    const shop = page.locator('tr.group', { hasText: 'compose project shop' });
+    page.once('dialog', d => d.accept());
+    await shop.getByRole('button', { name: 'Stop all' }).click();
+    await expect(page.getByRole('status')).toContainText('Stopped 2 of 2 containers of shop.');
+    await expect(page.locator('tr.group', { hasText: 'compose project shop' })).toContainText('0 of 2 running');
+    await page.locator('tr.group', { hasText: 'compose project shop' }).getByRole('button', { name: 'Start all' }).click();
+    await expect(page.getByRole('status')).toContainText('Started 2 of 2 containers of shop.');
+  } finally {
+    for (const n of ['shop-web-1', 'shop-db-1', 'lonely']) await request.delete(`${api}/containers/${n}?force=1`);
+  }
 });
 
 test('no console errors and no inline script violations', async ({ page }) => {

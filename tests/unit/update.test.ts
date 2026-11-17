@@ -32,6 +32,20 @@ describe('recreateSpec', () => {
   test('without the old image, everything set on the container is kept', () => {
     expect(recreateSpec(container(), null).env?.length).toBe(3);
   });
+  test("an anonymous volume from the image's VOLUME is kept, by name, with the mounts it was created with", () => {
+    const anon = 'f'.repeat(64);
+    const c = { ...container(), Mounts: [
+      { Type: 'volume', Name: 'data', Destination: '/data', RW: false },
+      { Type: 'bind', Source: '/srv', Destination: '/srv', RW: true },
+      { Type: 'volume', Name: anon, Destination: '/var/lib/postgresql/data', RW: true },
+      { Type: 'tmpfs', Destination: '/run' },
+    ] };
+    expect(recreateSpec(c, image).volumes).toEqual([
+      { source: 'data', target: '/data', readOnly: true },
+      { source: '/srv', target: '/srv', readOnly: false },
+      { source: anon, target: '/var/lib/postgresql/data', readOnly: false },
+    ]);
+  });
 });
 
 describe('updatable', () => {

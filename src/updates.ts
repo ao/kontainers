@@ -6,7 +6,7 @@ import type { Docker } from './docker';
 
 export type UpdateStatus = 'current' | 'available' | 'unknown';
 // imageId: the local image the reference pointed at when checked.
-export interface UpdateState { status: UpdateStatus; checkedAt: number; reason?: string; imageId?: string }
+export interface UpdateState { status: UpdateStatus; checkedAt: number; reason?: string; imageId?: string; remoteDigest?: string }
 
 // What a container's row should say. A container keeps the image it was created from, so after a
 // `docker pull` of its tag it runs an older image than the tag, even when the tag itself is current.
@@ -36,6 +36,8 @@ export class UpdateChecker {
   private timer: ReturnType<typeof setInterval> | null = null;
   private running: Promise<number> | null = null;
   lastRun: number | null = null;
+  // Called, not awaited, after every completed check: automatic updates and notifications.
+  onChecked: (() => Promise<void>) | null = null;
 
   // intervalMs 0 turns scheduled checks off; "Check now" still works.
   constructor(private docker: Docker, private intervalMs: number, private now: () => number = Date.now) {}
@@ -51,16 +53,23 @@ export class UpdateChecker {
 
   stop(): void { if (this.timer) clearInterval(this.timer); }
 
-  // Checks every image reference in use. Concurrent calls share one run. Returns how many were checked.
-  checkAll(): Promise<number> {
+  // Checks every image reference in use. Concurrent calls share one run; with `fresh`, a call made
+  // while one runs gets the next run instead, which starts when the current one ends (a person who
+  // clicks Check for updates wants the registries asked now). Returns how many were checked.
+  private next: Promise<number> | null = null;
+  checkAll(fresh = false): Promise<number> {
+    if (this.running && fresh) return (this.next ??= this.running.catch(() => 0).then(() => { this.next = null; return this.checkAll(); }));
     if (this.running) return this.running;
     this.running = (async () => {
       const refs = new Set<string>();
-      for (const c of await this.docker.listContainers()) if (checkable(c.Image)) refs.add(c.Image);
-      for (const ref of refs) await this.check(ref);
+      for (const c of await this.docker.listContainersWithRefs()) if (checkable(c.Ref)) refs.add(c.Ref);
+      // Four at a time: a registry that does not answer costs the daemon about 15 s per lookup.
+      const queue = [...refs];
+      await Promise.all(Array.from({ length: Math.min(4, queue.length) }, async () => { for (let r = queue.shift(); r; r = queue.shift()) await this.check(r); }));
       // Forget references no container uses any more.
       for (const ref of [...this.state.keys()]) if (!refs.has(ref)) this.state.delete(ref);
       this.lastRun = this.now();
+      if (this.onChecked) void this.onChecked().catch(e => console.error(`kontainers: after the update check: ${(e as Error).message}`));
       return refs.size;
     })().finally(() => { this.running = null; });
     return this.running;
@@ -70,15 +79,50 @@ export class UpdateChecker {
     let st: UpdateState;
     try {
       const [local, remote] = await Promise.all([this.docker.inspectImage(ref), this.docker.distribution(ref)]);
-      st = { ...compareDigests(local?.RepoDigests, remote?.Descriptor?.digest), checkedAt: this.now(), imageId: local?.Id };
+      const own = digestsFor(ref, local?.RepoDigests);
+      st = { ...compareDigests(own, remote?.Descriptor?.digest), checkedAt: this.now(), imageId: local?.Id, remoteDigest: remote?.Descriptor?.digest };
+      // A different digest is a newer image only if the registry has ever served ours. Docker's
+      // containerd image store gives locally built images a digest too; one the registry does not
+      // know was built (or changed) here, and "newer image available" would be wrong.
+      if (st.status === 'available') {
+        const known = await Promise.any(own.map(d => this.docker.distribution(`${repoOf(ref)}@${d.split('@')[1]}`))).catch(() => null);
+        if (!known) st = { ...st, status: 'unknown', reason: 'the registry does not have the image this tag points at here: it was built on this host, or the registry has since deleted it. Update image still pulls whatever the tag points at now' };
+      }
     } catch (e) {
-      // docker-socket-proxy answers 403 for API sections it was not told to allow.
-      const reason = (e as { status?: number }).status === 403
-        ? 'the Docker API refused the registry lookup; with docker-socket-proxy, set DISTRIBUTION=1 on it'
-        : (e as Error).message.slice(0, 200);
-      st = { status: 'unknown', reason, checkedAt: this.now() };
+      st = { status: 'unknown', reason: lookupReason(e), checkedAt: this.now() };
     }
     this.state.set(ref, st);
     return st;
   }
+}
+
+// "nginx:1.27" -> "nginx", "ghcr.io/org/app:2" -> "ghcr.io/org/app" (a port is not a tag).
+export function repoOf(ref: string): string {
+  const at = ref.indexOf('@');
+  const r = at >= 0 ? ref.slice(0, at) : ref;
+  const colon = r.lastIndexOf(':');
+  return colon > r.lastIndexOf('/') ? r.slice(0, colon) : r;
+}
+
+// Docker Hub names appear in RepoDigests without docker.io/ and library/.
+const shortRepo = (r: string) => r.replace(/^(docker\.io|index\.docker\.io|registry-1\.docker\.io)\//, '').replace(/^library\//, '');
+
+// The RepoDigests that belong to the reference's repository: a digest pulled from another
+// repository says nothing about this one.
+export function digestsFor(ref: string, repoDigests: string[] | undefined | null): string[] {
+  const repo = shortRepo(repoOf(ref));
+  return (repoDigests || []).filter(d => shortRepo(d.split('@')[0]) === repo);
+}
+
+// What a failed lookup means, in words.
+export function lookupReason(e: unknown): string {
+  const status = (e as { status?: number }).status;
+  const msg = String((e as Error)?.message || e);
+  // docker-socket-proxy answers 403 for API sections it was not told to allow.
+  if (status === 403 && !/denied|unauthorized/i.test(msg)) return 'the Docker API refused the registry lookup; with docker-socket-proxy, set DISTRIBUTION=1 on it';
+  if (/refused the login saved/.test(msg)) return 'the registry refused this image with the login saved for it on the Settings page (a wrong login, no access to the image, or no such image)';
+  if (/cannot be read \(registry\.key/.test(msg)) return 'the login saved for this registry cannot be read (registry.key in the data volume is missing or different): save it again on the Settings page';
+  if (/denied|unauthorized|not found|manifest unknown|name unknown|repository does not exist/i.test(msg)) return 'the registry has no such image, or it needs a login: for a private image, add one on the Settings page';
+  if (/deadline exceeded|timeout|timed out|no such host|connection refused|i\/o timeout|unreachable/i.test(msg)) return `the registry did not answer (${msg.slice(0, 120)})`;
+  return msg.slice(0, 200);
 }

@@ -17,27 +17,36 @@ one container that does the everyday part of both:
   a container that is stopped or gone.
 - `docker compose up` recreates containers with new IDs. kontainers notices within 10 seconds and
   reconnects them, so the routes keep working.
-- Update image pulls a container's image again and recreates it with the same settings. If the new
-  one does not start, the old one is put back.
+- Every 6 hours kontainers checks which containers have a newer image for their tag. Opt a
+  container in and it is updated on its own: the new container is watched while it settles,
+  and if it stops, restarts or turns unhealthy, the old one is put back and that image is held
+  back. (Watchtower, which did this, was archived in December 2025.)
+- Notifications to a webhook or an ntfy topic when a container crashes, runs out of memory,
+  turns unhealthy, has a newer image, is updated, or a certificate is about to expire.
+- Update image and Edit settings recreate a container with its settings, volumes and networks.
+  If the new one does not stay up, the old one is put back.
 
 It is also careful about the host, because access to Docker is root on it. It listens on
-127.0.0.1, has no default password, never force-removes a running container, and will not stop or
-remove itself. The Security section below lists every default.
+127.0.0.1, has no default password, never force-removes a container you made (only a
+replacement it is rolling back), and will not stop or remove itself. The Security section below lists every default.
 
 ![HTTPS proxy rules with their certificate status](docs/screenshots/proxy.png)
 
 ## What it costs to run
 
-Memory and start time were measured on the 0.2.1 build, in Docker 29.8.2 on an arm64 host with
-12 CPUs; the download size is the published 0.2.0 image's.
+Memory and start time were measured on the 0.4.0 release candidate, on an EC2 m7g.4xlarge (arm64,
+16 vCPUs, Ubuntu 24.04, Docker 29.9.3), by `scripts/test.sh screenshots` in three runs. The download
+size is the published 0.3.0 image's; 0.4 moves to a newer Bun base image that is about 17 MB larger
+compressed (oven/bun 1.3.1-slim is 67.8 MB on Docker Hub for arm64, 1.4.4-slim is 85.3 MB).
 
 | | |
 |---|---|
-| Download | 82.5 MB (arm64) and 85.0 MB (amd64), compressed layers on Docker Hub |
-| Memory at idle | 53 to 55 MiB, with Caddy serving two HTTPS rules and four other containers on the host (`docker stats` after 30 s, two runs) |
-| Start | 1.0 to 4.2 s from `docker start` to a healthy `/healthz` (ten starts over two runs) |
+| Download | 82.5 MB (arm64) and 85.0 MB (amd64) for 0.3.0, compressed layers on Docker Hub |
+| Memory at idle | 30 to 34 MiB, with Caddy serving two HTTPS rules and four other containers on the host (`docker stats` after 30 s, three runs) |
+| Start | 239 to 299 ms from `docker start` to a healthy `/healthz` (fifteen starts over three runs) |
 
-`scripts/test.sh screenshots` repeats these measurements and regenerates the screenshots.
+`scripts/test.sh screenshots` repeats these measurements and regenerates the screenshots. On a
+Mac under OrbStack the 0.2.1 build used 53 to 55 MiB and started in 1.0 to 4.2 s.
 
 ## Try it
 
@@ -51,18 +60,25 @@ SSH with `ssh -L 8080:127.0.0.1:8080 your-server`. To route domains, see
 
 ## Status
 
-Version 0.2 is a rewrite. Earlier releases (0.1.x) accepted any login and must not be used.
+Version 0.2 was a rewrite; 0.3 added update checks; 0.4 adds automatic updates, notifications,
+editing, clean up and an activity log. Releases 0.1.x accepted any login and must not be used.
 
 What works, and is covered by the test suites below:
 
 - containers: list, inspect, create, start, stop, restart, unpause, remove (stopped containers
-  only; kontainers never force-removes), logs. Commands are split with shell quoting
-  (`sh -c "echo hi; sleep 60"`) but no shell runs and nothing is expanded. The detail page shows
-  CPU, memory, network and process counts, refreshed every 5 seconds.
+  only; kontainers never force-removes them), logs (filter, 300 to 5000 lines, timestamps on or
+  off, download). Commands are split with shell quoting (`sh -c "echo hi; sleep 60"`) but no shell
+  runs and nothing is expanded. The list has a search, a state filter including "needs
+  attention", and grouping by compose project. The detail page shows the command, ports,
+  restarts and health, and CPU, memory, network and process counts refreshed every 5 seconds.
 - update image, for containers created in kontainers: pull the image again and, if it changed,
-  recreate the container with the same name, command, environment, ports, volumes, restart policy
-  and networks. The old container is stopped and set aside first and is put back if the new one
-  cannot be created or started. Compose containers are left to `docker compose pull && docker compose up -d`.
+  recreate the container with the same name, command, environment, ports, restart policy,
+  networks and volumes (anonymous ones included). The old container is stopped and set aside first
+  and is put back if the new one cannot be created or started or stops within 5 seconds. Compose
+  containers are left to `docker compose pull && docker compose up -d`.
+- edit settings, for containers created in kontainers: change the image, command, ports,
+  environment, volumes or restart policy; saving recreates the container the same way, with the
+  old one put back if the new one does not stay up. Bad input is refused before anything stops.
 - update checks: every 6 hours, and on "Check for updates", kontainers asks the registry which
   image each container's tag points at now (through the Docker daemon, which downloads only the
   manifest) and marks containers that run an older one, including containers left on an old image
@@ -70,14 +86,31 @@ What works, and is covered by the test suites below:
   this needs `DISTRIBUTION=1`, which `compose.yaml` sets. On Docker Hub, checks count toward the
   pull rate limit: from one address without a login, six checks of six images lowered the
   remaining count by three (Docker 29.9, 2026-11-14); Docker Hub reported a limit of 100 an hour.
-- images: list, pull (public images; registry logins are not supported), remove, per tag
+- automatic updates, per container, for containers created in kontainers: after each check that
+  finds a newer image, the container is updated as Update image does it, then watched for
+  `KONTAINERS_AUTOUPDATE_SETTLE` seconds (30), and with a healthcheck until it reports healthy
+  (up to `KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT`, 120). If it stops, restarts or turns unhealthy,
+  the old container is put back and that image is held back; a newer image is tried. A container
+  replaced under the same name outside kontainers is not updated automatically.
+- notifications to webhooks (a JSON POST) and ntfy topics, for: a newer image (once per image),
+  an automatic update and its result, a container that stopped on its own (a crash, an error
+  exit, out of memory; not a stop someone asked for, and not exit code 0), a container that turned
+  unhealthy and recovered, and an HTTPS rule with no certificate after 15 minutes or one that
+  is close to expiry. Settings has a test button and shows the last result per target.
+- registry logins for private images (Docker Hub, GHCR, your own registry), used for pulls and
+  update checks; passwords stored encrypted
+- images: list, pull, remove, per tag
 - networks and volumes: list, create, remove
+- clean up: untagged images, unused tagged images, unused networks and unused anonymous
+  volumes, listed with sizes first; anything a container uses, running or stopped, stays, and
+  named volumes are never removed in bulk
 - proxy rules: hostname and path prefix to a container port, HTTPS with a certificate obtained
   automatically, or plain HTTP; edit, enable, disable, remove; kept across restarts
 - local accounts, first-run setup, database backup
+- an Activity page: every action and failed attempt, by whom and from where, kept for a year
 
 Not included: exec/terminal, compose stacks, multiple hosts, roles (every account is an
-administrator), private registry logins.
+administrator).
 
 ## Security
 
@@ -107,6 +140,15 @@ What kontainers does about it:
   There is no way to set privileged mode, capabilities, devices or host namespaces from the UI.
 - The proxy configuration is generated from validated hostnames, path prefixes, container names
   and ports. Caddy's admin API is a unix socket in the data directory, not a TCP port.
+- With the proxy on, kontainers' container shares a network with the proxy targets so Caddy
+  can reach them; the UI refuses connections from that network, so a compromised target cannot
+  reach the login page. Containers no enabled rule points at are taken off it. A rule cannot
+  point at kontainers itself or at the container serving its Docker API.
+- kontainers itself and the container serving its Docker API (the socket proxy) get no Stop,
+  Restart, Remove, Update or Edit, so the UI cannot cut itself off.
+- Every action, including failed ones and logins, is in the Activity log, with who and from where.
+- Notification URLs and tokens are stored in the database as given (only scheme and host are
+  shown); a backup holds them too.
 
 Use `compose.yaml`, which gives kontainers the Docker API through
 [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) rather than the socket
@@ -132,29 +174,70 @@ Then open http://127.0.0.1:8080, enter the token, and create the first account.
 
 With `docker run`, mounting the socket directly:
 
-    docker run -d --name kontainers --restart unless-stopped \
+    docker run -d --name kontainers --restart unless-stopped --stop-timeout 30 \
       -p 127.0.0.1:8080:8080 \
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.3.0
+      ataiva/kontainers:0.4.0
     docker logs kontainers | grep 'setup token'
 
 The image runs as an unprivileged user, so it needs the socket's group (`--group-add`). On
 Docker Desktop the socket is owned by root; use the compose file there.
+
+## Updates and notifications
+
+kontainers checks every 6 hours (`KONTAINERS_UPDATE_CHECK_HOURS`), and when you press Check for
+updates, which image each container's tag points at on its registry. It asks the Docker daemon,
+which fetches only the manifest. Containers on an older image are
+marked on the list and on their page. A digest the registry never served counts as a local build,
+not as an older image.
+
+Containers created in kontainers can be updated automatically: tick "Update automatically" on the
+container's page, or when creating it. After a check finds a newer image, the container is
+recreated from it with the same settings, volumes and networks, and watched for
+`KONTAINERS_AUTOUPDATE_SETTLE` seconds (30); with a healthcheck, until it is healthy (up to
+`KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT`, 120 s). If it stops, restarts or turns unhealthy, the old
+container is put back and that image is held back until a newer one appears. A stop someone
+asks for while it settles (`docker stop`, a backup script) is not a failure: the new container is
+left as they left it. If kontainers itself is stopped meanwhile, it puts the old container back
+before it exits; `compose.yaml` gives it 30 s for that (`stop_grace_period`), and with `docker run`
+add `--stop-timeout 30`. If it is killed first, it finishes the job when it starts again: what it
+was replacing, and whether that was running, is written down before anything is stopped. Compose containers are left to `docker compose pull && docker compose up -d`.
+
+Notification targets are set on the Settings page, with a Send test button:
+
+- a webhook gets a JSON POST:
+
+      {"event": "exit", "title": "web stopped", "message": "web (nginx:1.27) stopped with exit code 1.",
+       "container": "web", "at": "2026-11-16T12:00:00.000Z", "text": "...", "content": "..."}
+
+  `text` and `content` repeat the title and message, for receivers that read one of those fields
+  (Slack-style and Discord-style incoming webhooks; not tested against those services).
+- an ntfy topic URL (`https://ntfy.sh/your-topic`, or your own server) gets the message as plain
+  text with `Title` and `Tags` headers.
+
+A token, if given, is sent as `Authorization: Bearer`. The events: a newer image (once per image,
+naming the containers that use it),
+an automatic update and its result, a container that stopped on its own (a crash, an error exit or
+out of memory; not a stop someone asked for, and not exit code 0; once per 10 minutes per
+container), a container that turned unhealthy and healthy again, and an HTTPS rule with no
+certificate 15 minutes after it was added or with one close to expiry (once a day): a sixth of its
+lifetime left, at most 14 days, which for a 90-day certificate means renewal has been failing
+for two weeks.
 
 ## Proxy rules and certificates
 
 Turn the proxy on with `KONTAINERS_PROXY=1` and publish ports 80 and 443. These two ports are meant
 to be public: they serve the sites you route, not the kontainers UI.
 
-    docker run -d --name kontainers --restart unless-stopped \
+    docker run -d --name kontainers --restart unless-stopped --stop-timeout 30 \
       -p 127.0.0.1:8080:8080 -p 80:80 -p 443:443 \
       -e KONTAINERS_PROXY=1 -e KONTAINERS_ACME_EMAIL=REPLACE-WITH-YOUR-EMAIL \
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.3.0
+      ataiva/kontainers:0.4.0
 
 Use your own email address: Let's Encrypt rejects reserved domains such as example.com, and
 kontainers refuses to start with one.
@@ -194,17 +277,35 @@ briefly unavailable; Caddy did not renew certificates in a process that started 
 | `KONTAINERS_ACME_CA` | Let's Encrypt | ACME directory URL |
 | `KONTAINERS_ACME_CA_ROOT` | unset | PEM file to trust for the ACME directory (for a private CA) |
 | `KONTAINERS_ACME_RENEW_CHECK` | unset (Caddy's default) | Seconds between Caddy's checks for certificates due for renewal, 1 to 86400; HTTPS rules only |
-| `KONTAINERS_SELF_CONTAINER` | the container's hostname | ID or name of kontainers' own container, if `--hostname` changed it; kontainers and its compose project get no Stop, Remove or Update |
+| `KONTAINERS_SELF_CONTAINER` | the container's hostname | ID or name of kontainers' own container, if `--hostname` changed it; kontainers and the container serving its Docker API get no Stop, Remove or Update |
 | `KONTAINERS_UPDATE_CHECK_HOURS` | `6` | Hours between update checks, 0 to 720; `0` turns scheduled checks off ("Check for updates" still works) |
+| `KONTAINERS_AUTOUPDATE_SETTLE` | `30` | Seconds a new container is watched after an automatic update, 0 to 600 |
+| `KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT` | `120` | Seconds to wait for "healthy" after settling, for images with a healthcheck, 0 to 3600 |
 | `KONTAINERS_HTTP_PORT` / `KONTAINERS_HTTPS_PORT` | `80` / `443` | Proxy ports |
 
 `/healthz` returns 200 while the process runs. `/readyz` returns 200 when the database and the
 Docker API are reachable, 503 otherwise. Neither needs a login.
 
+## Private registries
+
+For private images, add a login on the Settings page: the registry (`ghcr.io`, `docker.io`,
+`registry.example.com:5000`), a username and a password or token; a token that can only read is
+enough. kontainers hands it to the Docker daemon with each pull and update check of an image on
+that registry (the `X-Registry-Auth` header). Logins made with `docker login` on the host are kept
+by the Docker CLI, not the daemon, so kontainers cannot see them. A login is checked when it is
+saved, and one the registry refuses is not saved (a wrong Docker Hub login would make every pull
+from Docker Hub fail, public images too); with `compose.yaml` the check needs `AUTH=1` on the socket
+proxy, which it sets.
+
+Passwords are stored encrypted (AES-256-GCM) with a key in the data volume, `registry.key`, which
+the database backup does not include. A backup on its own holds only the ciphertext; after
+restoring one on another host, enter the passwords again.
+
 ## Backup and restore
 
-The data volume holds `kontainers.db` (accounts, sessions, proxy rules) and `caddy/` (ACME account
-and certificates). A consistent copy of the database, while kontainers runs:
+The data volume holds `kontainers.db` (accounts, sessions, proxy rules, notification targets,
+automatic-update settings, registry logins), `registry.key` and `caddy/` (ACME account and
+certificates). Notification URLs and tokens are stored as given, so treat a backup as a secret. A consistent copy of the database, while kontainers runs:
 
     docker exec kontainers bun src/main.ts backup /data/backup.db
     docker cp kontainers:/data/backup.db .
@@ -228,6 +329,12 @@ the host.
     scripts/test.sh e2e        # Playwright (Chromium) against the image
     scripts/test.sh proxy      # proxy rules and certificates against Pebble, inside dind
     scripts/test.sh renewal    # Pebble issues 90-second certificates; Caddy must renew them itself
+    scripts/test.sh compose    # the README compose instructions, verbatim, inside dind
+
+The image suite also runs the image with its data volume on a 1 MB tmpfs and fills it; the browser
+suite runs axe-core (WCAG 2 A and AA) on every page at desktop and phone size. Set
+`DIND_MIRROR=https://mirror.gcr.io` when many runs share one address, against Docker Hub's
+anonymous pull limit; CI does.
 
 `KEEP=1` leaves the test environment running for inspection.
 

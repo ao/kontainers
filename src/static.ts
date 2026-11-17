@@ -8,7 +8,7 @@ const css = `
 :root {
   --ground: #f5f7f6; --panel: #ffffff; --ink: #1c2329; --muted: #5b6670; --line: #d8dedb;
   --marine: #14456e; --marine-ink: #ffffff; --link: #14456e;
-  --run: #1f7a4a; --warn: #b26a00; --stop: #8a949c; --rust: #a63a2b;
+  --run: #1f7a4a; --warn: #955800; --stop: #8a949c; --rust: #a63a2b;
   --focus: #2f7fd1; --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 @media (prefers-color-scheme: dark) {
@@ -40,7 +40,21 @@ h2 { font-size: 1.05rem; font-weight: 650; margin: 2rem 0 .6rem; }
 p { max-width: 70ch; }
 
 table { border-collapse: separate; border-spacing: 0; width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
-th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
+th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid var(--line); vertical-align: middle; overflow-wrap: break-word; }
+/* Names, image references, hostnames and addresses can be one very long word: those may break
+   anywhere, so the table fits the screen. Ordinary words (headers, states, buttons) stay whole. */
+/* Long names, references and addresses carry <wbr> break points (views.ts brk); IDs stay whole. */
+code.id { white-space: nowrap; }
+.phone-only { display: none; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* A table that is still wider than the screen (a very long name) scrolls inside its own box, not
+   the whole page. */
+.scroll { overflow-x: auto; max-width: 100%; }
+/* Notes in the actions column ("this is kontainers", "being updated") wrap instead of widening it. */
+td.actions small { white-space: normal; }
+@media (min-width: 721px) { #containers td:nth-child(2) { min-width: 14rem; } }
+/* Free text (results, notes, errors) may hold a long address or reference without break points. */
+td.free, td small { overflow-wrap: anywhere; }
 tr:last-child td { border-bottom: 0; }
 th { font-weight: 600; font-size: .85rem; color: var(--muted); background: var(--ground); }
 tbody tr:hover td { background: color-mix(in srgb, var(--panel) 92%, var(--marine)); }
@@ -54,6 +68,7 @@ tr[data-state] td:first-child { box-shadow: inset 5px 0 0 var(--stripe, var(--st
 tr[data-state="running"] { --stripe: var(--run); }
 tr[data-state="restarting"], tr[data-state="paused"] { --stripe: var(--warn); }
 tr[data-state="dead"] { --stripe: var(--rust); }
+tr[data-health="unhealthy"] { --stripe: var(--warn); }
 .state { display: inline-flex; align-items: center; gap: .4rem; font-weight: 600; }
 .state::before { content: ""; width: .55rem; height: .55rem; border-radius: 50%; background: var(--stripe, var(--stop)); }
 .state.running { --stripe: var(--run); color: var(--run); }
@@ -67,6 +82,21 @@ form.stack label { display: grid; gap: .3rem; font-weight: 550; }
 form.stack label.check, label.check { display: flex; align-items: center; gap: .5rem; font-weight: 500; }
 form.row { display: flex; gap: .5rem; margin-bottom: 1.2rem; max-width: 36rem; }
 form.row input { flex: 1; }
+.logbar { display: flex; flex-wrap: wrap; align-items: end; gap: .6rem 1rem; margin-bottom: .6rem; }
+.logbar label { display: grid; gap: .25rem; font-size: .85rem; font-weight: 550; color: var(--muted); }
+.logbar label.check { display: flex; align-items: center; gap: .4rem; }
+form.autoupdate { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin: 1rem 0; padding: .8rem 1rem; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; max-width: 46rem; box-sizing: border-box; }
+form.autoupdate small { flex-basis: 100%; }
+fieldset { border: 1px solid var(--line); border-radius: 6px; padding: .6rem .9rem; display: grid; gap: .45rem; margin: 0; }
+legend { font-weight: 550; padding: 0 .3rem; }
+form.filters { display: flex; flex-wrap: wrap; align-items: end; gap: .6rem 1rem; margin-bottom: 1rem; }
+form.filters label { display: grid; gap: .25rem; font-size: .85rem; font-weight: 550; color: var(--muted); }
+form.filters input[type=search] { min-width: 16rem; }
+tr.group th { background: var(--ground); color: var(--ink, inherit); font-size: .9rem; padding-top: .8rem; }
+tr.group th small { color: var(--muted); font-weight: 500; margin-left: .4rem; }
+tr.group .groupacts { float: right; font-weight: 400; }
+tr.group .groupacts button { padding: .2rem .6rem; font-size: .82rem; }
+tr[data-attention] td:nth-child(3) .state { color: var(--rust); }
 input, select, textarea, button { font: inherit; color: inherit; }
 input, select, textarea { padding: .5rem .6rem; border: 1px solid var(--line); border-radius: 5px; background: var(--panel); font-weight: 400; }
 input:focus, select:focus, textarea:focus { border-color: var(--focus); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 25%, transparent); }
@@ -84,10 +114,11 @@ button.link { border: 0; padding: 0; background: none; color: var(--link); font-
 .actions button, .actions a.button { padding: .3rem .7rem; font-size: .88rem; }
 div.actions { margin: 1rem 0; white-space: normal; }
 
-.flash, .error { padding: .6rem .9rem; border-radius: 5px; border-left: 4px solid; background: var(--panel); max-width: 70ch; }
+p.warn[role=alert] { padding: .6rem .9rem; border-radius: 5px; border-left: 4px solid var(--warn); background: var(--panel); max-width: 70ch; color: var(--ink); }
+.flash, .error { white-space: pre-line; padding: .6rem .9rem; border-radius: 5px; border-left: 4px solid; background: var(--panel); max-width: 70ch; }
 .flash { border-color: var(--run); }
 .error { border-color: var(--rust); color: var(--ink); }
-span.error, small .error { padding: 0; border: 0; background: none; color: var(--rust); }
+span.error, small .error, small.error { padding: 0; border: 0; background: none; color: var(--rust); max-width: none; }
 .warn { color: var(--warn); }
 .muted { color: var(--muted); }
 .toolbar { display: flex; align-items: center; gap: .9rem; margin-bottom: 1rem; flex-wrap: wrap; }
@@ -105,14 +136,32 @@ ul.pulls { margin: 0 0 1rem; padding-left: 1.2rem; }
 
 dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: .35rem 1.5rem; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: .9rem 1.1rem; max-width: 46rem; }
 dl.facts dt { color: var(--muted); }
-dl.facts dd { margin: 0; }
+dl.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 pre#logs { background: #0f1418; color: #d7dee2; padding: .9rem 1rem; max-height: 32rem; overflow: auto; font: .82rem/1.5 var(--mono); white-space: pre-wrap; border-radius: 6px; }
 
 @media (max-width: 720px) {
-  header { gap: .5rem; } nav a { padding: .55rem .45rem; }
-  th:nth-child(4), td:nth-child(4) { display: none; }
+  header { gap: 0 .5rem; padding: 0 .75rem; }
+  .brand { flex-basis: 100%; padding: .65rem 0 .15rem; }
+  nav { gap: 0; }
+  nav a { padding: .55rem .5rem; }
+  nav .spacer { display: none; }
+  nav .who { margin-left: auto; }
+  #containers th:nth-child(4), #containers td:nth-child(4) { display: none; }
+  /* The image goes under the name, so the table fits a phone. */
+  #containers th:nth-child(2), #containers td:nth-child(2) { display: none; }
+  #containers .phone-only { display: block; }
+  td.actions button { padding: .25rem .5rem; }
+  main { padding-left: .75rem; padding-right: .75rem; }
+  th.wide, td.wide { display: none; }
+  th, td { padding: .5rem .4rem; }
+  tr.group .groupacts { float: none; display: block; margin-top: .3rem; }
+  td.actions form, td.actions a.button, td > form.inline { display: inline-block; margin-bottom: .25rem; }
   .actions { white-space: normal; }
+  form.filters input[type=search] { min-width: 0; width: 100%; }
+  form.filters label:first-child { flex-basis: 100%; }
 }
+dl.facts dd small { display: block; }
+table + form.stack, .scroll + form.stack { margin-top: 1rem; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
 `;
 
@@ -147,25 +196,106 @@ document.addEventListener('submit', function (e) {
 (function () {
   var pre = document.getElementById('logs');
   if (!pre) return;
-  var url = pre.getAttribute('data-logs');
-  var follow = document.getElementById('follow');
-  var gone = false;
+  var base = pre.getAttribute('data-logs');
+  var follow = document.getElementById('follow'), filter = document.getElementById('logfilter');
+  var lines = document.getElementById('loglines'), ts = document.getElementById('logts');
+  var count = document.getElementById('logcount'), dl = document.getElementById('logdl');
+  var gone = false, text = '', timer = null;
   // Terminal colour and cursor codes are removed; the text is shown as plain text.
   var ansi = /\\u001b\\[[0-9;?]*[A-Za-z]|\\u001b\\][^\\u0007]*\\u0007/g;
+  function url() { return base + '?tail=' + (lines ? lines.value : '300') + '&timestamps=' + (ts && !ts.checked ? '0' : '1'); }
+  function show() {
+    var atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+    var all = text ? text.replace(/\\n$/, '').split('\\n') : [];
+    var q = filter ? filter.value.trim().toLowerCase() : '';
+    var kept = q ? all.filter(function (l) { return l.toLowerCase().indexOf(q) !== -1; }) : all;
+    pre.textContent = kept.length ? kept.join('\\n') : (q ? '(no line contains that)' : '(no output)');
+    if (count) count.textContent = q ? kept.length + ' of ' + all.length + ' lines' : all.length + (all.length === 1 ? ' line' : ' lines');
+    if (atEnd) pre.scrollTop = pre.scrollHeight;
+  }
   function load() {
-    fetch(url, { credentials: 'same-origin' }).then(function (r) {
+    fetch(url(), { credentials: 'same-origin' }).then(function (r) {
       if (r.status === 404) { gone = true; throw new Error('the container no longer exists'); }
       if (r.status === 401) { gone = true; throw new Error('your session has ended; reload the page to log in'); }
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return r.text();
-    }).then(function (t) {
-      var atEnd = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
-      pre.textContent = t.replace(ansi, '') || '(no output)';
-      if (atEnd) pre.scrollTop = pre.scrollHeight;
-    }).catch(function (err) { pre.textContent = 'could not load logs: ' + err.message; });
+    }).then(function (t) { text = t.replace(ansi, ''); show(); })
+      .catch(function (err) { pre.textContent = 'could not load logs: ' + err.message; });
   }
+  // More lines are fetched less often.
+  function schedule() {
+    if (timer) clearInterval(timer);
+    var every = lines && Number(lines.value) > 1000 ? 5000 : 2000;
+    timer = setInterval(function () { if (!gone && follow && follow.checked && !document.hidden) load(); }, every);
+  }
+  if (filter) filter.addEventListener('input', show);
+  if (lines) lines.addEventListener('change', function () { load(); schedule(); });
+  if (ts) ts.addEventListener('change', function () {
+    load();
+    if (dl) dl.href = dl.href.replace(/&timestamps=0/, '') + (ts.checked ? '' : '&timestamps=0');
+  });
   load();
-  setInterval(function () { if (!gone && follow && follow.checked && !document.hidden) load(); }, 2000);
+  schedule();
+})();
+(function () {
+  // A table box that does scroll (a very long name on a narrow screen) can be reached and scrolled
+  // with the keyboard, and says what it holds; one that does not scroll is no extra tab stop.
+  function mark() {
+    var boxes = document.querySelectorAll('.scroll');
+    for (var i = 0; i < boxes.length; i++) {
+      var b = boxes[i];
+      if (b.scrollWidth > b.clientWidth + 1) {
+        b.setAttribute('tabindex', '0');
+        b.setAttribute('role', 'region');
+        var h = b.previousElementSibling;
+        while (h && !/^H[1-3]$/.test(h.tagName)) h = h.previousElementSibling;
+        b.setAttribute('aria-label', (h ? h.textContent : document.title.split(' - ')[0]) + ' (table, scrolls sideways)');
+      } else { b.removeAttribute('tabindex'); b.removeAttribute('role'); b.removeAttribute('aria-label'); }
+    }
+  }
+  mark();
+  window.addEventListener('resize', mark);
+  window.kontainersMarkScroll = mark;
+})();
+(function () {
+  // Containers page: the search box and the Show select filter the rows as you type. Rows the
+  // server left out of a filter carry hidden, so clearing the box brings them back.
+  var q = document.getElementById('q'), table = document.getElementById('containers');
+  if (!q || !table || !q.form) return;
+  var form = q.form, nomatch = document.getElementById('nomatch');
+  function keep(r, t, st) {
+    if (r.getAttribute('data-search').indexOf(t) === -1) return false;
+    var s = r.getAttribute('data-state');
+    if (st === 'running') return s === 'running' || s === 'paused';
+    if (st === 'stopped') return s !== 'running' && s !== 'restarting' && s !== 'paused';
+    if (st === 'attention') return r.hasAttribute('data-attention');
+    return true;
+  }
+  function apply() {
+    var t = q.value.trim().toLowerCase(), st = form.elements.state.value, any = false, total = 0, head = null, seen = false;
+    var rows = table.tBodies[0].rows;
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (r.classList.contains('group')) { if (head) head.hidden = !seen; head = r; seen = false; continue; }
+      if (!r.hasAttribute('data-search')) continue;
+      total++;
+      var ok = keep(r, t, st);
+      r.hidden = !ok;
+      if (ok) { any = true; seen = true; }
+    }
+    if (head) head.hidden = !seen;
+    if (nomatch) nomatch.hidden = any || !total;
+    if (window.kontainersMarkScroll) window.kontainersMarkScroll();
+    // The filter goes into the address, so Back from a container returns to the same list.
+    if (window.history && history.replaceState) {
+      var u = new URL(location.href);
+      if (q.value.trim()) u.searchParams.set('q', q.value.trim()); else u.searchParams.delete('q');
+      if (st !== 'all') u.searchParams.set('state', st); else u.searchParams.delete('state');
+      history.replaceState(null, '', u.pathname + u.search);
+    }
+  }
+  q.addEventListener('input', apply);
+  form.elements.state.addEventListener('change', apply);
 })();
 `;
 
