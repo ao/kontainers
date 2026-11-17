@@ -3,8 +3,8 @@
 ## 0.4.1
 
 - The image stores the Caddy binary once. 0.4.0 copied it in and then gave it the capability to
-  bind ports 80 and 443 in a second layer, which holds a full copy: the download is about 17 MB
-  smaller (on arm64, 101 MB against 118.5 MB, measured as the compressed image).
+  bind ports 80 and 443 in a second layer, which holds a full copy: the download is 101.9 MB
+  (arm64) and 102.3 MB (amd64) on Docker Hub, against 118.5 and 120.5 MB for 0.4.0.
 - The 0.4.0 notes below said its download was about 17 MB larger than 0.3.0's; it was 36 MB larger
   (82.5 to 118.5 MB on arm64, 85.0 to 120.5 MB on amd64), 16.5 MB of it the copy above.
 
