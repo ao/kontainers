@@ -27,6 +27,7 @@ import { diskFull, DISK_FULL, storageTrouble, writeFailed } from './storage';
 import { validateRegistry, type Registries } from './registries';
 import { validateSchedule, describeSchedule, DAY_NAMES, type ScheduleStore } from './schedule';
 import { otpauthUri, type TwoFactor } from './totp';
+import type { Backups } from './backups';
 
 export interface Deps {
   cfg: Config;
@@ -48,6 +49,7 @@ export interface Deps {
   journal?: Journal;
   schedule?: ScheduleStore;
   twoFactor?: TwoFactor;
+  backups?: Backups;
 }
 
 export type Handler = (req: Request, socketIp: string) => Promise<Response>;
@@ -650,8 +652,15 @@ export function createHandler(d: Deps): Handler {
         return rule ? page(views.editRulePage(ctx(s), rule)) : page(views.layout('Not found', ctx(s), views.html`<p>There is no proxy rule ${r[1]}. <a href="/proxy">Proxy</a></p>`), 404);
       }
       if (p === '/settings') return page(views.settingsPage(ctx(s), auth.listUsers(), s.user.id, d.notifier ? d.notifier.list() : null, d.events ? { connected: d.events.connected, error: d.events.lastError } : null, d.registries ? d.registries.list() : null, d.schedule ? d.schedule.get() : null,
-        d.twoFactor ? { mine: d.twoFactor.enabled(s.user.id), left: d.twoFactor.recoveryLeft(s.user.id), users: new Set(auth.listUsers().filter(u => d.twoFactor!.enabled(u.id)).map(u => u.id)) } : null));
+        d.twoFactor ? { mine: d.twoFactor.enabled(s.user.id), left: d.twoFactor.recoveryLeft(s.user.id), users: new Set(auth.listUsers().filter(u => d.twoFactor!.enabled(u.id)).map(u => u.id)) } : null,
+        d.backups ? { keep: d.backups.keep, files: d.backups.list() } : null));
       if (p === '/api/backup') { safeAudit(s, 'backup', null, ip); return backup(); }
+      if ((r = /^\/settings\/backups\/([^/]+)$/.exec(p)) && d.backups) {
+        const name = decodeURIComponent(r[1]);
+        const file = d.backups.path(name);
+        safeAudit(s, 'backup', name, ip);
+        return new Response(Bun.file(file), { headers: { 'content-type': 'application/vnd.sqlite3', 'content-disposition': `attachment; filename="${name}"` } });
+      }
       if (p.startsWith('/api/')) return text('not found\n', 404);
       return page(views.layout('Not found', ctx(s), views.html`<p>There is no page at this address. <a href="/containers">Containers</a></p>`), 404);
     }

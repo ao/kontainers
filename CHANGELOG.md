@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Update image and automatic updates work for containers kontainers did not create: compose and
+  `docker run` ones. They are copied whole from `docker inspect` (privileges, limits, labels,
+  healthchecks and anonymous volumes included), with the old image's defaults left to the new image,
+  and the copy is compared with the old container before it starts. Compose's record of the image
+  is set to the new one, so `docker compose up -d` afterwards does not recreate the container.
+  Digest-pinned references, swarm tasks and containers whose namespaces others share are refused.
+- The label `kontainers.autoupdate=true` opts a container into automatic updates from its own
+  configuration (a compose file), and keeps it opted in when compose recreates it.
+- Before a migration the database is copied to `/data/backups/before-schema-N-...db`; without the
+  copy there is no migration. Daily copies are kept too (`KONTAINERS_BACKUP_KEEP`, 7; 0 turns them
+  off), listed on the Settings page with download links.
+
 ## 0.5.0
 
 Two-factor login, and an update window and delay for automatic updates.

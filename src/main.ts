@@ -21,6 +21,7 @@ import { Notifier } from './notify';
 import { Registries, registryOf } from './registries';
 import { AutoUpdates } from './autoupdate';
 import { EventWatcher, checkCertificates } from './events';
+import { Backups } from './backups';
 
 let cfg: ReturnType<typeof loadConfig>;
 try { cfg = loadConfig(); } catch (e) { console.error(`kontainers: ${(e as Error).message}`); process.exit(1); }
@@ -96,11 +97,12 @@ const systemAudit = (action: string, target: string, result?: string) =>
 // Aborted at shutdown, so a replacement being watched is undone instead of left half done.
 const stopping = new AbortController();
 const schedule = new ScheduleStore(db, cfg.autoUpdateSchedule);
+const backups = new Backups(db, cfg.dataDir, cfg.backupKeep);
 const autoUpdates: AutoUpdates = new AutoUpdates(db, docker, updates, notifier, { settleMs: cfg.autoUpdateSettle * 1000, healthTimeoutMs: cfg.autoUpdateHealthTimeout * 1000, signal: stopping.signal, journal, wasStopped: (id: string): boolean => events.wasStopped(id), schedule }, systemAudit);
 autoUpdates.start();
 updates.onChecked = () => autoUpdates.afterCheck();
 const events: EventWatcher = new EventWatcher(docker, notifier, Date.now, ms => Bun.sleep(ms), name => autoUpdates.busy.has(name));
-const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal, schedule, twoFactor: new TwoFactor(db) });
+const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal, schedule, twoFactor: new TwoFactor(db), backups });
 updates.start();
 events.replaceWindowMs = (cfg.autoUpdateSettle + cfg.autoUpdateHealthTimeout + 60) * 1000;
 events.start();
@@ -111,6 +113,14 @@ const certTimers = cfg.proxy.enabled ? [setTimeout(certCheck, 5 * 60_000), setIn
 const pruneAudit = () => { try { db.query('DELETE FROM audit_log WHERE at < ?').run(Date.now() - 365 * 86400_000); } catch (e) { console.error(`kontainers: could not prune the activity log: ${(e as Error).message}`); } };
 pruneAudit();
 const auditTimer = setInterval(pruneAudit, 86400_000);
+// A copy of the database a day (backups.ts): looked for a minute after the start, then hourly.
+const dailyBackup = () => {
+  try { const n = backups.daily(); if (n) console.log(`kontainers: daily backup written to ${join(cfg.dataDir, 'backups', n)}`); } catch (e) {
+    console.error(`kontainers: the daily backup failed: ${(e as Error).message}`);
+    try { systemAudit('backup-daily', 'database', `failed: ${(e as Error).message}`.slice(0, 500)); } catch { /* the volume is full, probably */ }
+  }
+};
+const backupTimers = [setTimeout(dailyBackup, 60_000), setInterval(dailyBackup, 3600_000)];
 
 const server = Bun.serve({
   hostname: cfg.host,
@@ -199,6 +209,7 @@ async function shutdown(sig: string) {
   events.stop();
   for (const t of certTimers) clearTimeout(t as any);
   clearInterval(auditTimer);
+  for (const t of backupTimers) clearTimeout(t as any);
   await proxy.stop();
   db.close();
   process.exit(0);

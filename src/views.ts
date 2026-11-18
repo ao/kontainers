@@ -5,6 +5,7 @@ import { domainToUnicode } from 'node:url';
 import { containerStatus, type UpdateState } from './updates';
 import { EVENTS, EVENT_KINDS, maskUrl, type Target } from './notify';
 import type { RegistryLogin } from './registries';
+import type { BackupFile } from './backups';
 import { DAY_NAMES, describeSchedule, formTime, type Schedule } from './schedule';
 
 export function esc(v: unknown): string {
@@ -552,7 +553,7 @@ export function editRulePage(ctx: PageCtx, r: Rule): string {
 </form>`, 'Proxy');
 }
 
-export function settingsPage(ctx: PageCtx, users: { id: number; username: string }[], selfId: number, targets: Target[] | null = null, watch: { connected: boolean; error: string | null } | null = null, logins: RegistryLogin[] | null = null, schedule: Schedule | null = null, tf: { mine: boolean; left: number; users: Set<number> } | null = null): string {
+export function settingsPage(ctx: PageCtx, users: { id: number; username: string }[], selfId: number, targets: Target[] | null = null, watch: { connected: boolean; error: string | null } | null = null, logins: RegistryLogin[] | null = null, schedule: Schedule | null = null, tf: { mine: boolean; left: number; users: Set<number> } | null = null, backups: { keep: number; files: BackupFile[] } | null = null): string {
   const rows = users.map(u => html`<tr><td>${u.username}${tf?.users.has(u.id) ? html` <small class="muted">two-factor</small>` : ''}</td>
 <td class="actions">${u.id === selfId ? html`<em>you</em>` : html`${post(ctx, `/settings/users/${u.id}/remove`, 'Remove', { confirm: `Remove user ${u.username}?`, cls: 'danger' })}${tf?.users.has(u.id) ? html` ${post(ctx, `/settings/users/${u.id}/2fa-reset`, 'Turn off two-factor', { confirm: `Turn off two-factor login for ${u.username}? They log in with the password alone until they set it up again.` })}` : ''}`}</td></tr>`);
   const twoFactor = !tf ? '' : tf.mine
@@ -581,7 +582,15 @@ ${schedule ? scheduleSection(ctx, schedule) : ''}
 ${targets ? notifySection(ctx, targets, watch) : ''}
 ${logins ? registrySection(ctx, logins) : ''}
 <h2>Backup</h2>
-<p><a href="/api/backup">Download a database snapshot</a>. Certificates are in the data volume; see the README for a full backup.${logins?.length ? ' The snapshot holds registry passwords encrypted; the key, registry.key, stays in the data volume, so after restoring on another host enter them again.' : ''}</p>`);
+<p><a href="/api/backup">Download a database snapshot</a>. Certificates are in the data volume; see the README for a full backup.${logins?.length ? ' The snapshot holds registry passwords encrypted; the key, registry.key, stays in the data volume, so after restoring on another host enter them again.' : ''}</p>
+${backups ? backupSection(backups) : ''}`);
+}
+
+function backupSection(b: { keep: number; files: BackupFile[] }): Html {
+  const when = (t: number) => new Date(t).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+  const rows = b.files.map(f => html`<tr><td><a href="/settings/backups/${encodeURIComponent(f.name)}">${f.name}</a></td><td>${f.kind === 'daily' ? 'daily' : 'before an upgrade'}</td><td>${when(f.at)}</td><td>${fmtSize(f.size)}</td></tr>`);
+  return html`<p>${b.keep > 0 ? `kontainers keeps a copy of its database from each day, the newest ${b.keep}, in /data/backups (KONTAINERS_BACKUP_KEEP).` : 'Daily copies are off (KONTAINERS_BACKUP_KEEP=0).'} Before an upgrade changes the database, a copy is taken there too, so the older version can be started again on it. They are in the same volume as the database: copy them elsewhere to survive losing it.</p>
+${rows.length ? html`<div class="scroll"><table><thead><tr><th scope="col">Copy</th><th scope="col">Taken</th><th scope="col">At</th><th scope="col">Size</th></tr></thead><tbody>${rows}</tbody></table></div>` : html`<p class="muted">No copies yet; the first daily one is taken a minute after kontainers starts.</p>`}`;
 }
 
 function scheduleSection(ctx: PageCtx, s: Schedule): Html {
