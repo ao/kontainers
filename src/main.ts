@@ -44,7 +44,9 @@ if (cmd === 'backup') {
     const d = openDb(cfg.dataDir);
     const u = d.query('SELECT id, username FROM users WHERE username = ?').get(arg) as { id: number; username: string } | null;
     if (!u) { console.error(`kontainers: no user ${arg}`); process.exit(1); }
-    new TwoFactor(d).disable(u.id);
+    const tf = new TwoFactor(d);
+    if (!tf.enabled(u.id)) { console.log(`kontainers: two-factor login was already off for ${u.username}`); process.exit(0); }
+    tf.disable(u.id);
     d.query('INSERT INTO audit_log (at, username, action, target, ip, result) VALUES (?, ?, ?, ?, ?, ?)').run(Date.now(), null, '2fa-reset', u.username, null, 'note: from the command line');
     console.log(`kontainers: two-factor login is off for ${u.username}`);
     process.exit(0);

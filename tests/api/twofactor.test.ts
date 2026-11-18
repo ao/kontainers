@@ -89,18 +89,53 @@ describe('two-factor login', () => {
     let last = 0;
     for (let i = 0; i < 5; i++) last = (await w.post('/login/code', { token: p.token, code: '000000' }, { csrf: false })).status;
     expect([401, 429]).toContain(last);
-    expect((await w.post('/login/code', { token: p.token, code: code() }, { csrf: false })).status).toBe(401);
-    expect((await w.post('/login/code', { token: 'made-up', code: code() }, { csrf: false })).status).toBe(401);
+    expect([401, 429]).toContain((await w.post('/login/code', { token: p.token, code: code() }, { csrf: false })).status);
+    expect([401, 429]).toContain((await w.post('/login/code', { token: 'made-up', code: code() }, { csrf: false })).status);
+  });
+
+  test('wrong passwords from a logged-in session count toward the login limit', async () => {
+    await c.page('/settings');
+    let status = '';
+    for (let i = 0; i < 6; i++) {
+      const r = await c.submit('/settings/2fa/disable', { password: `wrong ${i} password` });
+      status = r.error;
+    }
+    expect(status).toContain('too many wrong passwords');
   });
 
   test('reset from the command line: the password alone logs in again, and Activity says so', async () => {
     const out = await runMain(['reset-2fa', 'admin'], { KONTAINERS_DATA: srv.dataDir });
     expect(out.code).toBe(0);
     expect(out.out).toContain('two-factor login is off for admin');
+    const again = await runMain(['reset-2fa', 'admin'], { KONTAINERS_DATA: srv.dataDir });
+    expect(again.out).toContain('was already off');
     // The limits from the wrong codes above are per username; a fresh login waits them out on
     // another account would be cleaner, but the reset itself is what is tested here.
     const page = await c.page('/activity');
-    expect(page).toContain('turned off two-factor login of user');
+    expect(page).toContain('turned off the two-factor login of');
     expect(page).toContain('turned on two-factor login for');
+  });
+});
+
+describe('two-factor login: the tries a login gets', () => {
+  let srv: Running, c: Client;
+  beforeAll(async () => { ({ srv, c } = await readyServer({ KONTAINERS_UPDATE_CHECK_HOURS: '0' })); });
+  afterAll(async () => { await srv?.stop(); });
+  test('the right password does not use up a try: five wrong codes end the attempt with its own message', async () => {
+    await c.page('/settings');
+    const page = await (await c.post('/settings/2fa/start', {})).text();
+    const secret = unbase32(/<dt>Key<\/dt><dd><code>([A-Z2-7 ]+)<\/code>/.exec(page)![1]);
+    c.csrf = /name="_csrf" value="([^"]+)"/.exec(page)![1];
+    // Two tabs: the second start shows the same key, so a code from the first still works.
+    const again = await (await c.post('/settings/2fa/start', {})).text();
+    expect(again).toContain(/<dt>Key<\/dt><dd><code>([A-Z2-7 ]+)<\/code>/.exec(page)![1]);
+    expect((await c.post('/settings/2fa/confirm', { code: hotp(secret, step(Date.now())) })).status).toBe(200);
+    const w = new Client(srv.base);
+    const res = await w.post('/login', { username: 'admin', password: PW }, { csrf: false });
+    const token = /name="token" value="([^"]+)"/.exec(await res.text())![1];
+    const bodies: string[] = [];
+    for (let i = 0; i < 5; i++) bodies.push(await (await w.post('/login/code', { token, code: '000000' }, { csrf: false })).text());
+    expect(bodies[3]).toContain('That code is not right');
+    expect(bodies[4]).toContain('Too many wrong codes. Enter the password again.');
   });
 });

@@ -7,7 +7,8 @@
   other sessions; replacing or removing the key needs the password. More than 20 wrong codes in a
   day lock the account's second step for the rest of the day, and the next login says how many
   wrong codes were entered. Another account can turn it off for a user, and so can
-  `docker exec kontainers bun src/main.ts reset-2fa USERNAME` on the host.
+  `docker compose exec kontainers bun src/main.ts reset-2fa USERNAME` on the host
+  (`docker exec <container> ...` without compose).
 - Automatic updates can be limited to an update window (hours in UTC, days of the week) and wait a
   number of hours after a newer image is first seen (Settings, or `KONTAINERS_AUTOUPDATE_WINDOW`
   and `KONTAINERS_AUTOUPDATE_DELAY_HOURS`). A container that waits says until when.

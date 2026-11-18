@@ -132,7 +132,8 @@ What kontainers does about it:
 - Two-factor login, per account (Settings): after the password, a six-digit code from an
   authenticator app (TOTP, RFC 6238), or one of ten one-time recovery codes. Each code works once,
   and wrong codes count toward the login limit below. Another account can turn it off for a user,
-  and so can `docker exec kontainers bun src/main.ts reset-2fa USERNAME` on the host. The keys are
+  and so can `docker compose exec kontainers bun src/main.ts reset-2fa USERNAME` on the host
+  (`docker exec <container> ...` without compose). The keys are
   in the database, so the backup holds them: keep it as private as the data volume.
 - Every state change is a POST that needs a per-session CSRF token and a same-origin `Origin` /
   `Sec-Fetch-Site`. Requests with an unknown `Host` are refused, to stop DNS rebinding.
@@ -290,7 +291,7 @@ briefly unavailable; Caddy did not renew certificates in a process that started 
 | `KONTAINERS_ACME_CA_ROOT` | unset | PEM file to trust for the ACME directory (for a private CA) |
 | `KONTAINERS_ACME_RENEW_CHECK` | unset (Caddy's default) | Seconds between Caddy's checks for certificates due for renewal, 1 to 86400; HTTPS rules only |
 | `KONTAINERS_SELF_CONTAINER` | the container's hostname | ID or name of kontainers' own container, if `--hostname` changed it; kontainers and the container serving its Docker API get no Stop, Remove or Update |
-| `KONTAINERS_UPDATE_CHECK_HOURS` | `6` | Hours between update checks, 0 to 720; `0` turns scheduled checks off ("Check for updates" still works) |
+| `KONTAINERS_UPDATE_CHECK_HOURS` | `6` | Hours between update checks, 0 to 720; `0` turns scheduled checks off ("Check for updates" still works, and automatic updates then follow only its results) |
 | `KONTAINERS_AUTOUPDATE_SETTLE` | `30` | Seconds a new container is watched after an automatic update, 0 to 600 |
 | `KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT` | `120` | Seconds to wait for "healthy" after settling, for images with a healthcheck, 0 to 3600 |
 | `KONTAINERS_AUTOUPDATE_WINDOW` | unset (any time) | When automatic updates may run, in UTC: `02:00-05:00`, optionally followed by days (`02:00-05:00 Sat,Sun`); applies until a window is saved on the Settings page |

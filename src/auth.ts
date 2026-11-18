@@ -167,4 +167,9 @@ export class RateLimiter {
   }
 
   reset(...keys: string[]): void { for (const k of keys) this.hits.delete(k); }
+
+  // Takes back one counted attempt (one that turned out not to be a failure).
+  undo(...keys: string[]): void {
+    for (const k of keys) { const h = this.hits.get(k); if (h && h.n > 0) h.n--; }
+  }
 }

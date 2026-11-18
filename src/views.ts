@@ -166,7 +166,7 @@ export function recoveryCodesPage(ctx: PageCtx, codes: string[]): string {
 <p class="flash" role="status">From now on, logging in asks for a code from the app after the password. Your other sessions were logged out.</p>
 <p>These recovery codes each let you log in once without the app. Keep them somewhere safe, away from the phone; they are not shown again.</p>
 <ul class="codes">${codes.map(c => html`<li><code>${c}</code></li>`)}</ul>
-<p>Locked out without them? Another account can turn your two-factor login off on its Settings page, or on the host: <code>docker exec kontainers bun src/main.ts reset-2fa ${ctx.user}</code>.</p>
+<p>Locked out without them? Another account can turn your two-factor login off on its Settings page, or on the host: <code>docker compose exec kontainers bun src/main.ts reset-2fa ${ctx.user}</code> (with <code>docker run</code>: <code>docker exec</code> and the container's name).</p>
 <p><a class="button" href="/settings">Done</a></p>`, 'Settings');
 }
 
@@ -666,7 +666,7 @@ const ACTIONS: Record<string, string> = {
   'notify-add': 'added a notification target', 'notify-test': 'tested notification target', 'notify-remove': 'removed notification target',
   'registry-add': 'saved the registry login for', 'registry-remove': 'removed the registry login for',
   'schedule-set': 'set automatic updates to run',
-  '2fa-enable': 'turned on two-factor login for', '2fa-disable': 'turned off two-factor login for', '2fa-reset': 'turned off two-factor login of user',
+  '2fa-enable': 'turned on two-factor login for', '2fa-disable': 'turned off two-factor login for', '2fa-reset': 'turned off the two-factor login of',
   'project-start': 'started every container of', 'project-stop': 'stopped every container of', 'project-restart': 'restarted every container of',
   'cleanup-images': 'cleaned up images', 'cleanup-networks': 'cleaned up networks', 'cleanup-volumes': 'cleaned up anonymous volumes',
 };
