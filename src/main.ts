@@ -11,6 +11,7 @@ import { Auth } from './auth';
 import { Docker } from './docker';
 import { recoverInterrupted, watchRunning, type Recovered } from './update';
 import { ReplaceJournal } from './journal';
+import { ScheduleStore } from './schedule';
 import { diskFull, setDegraded } from './storage';
 import { ProxyManager, RuleStore } from './proxy';
 import { createHandler, dockerApiAddress } from './server';
@@ -74,10 +75,12 @@ const systemAudit = (action: string, target: string, result?: string) =>
   db.query('INSERT INTO audit_log (at, username, action, target, ip, result) VALUES (?, ?, ?, ?, ?, ?)').run(Date.now(), null, action, target, null, result ?? null);
 // Aborted at shutdown, so a replacement being watched is undone instead of left half done.
 const stopping = new AbortController();
-const autoUpdates: AutoUpdates = new AutoUpdates(db, docker, updates, notifier, { settleMs: cfg.autoUpdateSettle * 1000, healthTimeoutMs: cfg.autoUpdateHealthTimeout * 1000, signal: stopping.signal, journal, wasStopped: (id: string): boolean => events.wasStopped(id) }, systemAudit);
+const schedule = new ScheduleStore(db, cfg.autoUpdateSchedule);
+const autoUpdates: AutoUpdates = new AutoUpdates(db, docker, updates, notifier, { settleMs: cfg.autoUpdateSettle * 1000, healthTimeoutMs: cfg.autoUpdateHealthTimeout * 1000, signal: stopping.signal, journal, wasStopped: (id: string): boolean => events.wasStopped(id), schedule }, systemAudit);
+autoUpdates.start();
 updates.onChecked = () => autoUpdates.afterCheck();
 const events: EventWatcher = new EventWatcher(docker, notifier, Date.now, ms => Bun.sleep(ms), name => autoUpdates.busy.has(name));
-const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal });
+const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal, schedule });
 updates.start();
 events.replaceWindowMs = (cfg.autoUpdateSettle + cfg.autoUpdateHealthTimeout + 60) * 1000;
 events.start();
@@ -168,6 +171,7 @@ async function shutdown(sig: string) {
   // its 10 s stop timeout, so this waits up to 25 s; compose.yaml gives kontainers 30 s to stop. If
   // Docker kills it sooner (docker run's default is 10 s), the journal lets the next start finish.
   stopping.abort();
+  autoUpdates.stop();
   for (let i = 0; i < 250 && autoUpdates.busy.size; i++) await Bun.sleep(100);
   if (autoUpdates.busy.size) console.error('kontainers: an update was still running at shutdown; it is tidied up at the next start');
   server.stop();

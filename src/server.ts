@@ -24,6 +24,7 @@ import * as cleanup from './cleanup';
 import { NameLocks } from './locks';
 import { diskFull, DISK_FULL, storageTrouble, writeFailed } from './storage';
 import { validateRegistry, type Registries } from './registries';
+import { validateSchedule, describeSchedule, DAY_NAMES, type ScheduleStore } from './schedule';
 
 export interface Deps {
   cfg: Config;
@@ -43,6 +44,7 @@ export interface Deps {
   stopping?: AbortSignal;
   registries?: Registries;
   journal?: Journal;
+  schedule?: ScheduleStore;
 }
 
 export type Handler = (req: Request, socketIp: string) => Promise<Response>;
@@ -501,7 +503,7 @@ export function createHandler(d: Deps): Handler {
         const c = await docker.inspect(r[1]);
         const name = String(c.Name || '').replace(/^\//, '');
         const row = d.autoUpdates?.get(name) ?? null;
-        const auto = d.autoUpdates ? { on: d.autoUpdates.isOn(name, c.Id), row } : null;
+        const auto = d.autoUpdates ? { on: d.autoUpdates.isOn(name, c.Id), row, waiting: d.autoUpdates.waitingFor(name) } : null;
         return page(views.containerPage(ctx(s), c, await self(), updateView(), auto));
       }
       if ((r = /^\/api\/containers\/([^/]+)\/stats$/.exec(p))) {
@@ -563,7 +565,7 @@ export function createHandler(d: Deps): Handler {
         const rule = rules.get(Number(r[1]));
         return rule ? page(views.editRulePage(ctx(s), rule)) : page(views.layout('Not found', ctx(s), views.html`<p>There is no proxy rule ${r[1]}. <a href="/proxy">Proxy</a></p>`), 404);
       }
-      if (p === '/settings') return page(views.settingsPage(ctx(s), auth.listUsers(), s.user.id, d.notifier ? d.notifier.list() : null, d.events ? { connected: d.events.connected, error: d.events.lastError } : null, d.registries ? d.registries.list() : null));
+      if (p === '/settings') return page(views.settingsPage(ctx(s), auth.listUsers(), s.user.id, d.notifier ? d.notifier.list() : null, d.events ? { connected: d.events.connected, error: d.events.lastError } : null, d.registries ? d.registries.list() : null, d.schedule ? d.schedule.get() : null));
       if (p === '/api/backup') { safeAudit(s, 'backup', null, ip); return backup(); }
       if (p.startsWith('/api/')) return text('not found\n', 404);
       return page(views.layout('Not found', ctx(s), views.html`<p>There is no page at this address. <a href="/containers">Containers</a></p>`), 404);
@@ -666,9 +668,11 @@ export function createHandler(d: Deps): Handler {
         const n = await running;
         const newer = n === 0 ? [] : (await docker.listContainersWithRefs()).filter(c => containerStatus(d.updates!.get(c.Ref), c.ImageID)?.status === 'available');
         const uv = updateView();
-        const auto = newer.filter(c => { const nm = String(c.Names?.[0] || '').replace(/^\//, ''); return d.autoUpdates?.isOn(nm, c.Id) && !views.heldBack(uv, nm, c.Id, c.Ref); }).length;
+        const opted = newer.filter(c => { const nm = String(c.Names?.[0] || '').replace(/^\//, ''); return d.autoUpdates?.isOn(nm, c.Id) && !views.heldBack(uv, nm, c.Id, c.Ref); });
+        const waits = opted.filter(c => d.autoUpdates?.waitFor(c.Ref, d.updates!.get(c.Ref))).length;
+        const auto = opted.length - waits;
         const available = newer.length;
-        return `Checked ${n} image${n === 1 ? '' : 's'}: ${available === 0 ? 'every container runs the newest image for its tag' : `${available} container${available === 1 ? ' has' : 's have'} a newer image`}${auto ? `; ${auto} ${auto === 1 ? 'is' : 'are'} being updated automatically` : ''}.`;
+        return `Checked ${n} image${n === 1 ? '' : 's'}: ${available === 0 ? 'every container runs the newest image for its tag' : `${available} container${available === 1 ? ' has' : 's have'} a newer image`}${auto ? `; ${auto} ${auto === 1 ? 'is' : 'are'} being updated automatically` : ''}${waits ? `; ${waits} ${waits === 1 ? 'waits' : 'wait'} for the update window or delay (Settings)` : ''}.`;
       });
     }
     if ((r = /^\/projects\/([^/]+)\/(start|stop|restart)$/.exec(p))) {
@@ -709,6 +713,16 @@ export function createHandler(d: Deps): Handler {
         if (no) throw new v.ValidationError(`notifications cannot be sent there: ${no}`);
         const t = d.notifier.add({ kind: f.kind, url: f.url, token: f.token, events: EVENT_KINDS.filter(k => f[`ev_${k}`]) });
         return `Added the ${t.kind} target. Send a test to check that it works.`;
+      });
+    }
+    if (p === '/settings/autoupdate') {
+      return act(s, ip, '/settings', 'schedule-set', null, async () => {
+        if (!d.schedule) throw new v.ValidationError('automatic updates are not available');
+        const sched = validateSchedule({ start: f.start, end: f.end, days: DAY_NAMES.map((_, i) => i).filter(i => f[`day_${i}`]), delayHours: f.delay });
+        d.schedule.set(sched);
+        // Something that waited may be due now.
+        void d.autoUpdates?.afterCheck().catch(() => {});
+        return `Automatic updates now run ${describeSchedule(sched)}.`;
       });
     }
     if (p === '/settings/registries') {

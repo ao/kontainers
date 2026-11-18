@@ -923,3 +923,28 @@ describe('QA round 7', () => {
     expect(d.find('rcs').State.Running).toBe(false);
   });
 });
+
+describe('the update window and delay', () => {
+  test('outside the window the update waits; inside it, it runs; a delay counts from first sight', async () => {
+    const { ScheduleStore, validateSchedule } = await import('../../src/schedule');
+    const d = new FakeDocker();
+    d.image('i1'); d.image('i2');
+    d.tags.set('app:1', 'i1'); d.registry.set('app:1', 'i1');
+    const db = new Database(':memory:', { strict: true }); migrate(db);
+    let now = Date.parse('2026-11-18T10:00:00Z');
+    const checker = new UpdateChecker(d as any, 0, () => now);
+    const schedule = new ScheduleStore(db, validateSchedule({ start: '02:00', end: '05:00', delayHours: '2' }), () => now);
+    const auto = new AutoUpdates(db, d as any, checker, null, { settleMs: 0, healthTimeoutMs: 0, schedule }, () => {}, () => now);
+    const id = d.run('web', 'app:1');
+    await auto.set(id, true);
+    d.registry.set('app:1', 'i2');
+    await checker.checkAll(); await auto.afterCheck();
+    expect(d.find('web').Image).toBe('i1');
+    // Seen at 10:00 with a 2 h delay: due at 12:00, outside the window, so the next window.
+    expect(new Date(auto.waitingFor('web')!.until).toISOString()).toBe('2026-11-19T02:00:00.000Z');
+    now = Date.parse('2026-11-19T02:30:00Z');
+    await auto.afterCheck();
+    expect(d.find('web').Image).toBe('i2');
+    expect(auto.waitingFor('web')).toBeNull();
+  });
+});

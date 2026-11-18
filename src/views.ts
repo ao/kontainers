@@ -5,6 +5,7 @@ import { domainToUnicode } from 'node:url';
 import { containerStatus, type UpdateState } from './updates';
 import { EVENTS, EVENT_KINDS, maskUrl, type Target } from './notify';
 import type { RegistryLogin } from './registries';
+import { DAY_NAMES, describeSchedule, formTime, type Schedule } from './schedule';
 
 export function esc(v: unknown): string {
   return String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -283,17 +284,19 @@ ${filters}
 <p class="muted" id="nomatch"${list.length && !shown ? raw('') : raw(' hidden')}>No container matches. <a href="/containers">Show all ${list.length}</a>.</p>`);
 }
 
-export interface AutoView { on: boolean; row: { last_at: number | null; last_result: string | null; held_image: string | null } | null }
+export interface AutoView { on: boolean; row: { last_at: number | null; last_result: string | null; held_image: string | null } | null; waiting?: { until: number; why: 'window' | 'delay' } | null }
 
 // The automatic-update switch on a container's page, with the last result.
 function autoForm(ctx: PageCtx, id: string, a: AutoView): Html {
   const last = a.row?.last_at ? html`<small class="muted">Last automatic update ${ago(a.row.last_at)}: ${a.row.last_result || ''}</small>` : '';
   const held = a.on && a.row?.held_image ? html`<small class="warn">Image ${shortId(a.row.held_image)} failed when it was tried and is held back; a newer image will be tried.</small>` : '';
+  const at = (t: number) => new Date(t).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+  const waiting = a.on && a.waiting ? html`<small class="muted">A newer image is waiting ${a.waiting.why === 'window' ? 'for the update window' : 'out the delay set on the Settings page'}; it is installed from ${at(a.waiting.until)}.</small>` : '';
   return html`<form method="post" action="/containers/${id}/autoupdate" class="autoupdate">${csrfField(ctx)}
 <label class="check"><input type="checkbox" name="on"${a.on ? raw(' checked') : raw('')}> Update automatically when a check finds a newer image</label>
 <button>Save</button>
 <small class="muted">The new container is watched while it settles; if it stops, restarts or turns unhealthy, the old one is put back.</small>
-${last}${held}</form>`;
+${last}${held}${waiting}</form>`;
 }
 
 export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, updates: UpdateView | null = null, auto: AutoView | null = null): string {
@@ -513,7 +516,7 @@ export function editRulePage(ctx: PageCtx, r: Rule): string {
 </form>`, 'Proxy');
 }
 
-export function settingsPage(ctx: PageCtx, users: { id: number; username: string }[], selfId: number, targets: Target[] | null = null, watch: { connected: boolean; error: string | null } | null = null, logins: RegistryLogin[] | null = null): string {
+export function settingsPage(ctx: PageCtx, users: { id: number; username: string }[], selfId: number, targets: Target[] | null = null, watch: { connected: boolean; error: string | null } | null = null, logins: RegistryLogin[] | null = null, schedule: Schedule | null = null): string {
   const rows = users.map(u => html`<tr><td>${u.username}</td>
 <td>${u.id === selfId ? html`<em>you</em>` : post(ctx, `/settings/users/${u.id}/remove`, 'Remove', { confirm: `Remove user ${u.username}?`, cls: 'danger' })}</td></tr>`);
   return layout('Settings', ctx, html`
@@ -531,10 +534,26 @@ export function settingsPage(ctx: PageCtx, users: { id: number; username: string
   <label>Password <input name="password" type="password" required minlength="12" autocomplete="new-password"></label>
   <button>Add user</button>
 </form>
+${schedule ? scheduleSection(ctx, schedule) : ''}
 ${targets ? notifySection(ctx, targets, watch) : ''}
 ${logins ? registrySection(ctx, logins) : ''}
 <h2>Backup</h2>
 <p><a href="/api/backup">Download a database snapshot</a>. Certificates are in the data volume; see the README for a full backup.${logins?.length ? ' The snapshot holds registry passwords encrypted; the key, registry.key, stays in the data volume, so after restoring on another host enter them again.' : ''}</p>`);
+}
+
+function scheduleSection(ctx: PageCtx, s: Schedule): Html {
+  const days = DAY_NAMES.map((d, i) => html`<label class="check"><input type="checkbox" name="day_${i}"${s.days.includes(i) ? raw(' checked') : raw('')}> ${d}</label>`);
+  return html`<h2>Automatic updates</h2>
+<p>Containers that are updated automatically get a newer image ${describeSchedule(s)}. The time now is ${new Date().toISOString().slice(11, 16)} UTC.</p>
+<form method="post" action="/settings/autoupdate" class="stack">${csrfField(ctx)}
+  <fieldset><legend>Update window (UTC); leave both empty for any time</legend>
+    <label>From <input name="start" type="time" value="${formTime(s.start)}"></label>
+    <label>Until <input name="end" type="time" value="${formTime(s.end)}"></label>
+  </fieldset>
+  <fieldset><legend>On these days (none ticked: every day); a window past midnight counts for the day it starts</legend>${days}</fieldset>
+  <label>Wait this many hours after a newer image is first seen (0: at once) <input name="delay" type="number" min="0" max="720" value="${s.delayHours}"></label>
+  <button>Save</button>
+</form>`;
 }
 
 function registrySection(ctx: PageCtx, logins: RegistryLogin[]): Html {
@@ -608,6 +627,7 @@ const ACTIONS: Record<string, string> = {
   'proxy-create': 'added the proxy rule', 'proxy-edit': 'edited proxy rule', 'proxy-toggle': 'turned on or off proxy rule', 'proxy-remove': 'removed proxy rule',
   'notify-add': 'added a notification target', 'notify-test': 'tested notification target', 'notify-remove': 'removed notification target',
   'registry-add': 'saved the registry login for', 'registry-remove': 'removed the registry login for',
+  'schedule-set': 'changed when automatic updates run',
   'project-start': 'started every container of', 'project-stop': 'stopped every container of', 'project-restart': 'restarted every container of',
   'cleanup-images': 'cleaned up images', 'cleanup-networks': 'cleaned up networks', 'cleanup-volumes': 'cleaned up anonymous volumes',
 };

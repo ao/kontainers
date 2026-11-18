@@ -13,10 +13,11 @@ import { updatable, updateContainerDetailed, UpdateFailed, type Journal } from '
 import * as v from './validate';
 import { NameLocks } from './locks';
 import { writeFailed } from './storage';
+import { inWindow, nextWindow, type ScheduleStore } from './schedule';
 
 export interface AutoRow { container: string; container_id: string; created_at: number; last_at: number | null; last_result: string | null; held_image: string | null }
 
-export interface AutoOptions { settleMs: number; healthTimeoutMs: number; signal?: AbortSignal; wasStopped?: (id: string) => boolean; journal?: Journal }
+export interface AutoOptions { settleMs: number; healthTimeoutMs: number; signal?: AbortSignal; wasStopped?: (id: string) => boolean; journal?: Journal; schedule?: ScheduleStore }
 
 // A container set aside by an update that is still running or was interrupted: <name>-old-<id>.
 const setAside = (c: any, name: string) => c.Labels?.['kontainers.managed'] === 'true' && /-old-[0-9a-f]{8}$/.test(name) && String(c.Id).startsWith(name.slice(-8));
@@ -58,6 +59,7 @@ export class AutoUpdates {
     }
     this.db.query('DELETE FROM auto_update WHERE container = ?').run(name);
     this.unsaved.delete(name);
+    this.waiting.delete(name);
     return `${name} will no longer be updated automatically.${this.busy.has(name) ? ' An update or edit running now still finishes.' : ''}`;
   }
 
@@ -91,6 +93,35 @@ export class AutoUpdates {
   // The image an automatic update held back for this container, if any.
   heldImage(name: string): string | null { return this.get(name)?.held_image ?? null; }
 
+  // Containers with a newer image that wait for the update window or the delay: until when, and why.
+  private waiting = new Map<string, { until: number; why: 'window' | 'delay' }>();
+  waitingFor(name: string): { until: number; why: 'window' | 'delay' } | null { return this.waiting.get(name) ?? null; }
+
+  // Whether a newer image for `ref` must wait now (null: it may be installed).
+  waitFor(ref: string, st: { remoteDigest?: string; imageId?: string } | null): { until: number; why: 'window' | 'delay' } | null {
+    const store = this.opts.schedule;
+    if (!store) return null;
+    const sched = store.get();
+    const now = this.now();
+    if (sched.delayHours) {
+      const ready = store.firstSeen(ref, st?.remoteDigest || st?.imageId || '') + sched.delayHours * 3600_000;
+      if (now < ready) return { until: inWindow(sched, ready) ? ready : nextWindow(sched, ready), why: 'delay' };
+    }
+    if (!inWindow(sched, now)) return { until: nextWindow(sched, now), why: 'window' };
+    return null;
+  }
+
+  // Every five minutes: when something that waited may now be installed, a pass runs (the update
+  // check's results are still at hand; the image is pulled again by the update itself).
+  private ticker: ReturnType<typeof setInterval> | null = null;
+  start(): void {
+    this.ticker ??= setInterval(() => {
+      if ([...this.waiting.values()].some(w => w.until <= this.now())) void this.afterCheck().catch(e => console.error(`kontainers: automatic updates: ${(e as Error).message}`));
+    }, 5 * 60_000);
+    (this.ticker as any).unref?.();
+  }
+  stop(): void { if (this.ticker) clearInterval(this.ticker); this.ticker = null; }
+
   // After a check: update opted-in containers, notify about the others. One pass at a time.
   // A check that finishes while a pass runs (a long settle) gets a pass of its own after it, so what
   // it found is not left until the next check.
@@ -120,6 +151,7 @@ export class AutoUpdates {
 
   private async pass(): Promise<void> {
     for (const [name, id] of [...this.unsaved]) this.recreated(name, id);
+    this.waiting.clear(); // worked out again below
     // "Newer image" notes go out once per image, naming every container that uses it.
     const newer = new Map<string, { ref: string; names: string[] }>();
     const list = await this.docker.listContainersWithRefs();
@@ -154,6 +186,10 @@ export class AutoUpdates {
         }
         // The image that failed is what the tag points at here, and the registry has nothing newer.
         if (row.held_image && st?.imageId === row.held_image && st.status !== 'available') continue;
+        // Outside the update window, or the newer image not seen for long enough yet: later.
+        const wait = this.waitFor(c.Ref, st);
+        if (wait) { this.waiting.set(name, wait); continue; }
+        this.waiting.delete(name);
         if (this.opts.signal?.aborted) return;
         await this.updateOne(c.Id, name, c.Ref);
       } catch (e) {
