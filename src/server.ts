@@ -4,6 +4,7 @@
 import type { Database } from 'bun:sqlite';
 import { readFileSync, unlinkSync } from 'node:fs';
 import { isIP } from 'node:net';
+import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import type { Config } from './config';
 import { isLoopback } from './config';
@@ -25,6 +26,7 @@ import { NameLocks } from './locks';
 import { diskFull, DISK_FULL, storageTrouble, writeFailed } from './storage';
 import { validateRegistry, type Registries } from './registries';
 import { validateSchedule, describeSchedule, DAY_NAMES, type ScheduleStore } from './schedule';
+import { otpauthUri, type TwoFactor } from './totp';
 
 export interface Deps {
   cfg: Config;
@@ -45,6 +47,7 @@ export interface Deps {
   registries?: Registries;
   journal?: Journal;
   schedule?: ScheduleStore;
+  twoFactor?: TwoFactor;
 }
 
 export type Handler = (req: Request, socketIp: string) => Promise<Response>;
@@ -269,6 +272,8 @@ export function createHandler(d: Deps): Handler {
   // Outcomes waiting to be shown, per session. Several actions at once (two tabs) each add theirs;
   // form: what a failed form held, to fill it in again.
   let downloads = 0;
+  // Two-factor set-ups not confirmed yet, per session.
+  const totpSetup = new Map<string, { secret: string; until: number }>();
   const flashes = new Map<string, { flash?: string; error?: string; form?: Record<string, string> }>();
   const addFlash = (idHash: string, m: { flash?: string; error?: string; form?: Record<string, string> }) => {
     const f = flashes.get(idHash) ?? {};
@@ -438,6 +443,15 @@ export function createHandler(d: Deps): Handler {
       safeAudit(null, 'login-failed', auth.hasUser(user) ? user : '(no such user)', ip);
       return page(views.loginPage({ username: typed, error: 'Wrong username or password.' }), 401);
     }
+    // With two-factor on, the password only opens the second step: a code from the app.
+    if (d.twoFactor?.enabled(u.id)) {
+      const token = newPending(u.id, user);
+      return page(views.twoFactorPage({ token }), 200);
+    }
+    return finishLogin(u, user, ip, cookieId, typed);
+  }
+
+  function finishLogin(u: { id: number; username: string }, user: string, ip: string, cookieId: string | undefined, typed: string, how?: string): Response {
     limiter.reset(`user:${user}`);
     ipLimiter.reset(`ip:${ip}`);
     const old = cookieId ? auth.getSession(cookieId) : null;
@@ -447,8 +461,40 @@ export function createHandler(d: Deps): Handler {
       if (!diskFull(e)) throw e;
       return page(views.loginPage({ username: typed, error: DISK_FULL + '.' }), 507);
     }
-    safeAudit({ user: u, csrf: '', idHash: '' }, 'login', null, ip);
+    safeAudit({ user: u, csrf: '', idHash: '' }, 'login', how ?? null, ip);
+    if (how === 'with a recovery code') flashes.set(auth.getSession(id)!.idHash, { flash: `Logged in with a recovery code; ${d.twoFactor!.recoveryLeft(u.id)} are left. Set up two-factor again on the Settings page if the phone is lost.` });
     return redirect('/containers', { 'set-cookie': setCookie(id) });
+  }
+
+  // Logins waiting for their second step: a random token in the form, five minutes, five tries.
+  const pending = new Map<string, { userId: number; user: string; until: number; tries: number }>();
+  function newPending(userId: number, user: string): string {
+    const now = Date.now();
+    for (const [k, p] of pending) if (p.until < now) pending.delete(k);
+    if (pending.size > 1000) pending.clear();
+    const token = randomBytes(24).toString('base64url');
+    pending.set(token, { userId, user, until: now + 5 * 60_000, tries: 0 });
+    return token;
+  }
+
+  async function loginCode(req: Request, ip: string, cookieId: string | undefined): Promise<Response> {
+    const f = await readForm(req);
+    const p = pending.get(String(f.token || ''));
+    if (!p || p.until < Date.now()) return page(views.loginPage({ error: 'The login timed out. Enter the password again.' }), 401);
+    const wait = Math.max(limiter.blocked(`user:${p.user}`), ipLimiter.blocked(`ip:${ip}`));
+    if (wait > 0) { pending.delete(String(f.token)); return page(views.loginPage({ error: `Too many failed attempts. Try again in ${Math.ceil(wait / 60)} minutes.` }), 429, { 'retry-after': String(wait) }); }
+    limiter.fail(`user:${p.user}`);
+    ipLimiter.fail(`ip:${ip}`);
+    const how = d.twoFactor?.verify(p.userId, String(f.code || '')) ?? null;
+    if (!how) {
+      safeAudit(null, 'login-failed', p.user, ip, 'failed: wrong two-factor code');
+      if (++p.tries >= 5) { pending.delete(String(f.token)); return page(views.loginPage({ error: 'Too many wrong codes. Enter the password again.' }), 401); }
+      return page(views.twoFactorPage({ token: String(f.token), error: 'That code is not right, or it was used already. Enter the code the app shows now.' }), 401);
+    }
+    pending.delete(String(f.token));
+    const u = auth.listUsers().find(x => x.id === p.userId);
+    if (!u) return page(views.loginPage({ error: 'That account was removed.' }), 401);
+    return finishLogin(u, p.user, ip, cookieId, p.user, how === 'recovery' ? 'with a recovery code' : undefined);
   }
 
   async function setup(req: Request, ip: string): Promise<Response> {
@@ -565,7 +611,8 @@ export function createHandler(d: Deps): Handler {
         const rule = rules.get(Number(r[1]));
         return rule ? page(views.editRulePage(ctx(s), rule)) : page(views.layout('Not found', ctx(s), views.html`<p>There is no proxy rule ${r[1]}. <a href="/proxy">Proxy</a></p>`), 404);
       }
-      if (p === '/settings') return page(views.settingsPage(ctx(s), auth.listUsers(), s.user.id, d.notifier ? d.notifier.list() : null, d.events ? { connected: d.events.connected, error: d.events.lastError } : null, d.registries ? d.registries.list() : null, d.schedule ? d.schedule.get() : null));
+      if (p === '/settings') return page(views.settingsPage(ctx(s), auth.listUsers(), s.user.id, d.notifier ? d.notifier.list() : null, d.events ? { connected: d.events.connected, error: d.events.lastError } : null, d.registries ? d.registries.list() : null, d.schedule ? d.schedule.get() : null,
+        d.twoFactor ? { mine: d.twoFactor.enabled(s.user.id), left: d.twoFactor.recoveryLeft(s.user.id), users: new Set(auth.listUsers().filter(u => d.twoFactor!.enabled(u.id)).map(u => u.id)) } : null));
       if (p === '/api/backup') { safeAudit(s, 'backup', null, ip); return backup(); }
       if (p.startsWith('/api/')) return text('not found\n', 404);
       return page(views.layout('Not found', ctx(s), views.html`<p>There is no page at this address. <a href="/containers">Containers</a></p>`), 404);
@@ -713,6 +760,47 @@ export function createHandler(d: Deps): Handler {
         if (no) throw new v.ValidationError(`notifications cannot be sent there: ${no}`);
         const t = d.notifier.add({ kind: f.kind, url: f.url, token: f.token, events: EVENT_KINDS.filter(k => f[`ev_${k}`]) });
         return `Added the ${t.kind} target. Send a test to check that it works.`;
+      });
+    }
+    if (p === '/settings/2fa/start') {
+      // A new secret for this session's account, kept here until it is confirmed with a code.
+      if (!d.twoFactor) return text('not available\n', 404);
+      const secret = d.twoFactor.newSecret();
+      totpSetup.set(s.idHash, { secret, until: Date.now() + 15 * 60_000 });
+      return page(views.twoFactorSetupPage(ctx(s), secret, otpauthUri(secret, s.user.username)));
+    }
+    if (p === '/settings/2fa/confirm') {
+      const pend = totpSetup.get(s.idHash);
+      if (!d.twoFactor || !pend || pend.until < Date.now()) return act(s, ip, '/settings', '2fa-enable', s.user.username, () => { throw new v.ValidationError('the set-up timed out; start again'); });
+      let codes: string[] = [];
+      try {
+        codes = d.twoFactor.enable(s.user.id, pend.secret, String(f.code || ''));
+      } catch (e) {
+        const msg = errorMessage(e);
+        safeAudit(s, '2fa-enable', s.user.username, ip, `failed: ${msg}`);
+        return page(views.twoFactorSetupPage({ ...ctx(s), error: msg }, pend.secret, otpauthUri(pend.secret, s.user.username)), 400);
+      }
+      totpSetup.delete(s.idHash);
+      safeAudit(s, '2fa-enable', s.user.username, ip);
+      return page(views.recoveryCodesPage(ctx(s), codes));
+    }
+    if (p === '/settings/2fa/disable') {
+      return act(s, ip, '/settings', '2fa-disable', s.user.username, async () => {
+        if (!d.twoFactor) throw new v.ValidationError('not available');
+        if (!(await auth.verifyLogin(s.user.username, f.password))) throw new v.ValidationError('the password is not right');
+        d.twoFactor.disable(s.user.id);
+        return 'Two-factor login is off for your account.';
+      });
+    }
+    if ((r = /^\/settings\/users\/(\d+)\/2fa-reset$/.exec(p))) {
+      const id = Number(r[1]);
+      return act(s, ip, '/settings', '2fa-reset', String(id), async () => {
+        if (!d.twoFactor) throw new v.ValidationError('not available');
+        const u = auth.listUsers().find(x => x.id === id);
+        if (!u) throw Object.assign(new v.ValidationError('no such user'), { status: 404 });
+        if (u.id === s.user.id) throw new v.ValidationError('turn off your own two-factor login with your password, above');
+        d.twoFactor.disable(u.id);
+        return `Two-factor login is off for ${u.username}; they log in with the password alone until they set it up again.`;
       });
     }
     if (p === '/settings/autoupdate') {
@@ -961,6 +1049,7 @@ export function createHandler(d: Deps): Handler {
     if (p === '/setup') return redirect('/login');
 
     const cookieId = parseCookies(req.headers.get('cookie'))[cookieName];
+    if (p === '/login/code' && req.method === 'POST') return loginCode(req, ip, cookieId);
     if (p === '/login') {
       if (req.method === 'POST') return login(req, ip, cookieId);
       if (cookieId && auth.getSession(cookieId)) return redirect('/containers');

@@ -92,6 +92,15 @@ export const MIGRATIONS: string[] = [
      first_seen INTEGER NOT NULL,
      PRIMARY KEY (ref, image)
    );`,
+  // 7: v0.5.0: two-factor login
+  `ALTER TABLE users ADD COLUMN totp_secret TEXT;
+   ALTER TABLE users ADD COLUMN totp_last_step INTEGER;
+   CREATE TABLE recovery_codes (
+     user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+     code_hash TEXT NOT NULL,
+     used_at INTEGER,
+     PRIMARY KEY (user_id, code_hash)
+   );`,
 ];
 
 // degraded: opened without the shared-memory file, because the data volume had no room for it.

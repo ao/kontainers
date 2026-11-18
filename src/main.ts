@@ -12,6 +12,7 @@ import { Docker } from './docker';
 import { recoverInterrupted, watchRunning, type Recovered } from './update';
 import { ReplaceJournal } from './journal';
 import { ScheduleStore } from './schedule';
+import { TwoFactor } from './totp';
 import { diskFull, setDegraded } from './storage';
 import { ProxyManager, RuleStore } from './proxy';
 import { createHandler, dockerApiAddress } from './server';
@@ -36,8 +37,23 @@ if (cmd === 'backup') {
   }
   console.log(`kontainers: wrote ${arg}`);
   process.exit(0);
+} else if (cmd === 'reset-2fa') {
+  // For an account locked out of two-factor login: run on the host, where only root can.
+  if (!arg) { console.error('usage: kontainers reset-2fa USERNAME'); process.exit(2); }
+  try {
+    const d = openDb(cfg.dataDir);
+    const u = d.query('SELECT id, username FROM users WHERE username = ?').get(arg) as { id: number; username: string } | null;
+    if (!u) { console.error(`kontainers: no user ${arg}`); process.exit(1); }
+    new TwoFactor(d).disable(u.id);
+    d.query('INSERT INTO audit_log (at, username, action, target, ip, result) VALUES (?, ?, ?, ?, ?, ?)').run(Date.now(), null, '2fa-reset', u.username, null, 'note: from the command line');
+    console.log(`kontainers: two-factor login is off for ${u.username}`);
+    process.exit(0);
+  } catch (e) {
+    console.error(`kontainers: could not reset two-factor login: ${(e as Error).message}`);
+    process.exit(1);
+  }
 } else if (cmd !== undefined && cmd !== 'serve') {
-  console.error(`kontainers: unknown command "${cmd}"; commands: serve, backup FILE`);
+  console.error(`kontainers: unknown command "${cmd}"; commands: serve, backup FILE, reset-2fa USERNAME`);
   process.exit(2);
 }
 
@@ -80,7 +96,7 @@ const autoUpdates: AutoUpdates = new AutoUpdates(db, docker, updates, notifier, 
 autoUpdates.start();
 updates.onChecked = () => autoUpdates.afterCheck();
 const events: EventWatcher = new EventWatcher(docker, notifier, Date.now, ms => Bun.sleep(ms), name => autoUpdates.busy.has(name));
-const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal, schedule });
+const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal, schedule, twoFactor: new TwoFactor(db) });
 updates.start();
 events.replaceWindowMs = (cfg.autoUpdateSettle + cfg.autoUpdateHealthTimeout + 60) * 1000;
 events.start();

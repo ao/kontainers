@@ -139,6 +139,37 @@ export function loginPage(ctx: PageCtx): string {
 </form>`);
 }
 
+// The second step of a login with two-factor on.
+export function twoFactorPage(ctx: PageCtx & { token: string }): string {
+  return layout('Log in', ctx, html`
+<form method="post" action="/login/code" class="stack">
+  <input type="hidden" name="token" value="${ctx.token}">
+  <label>Code from your authenticator app, or a recovery code <input name="code" required autocomplete="one-time-code" inputmode="text" autofocus></label>
+  <button>Log in</button>
+</form>`);
+}
+
+export function twoFactorSetupPage(ctx: PageCtx, secret: string, uri: string): string {
+  const grouped = secret.match(/.{1,4}/g)!.join(' ');
+  return layout('Two-factor login', ctx, html`
+<p>Add kontainers to an authenticator app (one that makes six-digit codes, such as those from Google, Microsoft or 2FAS, or a password manager that does): open <a href="${uri}">this link</a> on the phone, or enter the key by hand.</p>
+<dl class="facts"><dt>Key</dt><dd><code>${grouped}</code></dd><dt>Account</dt><dd>${ctx.user}</dd><dt>Kind</dt><dd>time-based, 6 digits, every 30 s</dd></dl>
+<form method="post" action="/settings/2fa/confirm" class="stack">${csrfField(ctx)}
+  <label>The code the app shows now <input name="code" required autocomplete="one-time-code" inputmode="numeric" pattern="[0-9 ]{6,7}"></label>
+  <button class="primary">Turn on two-factor login</button>
+</form>
+<p><a href="/settings">Cancel</a></p>`, 'Settings');
+}
+
+export function recoveryCodesPage(ctx: PageCtx, codes: string[]): string {
+  return layout('Two-factor login is on', ctx, html`
+<p class="flash" role="status">From now on, logging in asks for a code from the app after the password.</p>
+<p>These recovery codes each let you log in once without the app. Keep them somewhere safe, away from the phone; they are not shown again.</p>
+<ul class="codes">${codes.map(c => html`<li><code>${c}</code></li>`)}</ul>
+<p>Locked out without them? Another account can turn your two-factor login off on its Settings page, or on the host: <code>docker exec kontainers bun src/main.ts reset-2fa ${ctx.user}</code>.</p>
+<p><a class="button" href="/settings">Done</a></p>`, 'Settings');
+}
+
 const shortId = (id: string) => String(id || '').replace(/^sha256:/, '').slice(0, 12);
 const fmtTime = (s: number) => new Date(s * 1000).toISOString().replace('T', ' ').slice(0, 16);
 const fmtSize = (b: number) => b > 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${(b / 1e6).toFixed(1)} MB`;
@@ -516,9 +547,15 @@ export function editRulePage(ctx: PageCtx, r: Rule): string {
 </form>`, 'Proxy');
 }
 
-export function settingsPage(ctx: PageCtx, users: { id: number; username: string }[], selfId: number, targets: Target[] | null = null, watch: { connected: boolean; error: string | null } | null = null, logins: RegistryLogin[] | null = null, schedule: Schedule | null = null): string {
-  const rows = users.map(u => html`<tr><td>${u.username}</td>
-<td>${u.id === selfId ? html`<em>you</em>` : post(ctx, `/settings/users/${u.id}/remove`, 'Remove', { confirm: `Remove user ${u.username}?`, cls: 'danger' })}</td></tr>`);
+export function settingsPage(ctx: PageCtx, users: { id: number; username: string }[], selfId: number, targets: Target[] | null = null, watch: { connected: boolean; error: string | null } | null = null, logins: RegistryLogin[] | null = null, schedule: Schedule | null = null, tf: { mine: boolean; left: number; users: Set<number> } | null = null): string {
+  const rows = users.map(u => html`<tr><td>${u.username}${tf?.users.has(u.id) ? html` <small class="muted">two-factor</small>` : ''}</td>
+<td class="actions">${u.id === selfId ? html`<em>you</em>` : html`${post(ctx, `/settings/users/${u.id}/remove`, 'Remove', { confirm: `Remove user ${u.username}?`, cls: 'danger' })}${tf?.users.has(u.id) ? html` ${post(ctx, `/settings/users/${u.id}/2fa-reset`, 'Turn off two-factor', { confirm: `Turn off two-factor login for ${u.username}? They log in with the password alone until they set it up again.` })}` : ''}`}</td></tr>`);
+  const twoFactor = !tf ? '' : tf.mine
+    ? html`<h2>Two-factor login</h2><p>On: logging in asks for a code from your authenticator app. ${tf.left} recovery code${tf.left === 1 ? '' : 's'} left.</p>
+<form method="post" action="/settings/2fa/disable" class="stack">${csrfField(ctx)}<label>Your password, to turn it off <input name="password" type="password" required autocomplete="current-password"></label><button class="danger">Turn off two-factor login</button></form>
+<form method="post" action="/settings/2fa/start" class="inline">${csrfField(ctx)}<button>Set it up again (new key and recovery codes)</button></form>`
+    : html`<h2>Two-factor login</h2><p>Off. With it on, logging in also asks for a code from an authenticator app on your phone, so a password alone is not enough.</p>
+<form method="post" action="/settings/2fa/start" class="inline">${csrfField(ctx)}<button class="primary">Set up two-factor login</button></form>`;
   return layout('Settings', ctx, html`
 <h2>Change your password</h2>
 <form method="post" action="/settings/password" class="stack">${csrfField(ctx)}
@@ -526,6 +563,7 @@ export function settingsPage(ctx: PageCtx, users: { id: number; username: string
   <label>New password <input name="next" type="password" required minlength="12" autocomplete="new-password"></label>
   <button>Change password</button>
 </form>
+${twoFactor}
 <h2>Users</h2>
 <p>Every user has full control of the Docker host.</p>
 <div class="scroll"><table><tbody>${rows}</tbody></table></div>
@@ -628,6 +666,7 @@ const ACTIONS: Record<string, string> = {
   'notify-add': 'added a notification target', 'notify-test': 'tested notification target', 'notify-remove': 'removed notification target',
   'registry-add': 'saved the registry login for', 'registry-remove': 'removed the registry login for',
   'schedule-set': 'changed when automatic updates run',
+  '2fa-enable': 'turned on two-factor login for', '2fa-disable': 'turned off two-factor login for', '2fa-reset': 'turned off two-factor login of user',
   'project-start': 'started every container of', 'project-stop': 'stopped every container of', 'project-restart': 'restarted every container of',
   'cleanup-images': 'cleaned up images', 'cleanup-networks': 'cleaned up networks', 'cleanup-volumes': 'cleaned up anonymous volumes',
 };
