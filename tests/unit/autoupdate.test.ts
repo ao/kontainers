@@ -948,3 +948,18 @@ describe('the update window and delay', () => {
     expect(auto.waitingFor('web')).toBeNull();
   });
 });
+
+describe('the delay installs the image that waited, not a newer one', () => {
+  test('when the tag has moved on since, nothing changes', async () => {
+    const { d } = setup();
+    const id = d.run('web', 'app:1');
+    d.registry.set('app:1', 'i2');
+    const { updateContainerDetailed } = await import('../../src/update');
+    const r = await updateContainerDetailed(d as any, id, { expectDigest: 'sha256:i9' });
+    expect(r.changed).toBe(false);
+    expect(r.message).toContain('waits its own delay');
+    expect(d.find('web').Id).toBe(id);
+    const ok = await updateContainerDetailed(d as any, id, { expectDigest: 'sha256:i2' });
+    expect(ok.changed).toBe(true);
+  });
+});

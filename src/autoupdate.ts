@@ -64,11 +64,12 @@ export class AutoUpdates {
   }
 
   // Forget a container that was removed.
-  forget(name: string): void { this.db.query('DELETE FROM auto_update WHERE container = ?').run(name); this.unsaved.delete(name); }
+  forget(name: string): void { this.db.query('DELETE FROM auto_update WHERE container = ?').run(name); this.unsaved.delete(name); this.waiting.delete(name); }
 
   // Update image, Edit settings or an automatic update recreated the container under a new ID: it
   // stays opted in. Never throws: an update that worked must not be reported as failed.
   recreated(name: string, newId: string): void {
+    this.waiting.delete(name);
     try {
       this.db.query('UPDATE auto_update SET container_id = ? WHERE container = ?').run(newId, name);
       this.unsaved.delete(name);
@@ -111,13 +112,13 @@ export class AutoUpdates {
     return null;
   }
 
-  // Every five minutes: when something that waited may now be installed, a pass runs (the update
+  // Every minute: when something that waited may now be installed, a pass runs (the update
   // check's results are still at hand; the image is pulled again by the update itself).
   private ticker: ReturnType<typeof setInterval> | null = null;
   start(): void {
     this.ticker ??= setInterval(() => {
       if ([...this.waiting.values()].some(w => w.until <= this.now())) void this.afterCheck().catch(e => console.error(`kontainers: automatic updates: ${(e as Error).message}`));
-    }, 5 * 60_000);
+    }, 60_000);
     (this.ticker as any).unref?.();
   }
   stop(): void { if (this.ticker) clearInterval(this.ticker); this.ticker = null; }
@@ -151,7 +152,15 @@ export class AutoUpdates {
 
   private async pass(): Promise<void> {
     for (const [name, id] of [...this.unsaved]) this.recreated(name, id);
-    this.waiting.clear(); // worked out again below
+    // Worked out again below, into a new map that replaces the old one at the end: a Docker error
+    // half way keeps what was waiting, so the ticker still fires for it.
+    const waiting = new Map<string, { until: number; why: 'window' | 'delay' }>();
+    try { await this.passInto(waiting); } finally { this.waiting = this.lastPassFailed ? new Map([...this.waiting, ...waiting]) : waiting; }
+  }
+  private lastPassFailed = false;
+
+  private async passInto(waiting: Map<string, { until: number; why: 'window' | 'delay' }>): Promise<void> {
+    this.lastPassFailed = true;
     // "Newer image" notes go out once per image, naming every container that uses it.
     const newer = new Map<string, { ref: string; names: string[] }>();
     const list = await this.docker.listContainersWithRefs();
@@ -186,16 +195,21 @@ export class AutoUpdates {
         }
         // The image that failed is what the tag points at here, and the registry has nothing newer.
         if (row.held_image && st?.imageId === row.held_image && st.status !== 'available') continue;
-        // Outside the update window, or the newer image not seen for long enough yet: later.
-        const wait = this.waitFor(c.Ref, st);
-        if (wait) { this.waiting.set(name, wait); continue; }
-        this.waiting.delete(name);
+        // Outside the update window, or the newer image not seen for long enough yet: later. With a
+        // delay, the registry is asked again first: the last check may be hours old, and the update
+        // must install the image that waited, not one pushed since.
+        let fresh = st;
+        if (this.opts.schedule?.get().delayHours) fresh = await this.checker.check(c.Ref).catch(() => st);
+        if (containerStatus(fresh, c.ImageID)?.status !== 'available') continue;
+        const wait = this.waitFor(c.Ref, fresh);
+        if (wait) { waiting.set(name, wait); continue; }
         if (this.opts.signal?.aborted) return;
-        await this.updateOne(c.Id, name, c.Ref);
+        await this.updateOne(c.Id, name, c.Ref, this.opts.schedule?.get().delayHours ? fresh?.remoteDigest : undefined);
       } catch (e) {
         console.error(`kontainers: automatic update pass, ${name}: ${(e as Error).message}`);
       }
     }
+    this.lastPassFailed = false;
     for (const [k, g] of newer) {
       const list = g.names.length > 10 ? `${g.names.slice(0, 10).join(', ')} and ${g.names.length - 10} more` : g.names.join(', ');
       const one = g.names.length === 1;
@@ -204,7 +218,8 @@ export class AutoUpdates {
     }
   }
 
-  private async updateOne(id: string, name: string, ref: string): Promise<void> {
+  // expectDigest: the registry digest that waited out the delay; anything newer is not installed.
+  private async updateOne(id: string, name: string, ref: string, expectDigest?: string): Promise<void> {
     const row = this.get(name);
     const release = this.busy.take(name);
     if (!release) return;
@@ -215,7 +230,7 @@ export class AutoUpdates {
     // Bookkeeping after the update must not turn an update that worked into a failure.
     const quietly = (what: string, fn: () => void) => { try { fn(); } catch (e) { writeFailed(e, `${what} for ${name}`); } };
     try {
-      const r = await updateContainerDetailed(this.docker, id, { settleMs: this.opts.settleMs, healthTimeoutMs: this.opts.healthTimeoutMs, skipImage: held, signal: this.opts.signal, wasStopped: this.opts.wasStopped, journal: this.opts.journal });
+      const r = await updateContainerDetailed(this.docker, id, { settleMs: this.opts.settleMs, healthTimeoutMs: this.opts.healthTimeoutMs, skipImage: held, signal: this.opts.signal, wasStopped: this.opts.wasStopped, journal: this.opts.journal, expectDigest });
       result = r.message;
       if (r.changed) {
         held = null;

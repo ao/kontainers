@@ -265,6 +265,9 @@ export function createHandler(d: Deps): Handler {
   // because everyone behind one SSH tunnel or proxy shares an address.
   const limiter = d.limiter ?? new RateLimiter(5);
   const ipLimiter = new RateLimiter(20);
+  // Wrong two-factor codes per account over a day: someone who has the password cannot keep
+  // guessing at the per-15-minute rate for long.
+  const codeLimiter = new RateLimiter(20, 24 * 3600_000);
   // Pulls that outlived the request (see /images/pull), shown on the Images page.
   const pulls = new Map<string, { state: 'pulling' | 'failed'; error?: string; at: number }>();
   const secure = !!cfg.publicUrl?.startsWith('https:');
@@ -461,8 +464,17 @@ export function createHandler(d: Deps): Handler {
       if (!diskFull(e)) throw e;
       return page(views.loginPage({ username: typed, error: DISK_FULL + '.' }), 507);
     }
+    // Wrong two-factor codes since this account's last login: someone may have the password.
+    let wrong = 0;
+    try {
+      wrong = (db.query(`SELECT COUNT(*) AS n FROM audit_log WHERE action = 'login-failed' AND target = ? AND result LIKE '%two-factor%'
+        AND at > (SELECT COALESCE(MAX(at), 0) FROM audit_log WHERE action = 'login' AND username = ?)`).get(u.username.toLowerCase(), u.username) as { n: number }).n;
+    } catch { /* not shown */ }
     safeAudit({ user: u, csrf: '', idHash: '' }, 'login', how ?? null, ip);
-    if (how === 'with a recovery code') flashes.set(auth.getSession(id)!.idHash, { flash: `Logged in with a recovery code; ${d.twoFactor!.recoveryLeft(u.id)} are left. Set up two-factor again on the Settings page if the phone is lost.` });
+    const notes: string[] = [];
+    if (how === 'with a recovery code') notes.push(`Logged in with a recovery code; ${d.twoFactor!.recoveryLeft(u.id)} are left. Set up two-factor again on the Settings page if the phone is lost.`);
+    if (wrong) notes.push(`${wrong} wrong two-factor code${wrong === 1 ? ' was' : 's were'} entered for this account since its last login: whoever entered ${wrong === 1 ? 'it' : 'them'} knew the password. Change it on the Settings page if that was not you.`);
+    if (notes.length) flashes.set(auth.getSession(id)!.idHash, wrong ? { error: notes.join('\n') } : { flash: notes.join('\n') });
     return redirect('/containers', { 'set-cookie': setCookie(id) });
   }
 
@@ -481,18 +493,20 @@ export function createHandler(d: Deps): Handler {
     const f = await readForm(req);
     const p = pending.get(String(f.token || ''));
     if (!p || p.until < Date.now()) return page(views.loginPage({ error: 'The login timed out. Enter the password again.' }), 401);
-    const wait = Math.max(limiter.blocked(`user:${p.user}`), ipLimiter.blocked(`ip:${ip}`));
+    const wait = Math.max(limiter.blocked(`user:${p.user}`), ipLimiter.blocked(`ip:${ip}`), codeLimiter.blocked(`code:${p.user}`));
     if (wait > 0) { pending.delete(String(f.token)); return page(views.loginPage({ error: `Too many failed attempts. Try again in ${Math.ceil(wait / 60)} minutes.` }), 429, { 'retry-after': String(wait) }); }
     limiter.fail(`user:${p.user}`);
     ipLimiter.fail(`ip:${ip}`);
     const how = d.twoFactor?.verify(p.userId, String(f.code || '')) ?? null;
     if (!how) {
+      codeLimiter.fail(`code:${p.user}`);
       safeAudit(null, 'login-failed', p.user, ip, 'failed: wrong two-factor code');
       if (++p.tries >= 5) { pending.delete(String(f.token)); return page(views.loginPage({ error: 'Too many wrong codes. Enter the password again.' }), 401); }
       return page(views.twoFactorPage({ token: String(f.token), error: 'That code is not right, or it was used already. Enter the code the app shows now.' }), 401);
     }
     pending.delete(String(f.token));
-    const u = auth.listUsers().find(x => x.id === p.userId);
+    // The same account the password was for (an ID can be reused after a removal).
+    const u = auth.listUsers().find(x => x.id === p.userId && x.username.toLowerCase() === p.user);
     if (!u) return page(views.loginPage({ error: 'That account was removed.' }), 401);
     return finishLogin(u, p.user, ip, cookieId, p.user, how === 'recovery' ? 'with a recovery code' : undefined);
   }
@@ -765,7 +779,12 @@ export function createHandler(d: Deps): Handler {
     if (p === '/settings/2fa/start') {
       // A new secret for this session's account, kept here until it is confirmed with a code.
       if (!d.twoFactor) return text('not available\n', 404);
+      // Replacing a key that is on needs the password, as turning it off does.
+      if (d.twoFactor.enabled(s.user.id) && !(await auth.verifyLogin(s.user.username, f.password))) {
+        return act(s, ip, '/settings', '2fa-enable', s.user.username, () => { throw new v.ValidationError('the password is not right'); });
+      }
       const secret = d.twoFactor.newSecret();
+      for (const [k, t] of totpSetup) if (t.until < Date.now()) totpSetup.delete(k);
       totpSetup.set(s.idHash, { secret, until: Date.now() + 15 * 60_000 });
       return page(views.twoFactorSetupPage(ctx(s), secret, otpauthUri(secret, s.user.username)));
     }
@@ -777,10 +796,13 @@ export function createHandler(d: Deps): Handler {
         codes = d.twoFactor.enable(s.user.id, pend.secret, String(f.code || ''));
       } catch (e) {
         const msg = errorMessage(e);
+        if (errorStatus(e) >= 500) console.error('kontainers: two-factor set-up failed:', e);
         safeAudit(s, '2fa-enable', s.user.username, ip, `failed: ${msg}`);
-        return page(views.twoFactorSetupPage({ ...ctx(s), error: msg }, pend.secret, otpauthUri(pend.secret, s.user.username)), 400);
+        return page(views.twoFactorSetupPage({ ...ctx(s), error: msg }, pend.secret, otpauthUri(pend.secret, s.user.username)), errorStatus(e) >= 500 ? 500 : 400);
       }
       totpSetup.delete(s.idHash);
+      // Sessions made with the password alone end; this one stays.
+      auth.endOtherSessions(s.user.id, s.idHash);
       safeAudit(s, '2fa-enable', s.user.username, ip);
       return page(views.recoveryCodesPage(ctx(s), codes));
     }
@@ -804,7 +826,9 @@ export function createHandler(d: Deps): Handler {
       });
     }
     if (p === '/settings/autoupdate') {
-      return act(s, ip, '/settings', 'schedule-set', null, async () => {
+      let target: string | null = null;
+      try { target = describeSchedule(validateSchedule({ start: f.start, end: f.end, days: DAY_NAMES.map((_, i) => i).filter(i => f[`day_${i}`]), delayHours: f.delay })); } catch { /* the action says why */ }
+      return act(s, ip, '/settings', 'schedule-set', target, async () => {
         if (!d.schedule) throw new v.ValidationError('automatic updates are not available');
         const sched = validateSchedule({ start: f.start, end: f.end, days: DAY_NAMES.map((_, i) => i).filter(i => f[`day_${i}`]), delayHours: f.delay });
         d.schedule.set(sched);

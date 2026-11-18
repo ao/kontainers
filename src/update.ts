@@ -67,6 +67,9 @@ export interface UpdateOptions {
   // Aborted when kontainers shuts down: a replacement still being watched is undone, so it is not
   // left half done and unwatched.
   signal?: AbortSignal;
+  // Install only this registry digest (one that waited out the automatic-update delay): when the
+  // tag has moved on to a newer one since, nothing changes.
+  expectDigest?: string;
   // The event watcher's answer to "did someone stop or kill this container?"
   wasStopped?: (id: string) => boolean;
   // Where a replacement in progress is written down, so a restart in the middle can finish it.
@@ -185,6 +188,9 @@ export async function updateContainerDetailed(docker: Docker, id: string, opts: 
   await docker.pull(ref);
   const fresh = await docker.inspectImage(ref);
   if (fresh.Id === c.Image) return { changed: false, message: `${name} already runs the newest ${ref}.`, oldImage: c.Image, newImage: fresh.Id, id: c.Id };
+  if (opts.expectDigest && !(fresh.RepoDigests || []).some((d: string) => d.endsWith('@' + opts.expectDigest))) {
+    return { changed: false, message: `${name} was not updated: ${ref} has moved on to an image newer than the one that waited out the delay, and that one waits its own delay.`, oldImage: c.Image, newImage: fresh.Id, id: c.Id };
+  }
   if (opts.skipImage && fresh.Id === opts.skipImage) {
     return { changed: false, held: true, message: `${name} was not updated: this image of ${ref} failed before.`, oldImage: c.Image, newImage: fresh.Id, id: c.Id };
   }

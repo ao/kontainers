@@ -17,7 +17,11 @@ describe('two-factor login', () => {
   beforeAll(async () => { ({ srv, c } = await readyServer({ KONTAINERS_UPDATE_CHECK_HOURS: '0' })); });
   afterAll(async () => { await srv?.stop(); });
 
+  let early: Client;
   test('set-up: a wrong code is refused, the right one turns it on and shows recovery codes once', async () => {
+    early = new Client(srv.base);
+    expect((await early.post('/login', { username: 'admin', password: PW }, { csrf: false })).status).toBe(303);
+    expect((await early.get('/containers')).status).toBe(200);
     await c.page('/settings');
     const start = await c.post('/settings/2fa/start', {});
     const page = await start.text();
@@ -33,6 +37,18 @@ describe('two-factor login', () => {
     recovery = [...shown.matchAll(/<li><code>([a-z2-7]{5}-[a-z2-7]{5})<\/code><\/li>/g)].map(m => m[1]);
     expect(recovery).toHaveLength(10);
     expect(await c.page('/settings')).toContain('On: logging in asks for a code');
+    const after = await early.get('/containers');
+    expect(after.status).toBe(303); // logged out: sent to the login page
+    expect(after.headers.get('location')).toBe('/login');
+  });
+
+  test('turning it on logged out the account\'s other sessions; replacing the key needs the password', async () => {
+    // A second session made before two-factor was on: gone now.
+    expect((await c.get('/containers')).status).toBe(200); // this one stays
+    await c.page('/settings');
+    const res = await c.post('/settings/2fa/start', { password: 'wrong password!' });
+    expect(res.status).toBe(303);
+    expect(await c.page('/settings')).toContain('the password is not right');
   });
 
   test('the password alone does not log in; the code does, once', async () => {

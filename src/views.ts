@@ -163,7 +163,7 @@ export function twoFactorSetupPage(ctx: PageCtx, secret: string, uri: string): s
 
 export function recoveryCodesPage(ctx: PageCtx, codes: string[]): string {
   return layout('Two-factor login is on', ctx, html`
-<p class="flash" role="status">From now on, logging in asks for a code from the app after the password.</p>
+<p class="flash" role="status">From now on, logging in asks for a code from the app after the password. Your other sessions were logged out.</p>
 <p>These recovery codes each let you log in once without the app. Keep them somewhere safe, away from the phone; they are not shown again.</p>
 <ul class="codes">${codes.map(c => html`<li><code>${c}</code></li>`)}</ul>
 <p>Locked out without them? Another account can turn your two-factor login off on its Settings page, or on the host: <code>docker exec kontainers bun src/main.ts reset-2fa ${ctx.user}</code>.</p>
@@ -322,7 +322,7 @@ function autoForm(ctx: PageCtx, id: string, a: AutoView): Html {
   const last = a.row?.last_at ? html`<small class="muted">Last automatic update ${ago(a.row.last_at)}: ${a.row.last_result || ''}</small>` : '';
   const held = a.on && a.row?.held_image ? html`<small class="warn">Image ${shortId(a.row.held_image)} failed when it was tried and is held back; a newer image will be tried.</small>` : '';
   const at = (t: number) => new Date(t).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
-  const waiting = a.on && a.waiting ? html`<small class="muted">A newer image is waiting ${a.waiting.why === 'window' ? 'for the update window' : 'out the delay set on the Settings page'}; it is installed from ${at(a.waiting.until)}.</small>` : '';
+  const waiting = a.on && a.waiting ? html`<small class="muted">A newer image is waiting ${a.waiting.why === 'window' ? 'for the update window' : 'out the delay set on the Settings page'}; it is installed from ${at(a.waiting.until)}.${a.waiting.why === 'delay' ? ' The delay counts from when a check first saw this image; if the tag moves on to another one meanwhile, that one waits its own delay.' : ''}</small>` : '';
   return html`<form method="post" action="/containers/${id}/autoupdate" class="autoupdate">${csrfField(ctx)}
 <label class="check"><input type="checkbox" name="on"${a.on ? raw(' checked') : raw('')}> Update automatically when a check finds a newer image</label>
 <button>Save</button>
@@ -553,7 +553,7 @@ export function settingsPage(ctx: PageCtx, users: { id: number; username: string
   const twoFactor = !tf ? '' : tf.mine
     ? html`<h2>Two-factor login</h2><p>On: logging in asks for a code from your authenticator app. ${tf.left} recovery code${tf.left === 1 ? '' : 's'} left.</p>
 <form method="post" action="/settings/2fa/disable" class="stack">${csrfField(ctx)}<label>Your password, to turn it off <input name="password" type="password" required autocomplete="current-password"></label><button class="danger">Turn off two-factor login</button></form>
-<form method="post" action="/settings/2fa/start" class="inline">${csrfField(ctx)}<button>Set it up again (new key and recovery codes)</button></form>`
+<form method="post" action="/settings/2fa/start" class="stack">${csrfField(ctx)}<label>Your password, to set it up again <input name="password" type="password" required autocomplete="current-password"></label><button>Set it up again (new key and recovery codes)</button></form>`
     : html`<h2>Two-factor login</h2><p>Off. With it on, logging in also asks for a code from an authenticator app on your phone, so a password alone is not enough.</p>
 <form method="post" action="/settings/2fa/start" class="inline">${csrfField(ctx)}<button class="primary">Set up two-factor login</button></form>`;
   return layout('Settings', ctx, html`
@@ -665,7 +665,7 @@ const ACTIONS: Record<string, string> = {
   'proxy-create': 'added the proxy rule', 'proxy-edit': 'edited proxy rule', 'proxy-toggle': 'turned on or off proxy rule', 'proxy-remove': 'removed proxy rule',
   'notify-add': 'added a notification target', 'notify-test': 'tested notification target', 'notify-remove': 'removed notification target',
   'registry-add': 'saved the registry login for', 'registry-remove': 'removed the registry login for',
-  'schedule-set': 'changed when automatic updates run',
+  'schedule-set': 'set automatic updates to run',
   '2fa-enable': 'turned on two-factor login for', '2fa-disable': 'turned off two-factor login for', '2fa-reset': 'turned off two-factor login of user',
   'project-start': 'started every container of', 'project-stop': 'stopped every container of', 'project-restart': 'restarted every container of',
   'cleanup-images': 'cleaned up images', 'cleanup-networks': 'cleaned up networks', 'cleanup-volumes': 'cleaned up anonymous volumes',

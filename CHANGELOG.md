@@ -3,8 +3,11 @@
 ## Unreleased
 
 - Two-factor login, per account, on the Settings page: a code from an authenticator app (TOTP)
-  after the password, or one of ten one-time recovery codes. Another account can turn it off for
-  a user, and so can `kontainers reset-2fa USERNAME` on the host.
+  after the password, or one of ten one-time recovery codes. Turning it on logs out the account's
+  other sessions; replacing or removing the key needs the password. More than 20 wrong codes in a
+  day lock the account's second step for the rest of the day, and the next login says how many
+  wrong codes were entered. Another account can turn it off for a user, and so can
+  `docker exec kontainers bun src/main.ts reset-2fa USERNAME` on the host.
 - Automatic updates can be limited to an update window (hours in UTC, days of the week) and wait a
   number of hours after a newer image is first seen (Settings, or `KONTAINERS_AUTOUPDATE_WINDOW`
   and `KONTAINERS_AUTOUPDATE_DELAY_HOURS`). A container that waits says until when.

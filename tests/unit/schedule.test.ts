@@ -13,6 +13,8 @@ describe('update window', () => {
     expect(() => validateSchedule({ start: '02:00', end: '' })).toThrow('the end of the window');
     expect(() => validateSchedule({ start: '25:00', end: '01:00' })).toThrow('a time such as 02:00');
     expect(() => validateSchedule({ start: '03:00', end: '03:00' })).toThrow('same time');
+    expect(() => validateSchedule({ start: '02:00', end: '02:05' })).toThrow('at least 15 minutes');
+    expect(validateSchedule({ start: '23:50', end: '00:10' })).toMatchObject({ start: 1430, end: 10 });
     expect(() => validateSchedule({ delayHours: '1.5' })).toThrow('whole number');
     expect(() => validateSchedule({ delayHours: '721' })).toThrow('0 to 720');
   });
@@ -34,6 +36,10 @@ describe('update window', () => {
     const night = validateSchedule({ start: '02:00', end: '05:00' });
     expect(new Date(nextWindow(night, at('2026-11-18T10:00:00Z'))).toISOString()).toBe('2026-11-19T02:00:00.000Z');
     expect(nextWindow(night, at('2026-11-18T03:00:00Z'))).toBe(at('2026-11-18T03:00:00Z'));
+    const weekend = validateSchedule({ start: '22:00', end: '04:00', days: ['6'] });
+    expect(new Date(nextWindow(weekend, at('2026-11-18T10:00:00Z'))).toISOString()).toBe('2026-11-21T22:00:00.000Z'); // Wednesday to Saturday night
+    const sundays = validateSchedule({ days: ['0'] });
+    expect(new Date(nextWindow(sundays, at('2026-11-18T10:00:00Z'))).toISOString()).toBe('2026-11-22T00:00:00.000Z');
   });
   test('described in words', () => {
     expect(describeSchedule(ANY_TIME)).toBe('at any time');
@@ -44,6 +50,10 @@ describe('update window', () => {
     expect(scheduleFromEnv(undefined, undefined)).toEqual(ANY_TIME);
     expect(() => scheduleFromEnv('2am-5am', undefined)).toThrow('KONTAINERS_AUTOUPDATE_WINDOW');
     expect(() => scheduleFromEnv('02:00-05:00 Funday', undefined)).toThrow('days are');
+    expect(() => scheduleFromEnv('02:00-05:00 Monkey', undefined)).toThrow('days are');
+    expect(scheduleFromEnv('02:00-05:00 Mon-Fri', undefined).days).toEqual([1, 2, 3, 4, 5]);
+    expect(scheduleFromEnv('22:00-04:00 Fri-Mon', undefined).days).toEqual([0, 1, 5, 6]);
+    expect(scheduleFromEnv('02:00-05:00 saturday sunday', undefined).days).toEqual([0, 6]);
   });
   test('stored: saved settings win over the environment; first sight of an image is remembered', () => {
     const db = new Database(':memory:', { strict: true }); migrate(db);

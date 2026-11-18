@@ -130,6 +130,12 @@ export class Auth {
     return { user: { id: row.id, username: row.username }, csrf: row.csrf, idHash };
   }
 
+  // Every session of the account but one (after two-factor login is turned on, a session made
+  // with the password alone should not stay).
+  endOtherSessions(userId: number, keepIdHash: string): void {
+    this.db.query('DELETE FROM sessions WHERE user_id = ? AND id_hash != ?').run(userId, keepIdHash);
+  }
+
   destroySession(idHash: string): void {
     this.db.query('DELETE FROM sessions WHERE id_hash = ?').run(idHash);
   }

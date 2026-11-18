@@ -49,7 +49,8 @@ if (cmd === 'backup') {
     console.log(`kontainers: two-factor login is off for ${u.username}`);
     process.exit(0);
   } catch (e) {
-    console.error(`kontainers: could not reset two-factor login: ${(e as Error).message}`);
+    const m = (e as Error).message;
+    console.error(`kontainers: could not reset two-factor login: ${m}${/locked|busy/i.test(m) ? '. The running kontainers holds the database to itself (it started with the data volume full); free space and restart it, then run this again' : ''}`);
     process.exit(1);
   }
 } else if (cmd !== undefined && cmd !== 'serve') {
