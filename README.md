@@ -129,6 +129,11 @@ What kontainers does about it:
 - Sessions are server-side, in an `HttpOnly`, `SameSite=Strict` cookie (`Secure` and `__Host-`
   prefixed behind HTTPS), and expire after 12 hours idle or 7 days. Logging out, or changing a
   password, ends them. Passwords are hashed with argon2id.
+- Two-factor login, per account (Settings): after the password, a six-digit code from an
+  authenticator app (TOTP, RFC 6238), or one of ten one-time recovery codes. Each code works once,
+  and wrong codes count toward the login limit below. Another account can turn it off for a user,
+  and so can `docker exec kontainers bun src/main.ts reset-2fa USERNAME` on the host. The keys are
+  in the database, so the backup holds them: keep it as private as the data volume.
 - Every state change is a POST that needs a per-session CSRF token and a same-origin `Origin` /
   `Sec-Fetch-Site`. Requests with an unknown `Host` are refused, to stop DNS rebinding.
 - Login is limited, per 15 minutes, to 5 failures per username and 20 per client address (the
@@ -204,7 +209,13 @@ asks for while it settles (`docker stop`, a backup script) is not a failure: the
 left as they left it. If kontainers itself is stopped meanwhile, it puts the old container back
 before it exits; `compose.yaml` gives it 30 s for that (`stop_grace_period`), and with `docker run`
 add `--stop-timeout 30`. If it is killed first, it finishes the job when it starts again: what it
-was replacing, and whether that was running, is written down before anything is stopped. Compose containers are left to `docker compose pull && docker compose up -d`.
+was replacing, and whether that was running, is written down before anything is stopped. Compose
+containers are left to `docker compose pull && docker compose up -d`.
+
+When automatic updates run is set on the Settings page: an update window (hours in UTC, which may
+cross midnight, and days of the week), and a delay, the hours a newer image waits after a check
+first sees it (so a release that is pulled or fixed in its first hours is not installed). A
+container that waits says until when on its page, and Check for updates counts it.
 
 Notification targets are set on the Settings page, with a Send test button:
 
@@ -282,6 +293,8 @@ briefly unavailable; Caddy did not renew certificates in a process that started 
 | `KONTAINERS_UPDATE_CHECK_HOURS` | `6` | Hours between update checks, 0 to 720; `0` turns scheduled checks off ("Check for updates" still works) |
 | `KONTAINERS_AUTOUPDATE_SETTLE` | `30` | Seconds a new container is watched after an automatic update, 0 to 600 |
 | `KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT` | `120` | Seconds to wait for "healthy" after settling, for images with a healthcheck, 0 to 3600 |
+| `KONTAINERS_AUTOUPDATE_WINDOW` | unset (any time) | When automatic updates may run, in UTC: `02:00-05:00`, optionally followed by days (`02:00-05:00 Sat,Sun`); applies until a window is saved on the Settings page |
+| `KONTAINERS_AUTOUPDATE_DELAY_HOURS` | `0` | Hours a newer image waits after a check first sees it, 0 to 720; as above |
 | `KONTAINERS_HTTP_PORT` / `KONTAINERS_HTTPS_PORT` | `80` / `443` | Proxy ports |
 
 `/healthz` returns 200 while the process runs. `/readyz` returns 200 when the database and the

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Two-factor login, per account, on the Settings page: a code from an authenticator app (TOTP)
+  after the password, or one of ten one-time recovery codes. Another account can turn it off for
+  a user, and so can `kontainers reset-2fa USERNAME` on the host.
+- Automatic updates can be limited to an update window (hours in UTC, days of the week) and wait a
+  number of hours after a newer image is first seen (Settings, or `KONTAINERS_AUTOUPDATE_WINDOW`
+  and `KONTAINERS_AUTOUPDATE_DELAY_HOURS`). A container that waits says until when.
+- README: images and links by full address, so the Docker Hub description shows them.
+
 ## 0.4.1
 
 - The image stores the Caddy binary once. 0.4.0 copied it in and then gave it the capability to
