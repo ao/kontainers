@@ -106,3 +106,37 @@ test('clean up after', async ({ page, request }) => {
     await expect(page.getByRole('status')).toContainText('Done');
   }
 });
+
+test('two-factor login: set-up, recovery codes and the second step, without accessibility violations', async ({ page }) => {
+  const { hotp, step, unbase32 } = await import('../../src/totp');
+  await login(page);
+  await page.goto('/settings');
+  await page.getByRole('button', { name: 'Set up two-factor login' }).click();
+  const a11y = async (label: string) => {
+    const result = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
+    expect(result.violations.map(v => v.id), label).toEqual([]);
+  };
+  await a11y('set-up page');
+  const key = (await page.locator('dd code').first().textContent())!.replace(/\s/g, '');
+  const secret = unbase32(key);
+  await page.getByLabel('The code the app shows now').fill(hotp(secret, step(Date.now())));
+  await page.getByRole('button', { name: 'Turn on two-factor login' }).click();
+  await expect(page.getByRole('heading', { name: 'Two-factor login is on' })).toBeVisible();
+  await a11y('recovery codes page');
+  await page.getByRole('button', { name: 'Log out' }).click();
+  await page.getByLabel('Username').fill('admin');
+  await page.getByLabel('Password').fill(PW);
+  await page.getByRole('button', { name: 'Log in' }).click();
+  await expect(page.getByLabel('Code from your authenticator app, or a recovery code')).toBeVisible();
+  await a11y('second step');
+  // A fresh step's code: the set-up used this one.
+  await page.waitForTimeout(31_000);
+  await page.getByLabel('Code from your authenticator app, or a recovery code').fill(hotp(secret, step(Date.now())));
+  await page.getByRole('button', { name: 'Log in' }).click();
+  await expect(page).toHaveURL(/\/containers$/);
+  // Off again, for anything that runs after.
+  await page.goto('/settings');
+  await page.getByLabel('Your password, to turn it off').fill(PW);
+  await page.getByRole('button', { name: 'Turn off two-factor login' }).click();
+  await expect(page.getByRole('status')).toContainText('Two-factor login is off for your account');
+});

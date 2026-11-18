@@ -3,7 +3,7 @@
 Manage the containers on one Docker host from a browser, and point a domain at any of them with an
 HTTPS certificate it gets and renews for you. One container does both.
 
-![The containers page: each row's left edge shows its state](docs/screenshots/containers.png)
+![The containers page: each row's left edge shows its state](https://raw.githubusercontent.com/ao/kontainers/main/docs/screenshots/containers.png)
 
 [![ci](https://github.com/ao/kontainers/actions/workflows/ci.yml/badge.svg)](https://github.com/ao/kontainers/actions/workflows/ci.yml)
 
@@ -30,19 +30,19 @@ It is also careful about the host, because access to Docker is root on it. It li
 127.0.0.1, has no default password, never force-removes a container you made (only a
 replacement it is rolling back), and will not stop or remove itself. The Security section below lists every default.
 
-![HTTPS proxy rules with their certificate status](docs/screenshots/proxy.png)
+![HTTPS proxy rules with their certificate status](https://raw.githubusercontent.com/ao/kontainers/main/docs/screenshots/proxy.png)
 
 ## What it costs to run
 
 Memory and start time were measured on the 0.4.0 release candidate, on an EC2 m7g.4xlarge (arm64,
 16 vCPUs, Ubuntu 24.04, Docker 29.9.3), by `scripts/test.sh screenshots` in three runs. The download
-size is the published 0.4.1 image's: 19 MB more than 0.3.0's, because the Bun base image grew by
+size is the published 0.4.1 image's, and 0.5.0's is the same: 19 MB more than 0.3.0's, because the Bun base image grew by
 16 MB (oven/bun 1.4.4-slim against 1.3.1-slim) and Caddy and Debian by 4 MB. 0.4.0 also stored
 the Caddy binary twice (16.5 MB more), which 0.4.1 fixed.
 
 | | |
 |---|---|
-| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1, compressed layers on Docker Hub |
+| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1 and 0.5.0, compressed layers on Docker Hub |
 | Memory at idle | 30 to 34 MiB, with Caddy serving two HTTPS rules and four other containers on the host (`docker stats` after 30 s, three runs) |
 | Start | 239 to 299 ms from `docker start` to a healthy `/healthz` (fifteen starts over three runs) |
 
@@ -129,6 +129,13 @@ What kontainers does about it:
 - Sessions are server-side, in an `HttpOnly`, `SameSite=Strict` cookie (`Secure` and `__Host-`
   prefixed behind HTTPS), and expire after 12 hours idle or 7 days. Logging out, or changing a
   password, ends them. Passwords are hashed with argon2id.
+- Two-factor login, per account (Settings): after the password, a six-digit code from an
+  authenticator app (TOTP, RFC 6238), or one of ten one-time recovery codes. Each code works once,
+  and wrong codes count toward the login limit below; 20 within 24 hours also lock the account's
+  code step for 24 hours, until another account turns its two-factor off or kontainers restarts. Another account can turn it off for a user,
+  and so can `docker compose exec kontainers bun src/main.ts reset-2fa USERNAME` on the host
+  (`docker exec <container> ...` without compose). The keys are
+  in the database, so the backup holds them: keep it as private as the data volume.
 - Every state change is a POST that needs a per-session CSRF token and a same-origin `Origin` /
   `Sec-Fetch-Site`. Requests with an unknown `Host` are refused, to stop DNS rebinding.
 - Login is limited, per 15 minutes, to 5 failures per username and 20 per client address (the
@@ -180,7 +187,7 @@ With `docker run`, mounting the socket directly:
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.4.1
+      ataiva/kontainers:0.5.0
     docker logs kontainers | grep 'setup token'
 
 The image runs as an unprivileged user, so it needs the socket's group (`--group-add`). On
@@ -204,7 +211,13 @@ asks for while it settles (`docker stop`, a backup script) is not a failure: the
 left as they left it. If kontainers itself is stopped meanwhile, it puts the old container back
 before it exits; `compose.yaml` gives it 30 s for that (`stop_grace_period`), and with `docker run`
 add `--stop-timeout 30`. If it is killed first, it finishes the job when it starts again: what it
-was replacing, and whether that was running, is written down before anything is stopped. Compose containers are left to `docker compose pull && docker compose up -d`.
+was replacing, and whether that was running, is written down before anything is stopped. Compose
+containers are left to `docker compose pull && docker compose up -d`.
+
+When automatic updates run is set on the Settings page: an update window (hours in UTC, which may
+cross midnight, and days of the week), and a delay, the hours a newer image waits after a check
+first sees it (so a release that is pulled or fixed in its first hours is not installed). A
+container that waits says until when on its page, and Check for updates counts it.
 
 Notification targets are set on the Settings page, with a Send test button:
 
@@ -238,7 +251,7 @@ to be public: they serve the sites you route, not the kontainers UI.
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.4.1
+      ataiva/kontainers:0.5.0
 
 Use your own email address: Let's Encrypt rejects reserved domains such as example.com, and
 kontainers refuses to start with one.
@@ -279,9 +292,11 @@ briefly unavailable; Caddy did not renew certificates in a process that started 
 | `KONTAINERS_ACME_CA_ROOT` | unset | PEM file to trust for the ACME directory (for a private CA) |
 | `KONTAINERS_ACME_RENEW_CHECK` | unset (Caddy's default) | Seconds between Caddy's checks for certificates due for renewal, 1 to 86400; HTTPS rules only |
 | `KONTAINERS_SELF_CONTAINER` | the container's hostname | ID or name of kontainers' own container, if `--hostname` changed it; kontainers and the container serving its Docker API get no Stop, Remove or Update |
-| `KONTAINERS_UPDATE_CHECK_HOURS` | `6` | Hours between update checks, 0 to 720; `0` turns scheduled checks off ("Check for updates" still works) |
+| `KONTAINERS_UPDATE_CHECK_HOURS` | `6` | Hours between update checks, 0 to 720; `0` turns scheduled checks off ("Check for updates" still works, and automatic updates then follow only its results) |
 | `KONTAINERS_AUTOUPDATE_SETTLE` | `30` | Seconds a new container is watched after an automatic update, 0 to 600 |
 | `KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT` | `120` | Seconds to wait for "healthy" after settling, for images with a healthcheck, 0 to 3600 |
+| `KONTAINERS_AUTOUPDATE_WINDOW` | unset (any time) | When automatic updates may run, in UTC: `02:00-05:00`, optionally followed by days (`02:00-05:00 Sat,Sun`); applies until a window is saved on the Settings page |
+| `KONTAINERS_AUTOUPDATE_DELAY_HOURS` | `0` | Hours a newer image waits after a check first sees it, 0 to 720; as above |
 | `KONTAINERS_HTTP_PORT` / `KONTAINERS_HTTPS_PORT` | `80` / `443` | Proxy ports |
 
 `/healthz` returns 200 while the process runs. `/readyz` returns 200 when the database and the
@@ -341,4 +356,4 @@ anonymous pull limit; CI does.
 
 ## Licence
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](https://github.com/ao/kontainers/blob/main/LICENSE).

@@ -11,6 +11,8 @@ import { Auth } from './auth';
 import { Docker } from './docker';
 import { recoverInterrupted, watchRunning, type Recovered } from './update';
 import { ReplaceJournal } from './journal';
+import { ScheduleStore } from './schedule';
+import { TwoFactor } from './totp';
 import { diskFull, setDegraded } from './storage';
 import { ProxyManager, RuleStore } from './proxy';
 import { createHandler, dockerApiAddress } from './server';
@@ -20,11 +22,12 @@ import { Registries, registryOf } from './registries';
 import { AutoUpdates } from './autoupdate';
 import { EventWatcher, checkCertificates } from './events';
 
-const cfg = loadConfig();
+let cfg: ReturnType<typeof loadConfig>;
+try { cfg = loadConfig(); } catch (e) { console.error(`kontainers: ${(e as Error).message}`); process.exit(1); }
 const [cmd, arg] = process.argv.slice(2);
 
 if (cmd === 'backup') {
-  if (!arg) { console.error('usage: kontainers backup FILE'); process.exit(2); }
+  if (!arg) { console.error('usage: bun src/main.ts backup FILE (in the container)'); process.exit(2); }
   if (existsSync(arg)) { console.error(`kontainers: ${arg} already exists`); process.exit(1); }
   try {
     snapshot(openDb(cfg.dataDir), arg);
@@ -35,8 +38,26 @@ if (cmd === 'backup') {
   }
   console.log(`kontainers: wrote ${arg}`);
   process.exit(0);
+} else if (cmd === 'reset-2fa') {
+  // For an account locked out of two-factor login: run on the host, where only root can.
+  if (!arg) { console.error('usage: bun src/main.ts reset-2fa USERNAME (in the container)'); process.exit(2); }
+  try {
+    const d = openDb(cfg.dataDir);
+    const u = d.query('SELECT id, username FROM users WHERE username = ?').get(arg) as { id: number; username: string } | null;
+    if (!u) { console.error(`kontainers: no user ${arg}`); process.exit(1); }
+    const tf = new TwoFactor(d);
+    if (!tf.enabled(u.id)) { console.log(`kontainers: two-factor login was already off for ${u.username}`); process.exit(0); }
+    tf.disable(u.id);
+    d.query('INSERT INTO audit_log (at, username, action, target, ip, result) VALUES (?, ?, ?, ?, ?, ?)').run(Date.now(), null, '2fa-reset', u.username, null, 'note: from the command line');
+    console.log(`kontainers: two-factor login is off for ${u.username}. If wrong codes locked the account's second step, restart kontainers to clear that too.`);
+    process.exit(0);
+  } catch (e) {
+    const m = (e as Error).message;
+    console.error(`kontainers: could not reset two-factor login: ${m}${/locked|busy/i.test(m) ? '. The running kontainers holds the database to itself (it started with the data volume full); free space and restart it, then run this again' : ''}`);
+    process.exit(1);
+  }
 } else if (cmd !== undefined && cmd !== 'serve') {
-  console.error(`kontainers: unknown command "${cmd}"; commands: serve, backup FILE`);
+  console.error(`kontainers: unknown command "${cmd}"; commands: serve, backup FILE, reset-2fa USERNAME (as bun src/main.ts COMMAND in the container)`);
   process.exit(2);
 }
 
@@ -74,10 +95,12 @@ const systemAudit = (action: string, target: string, result?: string) =>
   db.query('INSERT INTO audit_log (at, username, action, target, ip, result) VALUES (?, ?, ?, ?, ?, ?)').run(Date.now(), null, action, target, null, result ?? null);
 // Aborted at shutdown, so a replacement being watched is undone instead of left half done.
 const stopping = new AbortController();
-const autoUpdates: AutoUpdates = new AutoUpdates(db, docker, updates, notifier, { settleMs: cfg.autoUpdateSettle * 1000, healthTimeoutMs: cfg.autoUpdateHealthTimeout * 1000, signal: stopping.signal, journal, wasStopped: (id: string): boolean => events.wasStopped(id) }, systemAudit);
+const schedule = new ScheduleStore(db, cfg.autoUpdateSchedule);
+const autoUpdates: AutoUpdates = new AutoUpdates(db, docker, updates, notifier, { settleMs: cfg.autoUpdateSettle * 1000, healthTimeoutMs: cfg.autoUpdateHealthTimeout * 1000, signal: stopping.signal, journal, wasStopped: (id: string): boolean => events.wasStopped(id), schedule }, systemAudit);
+autoUpdates.start();
 updates.onChecked = () => autoUpdates.afterCheck();
 const events: EventWatcher = new EventWatcher(docker, notifier, Date.now, ms => Bun.sleep(ms), name => autoUpdates.busy.has(name));
-const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal });
+const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal, schedule, twoFactor: new TwoFactor(db) });
 updates.start();
 events.replaceWindowMs = (cfg.autoUpdateSettle + cfg.autoUpdateHealthTimeout + 60) * 1000;
 events.start();
@@ -168,6 +191,7 @@ async function shutdown(sig: string) {
   // its 10 s stop timeout, so this waits up to 25 s; compose.yaml gives kontainers 30 s to stop. If
   // Docker kills it sooner (docker run's default is 10 s), the journal lets the next start finish.
   stopping.abort();
+  autoUpdates.stop();
   for (let i = 0; i < 250 && autoUpdates.busy.size; i++) await Bun.sleep(100);
   if (autoUpdates.busy.size) console.error('kontainers: an update was still running at shutdown; it is tidied up at the next start');
   server.stop();

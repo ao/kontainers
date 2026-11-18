@@ -5,6 +5,7 @@ import { domainToUnicode } from 'node:url';
 import { containerStatus, type UpdateState } from './updates';
 import { EVENTS, EVENT_KINDS, maskUrl, type Target } from './notify';
 import type { RegistryLogin } from './registries';
+import { DAY_NAMES, describeSchedule, formTime, type Schedule } from './schedule';
 
 export function esc(v: unknown): string {
   return String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
@@ -136,6 +137,37 @@ export function loginPage(ctx: PageCtx): string {
   <label>Password <input name="password" type="password" required autocomplete="current-password"${ctx.username ? raw(' autofocus') : raw('')}></label>
   <button>Log in</button>
 </form>`);
+}
+
+// The second step of a login with two-factor on.
+export function twoFactorPage(ctx: PageCtx & { token: string }): string {
+  return layout('Log in', ctx, html`
+<form method="post" action="/login/code" class="stack">
+  <input type="hidden" name="token" value="${ctx.token}">
+  <label>Code from your authenticator app, or a recovery code <input name="code" required autocomplete="one-time-code" inputmode="text" autofocus></label>
+  <button>Log in</button>
+</form>`);
+}
+
+export function twoFactorSetupPage(ctx: PageCtx, secret: string, uri: string): string {
+  const grouped = secret.match(/.{1,4}/g)!.join(' ');
+  return layout('Two-factor login', ctx, html`
+<p>Add kontainers to an authenticator app (one that makes six-digit codes, such as those from Google, Microsoft or 2FAS, or a password manager that does): open <a href="${uri}">this link</a> on the phone, or enter the key by hand.</p>
+<dl class="facts"><dt>Key</dt><dd><code>${grouped}</code></dd><dt>Account</dt><dd>${ctx.user}</dd><dt>Kind</dt><dd>time-based, 6 digits, every 30 s</dd></dl>
+<form method="post" action="/settings/2fa/confirm" class="stack">${csrfField(ctx)}
+  <label>The code the app shows now <input name="code" required autocomplete="one-time-code" inputmode="numeric" pattern="[0-9 ]{6,7}"></label>
+  <button class="primary">Turn on two-factor login</button>
+</form>
+<p><a href="/settings">Cancel</a></p>`, 'Settings');
+}
+
+export function recoveryCodesPage(ctx: PageCtx, codes: string[]): string {
+  return layout('Two-factor login is on', ctx, html`
+<p class="flash" role="status">From now on, logging in asks for a code from the app after the password. Your other sessions were logged out.</p>
+<p>These recovery codes each let you log in once without the app. Keep them somewhere safe, away from the phone; they are not shown again.</p>
+<ul class="codes">${codes.map(c => html`<li><code>${c}</code></li>`)}</ul>
+<p>Locked out without them? Another account can turn your two-factor login off on its Settings page, or on the host: <code>docker compose exec kontainers bun src/main.ts reset-2fa ${ctx.user}</code> (with <code>docker run</code>: <code>docker exec</code> and the container's name).</p>
+<p><a class="button" href="/settings">Done</a></p>`, 'Settings');
 }
 
 const shortId = (id: string) => String(id || '').replace(/^sha256:/, '').slice(0, 12);
@@ -283,17 +315,19 @@ ${filters}
 <p class="muted" id="nomatch"${list.length && !shown ? raw('') : raw(' hidden')}>No container matches. <a href="/containers">Show all ${list.length}</a>.</p>`);
 }
 
-export interface AutoView { on: boolean; row: { last_at: number | null; last_result: string | null; held_image: string | null } | null }
+export interface AutoView { on: boolean; row: { last_at: number | null; last_result: string | null; held_image: string | null } | null; waiting?: { until: number; why: 'window' | 'delay' } | null }
 
 // The automatic-update switch on a container's page, with the last result.
 function autoForm(ctx: PageCtx, id: string, a: AutoView): Html {
   const last = a.row?.last_at ? html`<small class="muted">Last automatic update ${ago(a.row.last_at)}: ${a.row.last_result || ''}</small>` : '';
   const held = a.on && a.row?.held_image ? html`<small class="warn">Image ${shortId(a.row.held_image)} failed when it was tried and is held back; a newer image will be tried.</small>` : '';
+  const at = (t: number) => new Date(t).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+  const waiting = a.on && a.waiting ? html`<small class="muted">A newer image is waiting ${a.waiting.why === 'window' ? 'for the update window' : 'out the delay set on the Settings page'}; it is installed from ${at(a.waiting.until)}.${a.waiting.why === 'delay' ? ' The delay counts from when a check first saw this image; if the tag moves on to another one meanwhile, that one waits its own delay.' : ''}</small>` : '';
   return html`<form method="post" action="/containers/${id}/autoupdate" class="autoupdate">${csrfField(ctx)}
 <label class="check"><input type="checkbox" name="on"${a.on ? raw(' checked') : raw('')}> Update automatically when a check finds a newer image</label>
 <button>Save</button>
 <small class="muted">The new container is watched while it settles; if it stops, restarts or turns unhealthy, the old one is put back.</small>
-${last}${held}</form>`;
+${last}${held}${waiting}</form>`;
 }
 
 export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, updates: UpdateView | null = null, auto: AutoView | null = null): string {
@@ -513,9 +547,15 @@ export function editRulePage(ctx: PageCtx, r: Rule): string {
 </form>`, 'Proxy');
 }
 
-export function settingsPage(ctx: PageCtx, users: { id: number; username: string }[], selfId: number, targets: Target[] | null = null, watch: { connected: boolean; error: string | null } | null = null, logins: RegistryLogin[] | null = null): string {
-  const rows = users.map(u => html`<tr><td>${u.username}</td>
-<td>${u.id === selfId ? html`<em>you</em>` : post(ctx, `/settings/users/${u.id}/remove`, 'Remove', { confirm: `Remove user ${u.username}?`, cls: 'danger' })}</td></tr>`);
+export function settingsPage(ctx: PageCtx, users: { id: number; username: string }[], selfId: number, targets: Target[] | null = null, watch: { connected: boolean; error: string | null } | null = null, logins: RegistryLogin[] | null = null, schedule: Schedule | null = null, tf: { mine: boolean; left: number; users: Set<number> } | null = null): string {
+  const rows = users.map(u => html`<tr><td>${u.username}${tf?.users.has(u.id) ? html` <small class="muted">two-factor</small>` : ''}</td>
+<td class="actions">${u.id === selfId ? html`<em>you</em>` : html`${post(ctx, `/settings/users/${u.id}/remove`, 'Remove', { confirm: `Remove user ${u.username}?`, cls: 'danger' })}${tf?.users.has(u.id) ? html` ${post(ctx, `/settings/users/${u.id}/2fa-reset`, 'Turn off two-factor', { confirm: `Turn off two-factor login for ${u.username}? They log in with the password alone until they set it up again.` })}` : ''}`}</td></tr>`);
+  const twoFactor = !tf ? '' : tf.mine
+    ? html`<h2>Two-factor login</h2><p>On: logging in asks for a code from your authenticator app. ${tf.left} recovery code${tf.left === 1 ? '' : 's'} left.</p>
+<form method="post" action="/settings/2fa/disable" class="stack">${csrfField(ctx)}<label>Your password, to turn it off <input name="password" type="password" required autocomplete="current-password"></label><button class="danger">Turn off two-factor login</button></form>
+<form method="post" action="/settings/2fa/start" class="stack">${csrfField(ctx)}<label>Your password, to set it up again <input name="password" type="password" required autocomplete="current-password"></label><button>Set it up again (new key and recovery codes)</button></form>`
+    : html`<h2>Two-factor login</h2><p>Off. With it on, logging in also asks for a code from an authenticator app on your phone, so a password alone is not enough.</p>
+<form method="post" action="/settings/2fa/start" class="inline">${csrfField(ctx)}<button class="primary">Set up two-factor login</button></form>`;
   return layout('Settings', ctx, html`
 <h2>Change your password</h2>
 <form method="post" action="/settings/password" class="stack">${csrfField(ctx)}
@@ -523,6 +563,7 @@ export function settingsPage(ctx: PageCtx, users: { id: number; username: string
   <label>New password <input name="next" type="password" required minlength="12" autocomplete="new-password"></label>
   <button>Change password</button>
 </form>
+${twoFactor}
 <h2>Users</h2>
 <p>Every user has full control of the Docker host.</p>
 <div class="scroll"><table><tbody>${rows}</tbody></table></div>
@@ -531,10 +572,26 @@ export function settingsPage(ctx: PageCtx, users: { id: number; username: string
   <label>Password <input name="password" type="password" required minlength="12" autocomplete="new-password"></label>
   <button>Add user</button>
 </form>
+${schedule ? scheduleSection(ctx, schedule) : ''}
 ${targets ? notifySection(ctx, targets, watch) : ''}
 ${logins ? registrySection(ctx, logins) : ''}
 <h2>Backup</h2>
 <p><a href="/api/backup">Download a database snapshot</a>. Certificates are in the data volume; see the README for a full backup.${logins?.length ? ' The snapshot holds registry passwords encrypted; the key, registry.key, stays in the data volume, so after restoring on another host enter them again.' : ''}</p>`);
+}
+
+function scheduleSection(ctx: PageCtx, s: Schedule): Html {
+  const days = DAY_NAMES.map((d, i) => html`<label class="check"><input type="checkbox" name="day_${i}"${s.days.includes(i) ? raw(' checked') : raw('')}> ${d}</label>`);
+  return html`<h2>Automatic updates</h2>
+<p>Containers that are updated automatically get a newer image ${describeSchedule(s)}. The time now is ${new Date().toISOString().slice(11, 16)} UTC.</p>
+<form method="post" action="/settings/autoupdate" class="stack">${csrfField(ctx)}
+  <fieldset><legend>Update window (UTC); leave both empty for any time</legend>
+    <label>From <input name="start" type="time" value="${formTime(s.start)}"></label>
+    <label>Until <input name="end" type="time" value="${formTime(s.end)}"></label>
+  </fieldset>
+  <fieldset><legend>On these days (none ticked: every day); a window past midnight counts for the day it starts</legend>${days}</fieldset>
+  <label>Wait this many hours after a newer image is first seen (0: at once) <input name="delay" type="number" min="0" max="720" value="${s.delayHours}"></label>
+  <button>Save</button>
+</form>`;
 }
 
 function registrySection(ctx: PageCtx, logins: RegistryLogin[]): Html {
@@ -608,6 +665,8 @@ const ACTIONS: Record<string, string> = {
   'proxy-create': 'added the proxy rule', 'proxy-edit': 'edited proxy rule', 'proxy-toggle': 'turned on or off proxy rule', 'proxy-remove': 'removed proxy rule',
   'notify-add': 'added a notification target', 'notify-test': 'tested notification target', 'notify-remove': 'removed notification target',
   'registry-add': 'saved the registry login for', 'registry-remove': 'removed the registry login for',
+  'schedule-set': 'set automatic updates to run',
+  '2fa-enable': 'turned on two-factor login for', '2fa-disable': 'turned off two-factor login for', '2fa-reset': 'turned off the two-factor login of',
   'project-start': 'started every container of', 'project-stop': 'stopped every container of', 'project-restart': 'restarted every container of',
   'cleanup-images': 'cleaned up images', 'cleanup-networks': 'cleaned up networks', 'cleanup-volumes': 'cleaned up anonymous volumes',
 };

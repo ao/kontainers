@@ -130,6 +130,12 @@ export class Auth {
     return { user: { id: row.id, username: row.username }, csrf: row.csrf, idHash };
   }
 
+  // Every session of the account but one (after two-factor login is turned on, a session made
+  // with the password alone should not stay).
+  endOtherSessions(userId: number, keepIdHash: string): void {
+    this.db.query('DELETE FROM sessions WHERE user_id = ? AND id_hash != ?').run(userId, keepIdHash);
+  }
+
   destroySession(idHash: string): void {
     this.db.query('DELETE FROM sessions WHERE id_hash = ?').run(idHash);
   }
@@ -161,4 +167,9 @@ export class RateLimiter {
   }
 
   reset(...keys: string[]): void { for (const k of keys) this.hits.delete(k); }
+
+  // Takes back one counted attempt (one that turned out not to be a failure).
+  undo(...keys: string[]): void {
+    for (const k of keys) { const h = this.hits.get(k); if (h && h.n > 0) h.n--; }
+  }
 }

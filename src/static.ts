@@ -45,6 +45,7 @@ th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid var(-
    anywhere, so the table fits the screen. Ordinary words (headers, states, buttons) stay whole. */
 /* Long names, references and addresses carry <wbr> break points (views.ts brk); IDs stay whole. */
 code.id { white-space: nowrap; }
+ul.codes { columns: 2; max-width: 24rem; font-size: 1.05rem; }
 .phone-only { display: none; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 /* A table that is still wider than the screen (a very long name) scrolls inside its own box, not

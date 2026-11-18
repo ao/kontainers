@@ -81,6 +81,26 @@ export const MIGRATIONS: string[] = [
    );`,
   // 5: v0.4.0: a replacement being rolled back
   `ALTER TABLE replacing ADD COLUMN rollback INTEGER NOT NULL DEFAULT 0;`,
+  // 6: v0.5.0: settings made on the Settings page, and when checks first saw an image
+  `CREATE TABLE settings (
+     key TEXT PRIMARY KEY,
+     value TEXT NOT NULL
+   );
+   CREATE TABLE image_seen (
+     ref TEXT NOT NULL,
+     image TEXT NOT NULL,
+     first_seen INTEGER NOT NULL,
+     PRIMARY KEY (ref, image)
+   );`,
+  // 7: v0.5.0: two-factor login
+  `ALTER TABLE users ADD COLUMN totp_secret TEXT;
+   ALTER TABLE users ADD COLUMN totp_last_step INTEGER;
+   CREATE TABLE recovery_codes (
+     user_id INTEGER NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+     code_hash TEXT NOT NULL,
+     used_at INTEGER,
+     PRIMARY KEY (user_id, code_hash)
+   );`,
 ];
 
 // degraded: opened without the shared-memory file, because the data volume had no room for it.

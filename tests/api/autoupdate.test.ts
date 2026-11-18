@@ -367,6 +367,38 @@ describe.skipIf(!DOCKER)('automatic updates and notifications', () => {
     for (const n of [CRASH, SICK]) expect(page).toMatch(new RegExp(`<tr data-name="${n}"[^>]*data-attention="1"(?! hidden)[^>]*>`));
   });
 
+  test('outside the update window an automatic update waits, and says until when', async () => {
+    const NAME = `au-window-${run}`;
+    const WREPO = `${REPO}win`, WREF = `${WREPO}:1`;
+    const tagPush = async () => { for (let i = 0; ; i++) { try { return await stream(`/images/${encodeURIComponent(WREPO)}/push?tag=1`, AUTH); } catch (e) { if (i > 20) throw e; await Bun.sleep(500); } } };
+    expect((await api(`/images/busybox:1.36/tag?repo=${encodeURIComponent(WREPO)}&tag=1`, { method: 'POST' })).status).toBe(201);
+    await tagPush();
+    expect((await c.submit('/containers', { image: WREF, name: NAME, pull: '', cmd: quick(), start: 'on', autoupdate: 'on' })).error).toBe('');
+    try {
+      // A window that is never now: the hour after the current one.
+      const h = (new Date().getUTCHours() + 2) % 24;
+      const t = (x: number) => `${String(x).padStart(2, '0')}:00`;
+      await c.page('/settings');
+      const saved = await c.submit('/settings/autoupdate', { start: t(h), end: t((h + 1) % 24), delay: '0' });
+      expect(saved.flash).toContain(`Automatic updates now run between ${t(h)} and ${t((h + 1) % 24)} UTC`);
+      const tmp = `au-wtmp-${run}`;
+      expect((await post(`/containers/create?name=${tmp}`, { Image: 'busybox:1.36', Cmd: ['true'] })).status).toBe(201);
+      expect((await post(`/commit?container=${tmp}&repo=${encodeURIComponent(WREPO)}&tag=1&changes=${encodeURIComponent('LABEL win=2')}`, {})).status).toBe(201);
+      await api(`/containers/${tmp}?force=1`, { method: 'DELETE' });
+      await tagPush();
+      const before = (await inspect(NAME)).Image;
+      expect((await api(`/images/${before}/tag?repo=${encodeURIComponent(WREPO)}&tag=1`, { method: 'POST' })).status).toBe(201);
+      const checked = await c.submit('/updates/check', {});
+      expect(checked.flash).toContain('waits for the update window or delay');
+      await Bun.sleep(2000);
+      expect((await inspect(NAME)).Image).toBe(before);
+      expect(await c.page(`/containers/${NAME}`)).toContain(`A newer image is waiting for the update window; it is installed from`);
+    } finally {
+      await c.submit('/settings/autoupdate', { start: '', end: '', delay: '0' });
+      await api(`/containers/${NAME}?force=1`, { method: 'DELETE' });
+    }
+  }, 120000);
+
   // Last: it stops the server.
   test('stopping kontainers while a new container settles puts the old one back', async () => {
     const NAME = `au-restart-${run}`;
