@@ -131,7 +131,8 @@ What kontainers does about it:
   password, ends them. Passwords are hashed with argon2id.
 - Two-factor login, per account (Settings): after the password, a six-digit code from an
   authenticator app (TOTP, RFC 6238), or one of ten one-time recovery codes. Each code works once,
-  and wrong codes count toward the login limit below. Another account can turn it off for a user,
+  and wrong codes count toward the login limit below; 20 within 24 hours also lock the account's
+  code step for 24 hours, until another account turns its two-factor off or kontainers restarts. Another account can turn it off for a user,
   and so can `docker compose exec kontainers bun src/main.ts reset-2fa USERNAME` on the host
   (`docker exec <container> ...` without compose). The keys are
   in the database, so the backup holds them: keep it as private as the data volume.
@@ -186,7 +187,7 @@ With `docker run`, mounting the socket directly:
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.4.1
+      ataiva/kontainers:0.5.0
     docker logs kontainers | grep 'setup token'
 
 The image runs as an unprivileged user, so it needs the socket's group (`--group-add`). On
@@ -250,7 +251,7 @@ to be public: they serve the sites you route, not the kontainers UI.
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.4.1
+      ataiva/kontainers:0.5.0
 
 Use your own email address: Let's Encrypt rejects reserved domains such as example.com, and
 kontainers refuses to start with one.

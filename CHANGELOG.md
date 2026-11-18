@@ -1,13 +1,24 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
+
+Two-factor login, and an update window and delay for automatic updates.
+
+Upgrading from 0.4.x:
+
+- Take a backup first (`docker exec kontainers bun src/main.ts backup /data/pre-0.5.db`): the
+  database is migrated at the first start (schema 5 to 7: settings, first-seen times of images,
+  two-factor keys and recovery codes), and 0.4.x refuses to open the migrated one.
+- Nothing else changes in `compose.yaml` or the `docker run` command; the new settings are on the
+  Settings page, and the two environment variables below are optional.
 
 - Two-factor login, per account, on the Settings page: a code from an authenticator app (TOTP)
   after the password, or one of ten one-time recovery codes. Turning it on logs out the account's
   other sessions; replacing or removing the key needs the password. 20 wrong codes within 24
-  hours lock the account's second step for 24 hours from the first of them (a login, or another
-  account turning the user's two-factor off, clears it), and the next login says how many wrong
-  codes were entered since the last one. Another account can turn it off for a user, and so can
+  hours lock the account's second step for 24 hours from the first of them (a successful login
+  before then starts the count again; another account turning the user's two-factor off, or a
+  restart, ends the lock), and the next login says how many wrong codes were entered since the
+  last one. Another account can turn it off for a user, and so can
   `docker compose exec kontainers bun src/main.ts reset-2fa USERNAME` on the host
   (`docker exec <container> ...` without compose).
 - Automatic updates can be limited to an update window (hours in UTC, days of the week) and wait a
