@@ -4,9 +4,10 @@
 
 - Two-factor login, per account, on the Settings page: a code from an authenticator app (TOTP)
   after the password, or one of ten one-time recovery codes. Turning it on logs out the account's
-  other sessions; replacing or removing the key needs the password. More than 20 wrong codes in a
-  day lock the account's second step for the rest of the day, and the next login says how many
-  wrong codes were entered. Another account can turn it off for a user, and so can
+  other sessions; replacing or removing the key needs the password. 20 wrong codes within 24
+  hours lock the account's second step for 24 hours from the first of them (a login, or another
+  account turning the user's two-factor off, clears it), and the next login says how many wrong
+  codes were entered since the last one. Another account can turn it off for a user, and so can
   `docker compose exec kontainers bun src/main.ts reset-2fa USERNAME` on the host
   (`docker exec <container> ...` without compose).
 - Automatic updates can be limited to an update window (hours in UTC, days of the week) and wait a

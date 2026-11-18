@@ -93,7 +93,7 @@ describe('two-factor login', () => {
     expect([401, 429]).toContain((await w.post('/login/code', { token: 'made-up', code: code() }, { csrf: false })).status);
   });
 
-  test('wrong passwords from a logged-in session count toward the login limit', async () => {
+  test('wrong passwords from a logged-in session are limited too', async () => {
     await c.page('/settings');
     let status = '';
     for (let i = 0; i < 6; i++) {
@@ -137,5 +137,61 @@ describe('two-factor login: the tries a login gets', () => {
     for (let i = 0; i < 5; i++) bodies.push(await (await w.post('/login/code', { token, code: '000000' }, { csrf: false })).text());
     expect(bodies[3]).toContain('That code is not right');
     expect(bodies[4]).toContain('Too many wrong codes. Enter the password again.');
+  });
+});
+
+describe('two-factor login: notes, second tabs, other accounts, and limits kept apart', () => {
+  let srv: Running, c: Client, secret: Uint8Array;
+  const pwStep = async (cl: Client) => /name="token" value="([^"]+)"/.exec(await (await cl.post('/login', { username: 'admin', password: PW }, { csrf: false })).text())![1];
+  beforeAll(async () => { ({ srv, c } = await readyServer({ KONTAINERS_UPDATE_CHECK_HOURS: '0' })); });
+  afterAll(async () => { await srv?.stop(); });
+
+  test('a second tab\'s confirm, after the first turned it on, says so', async () => {
+    await c.page('/settings');
+    const page = await (await c.post('/settings/2fa/start', {})).text();
+    secret = unbase32(/<dt>Key<\/dt><dd><code>([A-Z2-7 ]+)<\/code>/.exec(page)![1]);
+    c.csrf = /name="_csrf" value="([^"]+)"/.exec(page)![1];
+    expect((await c.post('/settings/2fa/confirm', { code: hotp(secret, step(Date.now())) })).status).toBe(200);
+    const r = await c.submit('/settings/2fa/confirm', { code: hotp(secret, step(Date.now())) });
+    expect(r.error + r.body).toContain('two-factor login is on already');
+    expect(r.error + r.body).not.toContain('timed out');
+  });
+
+  test('the next login reports wrong codes entered before it, not its own typos', async () => {
+    const w1 = new Client(srv.base);
+    const t1 = await pwStep(w1);
+    for (let i = 0; i < 2; i++) expect((await w1.post('/login/code', { token: t1, code: '000000' }, { csrf: false })).status).toBe(401);
+    const w2 = new Client(srv.base);
+    const t2 = await pwStep(w2);
+    expect((await w2.post('/login/code', { token: t2, code: '000000' }, { csrf: false })).status).toBe(401);
+    // The set-up used this step's code; the next step's is accepted (one step of drift).
+    expect((await w2.post('/login/code', { token: t2, code: hotp(secret, step(Date.now()) + 1) }, { csrf: false })).status).toBe(303);
+    const home = await w2.page('/containers');
+    expect(home).toContain('2 wrong two-factor codes were entered for this account since its last login');
+  });
+
+  test('turning off another account\'s two-factor when it is off already is refused', async () => {
+    expect((await c.submit('/settings/users', { username: 'bob', password: PW })).flash).toBe('Added bob.');
+    const ids = [...(await c.page('/settings')).matchAll(/\/settings\/users\/(\d+)\/remove/g)].map(m => Number(m[1]));
+    const r = await c.submit(`/settings/users/${Math.max(...ids)}/2fa-reset`, {});
+    expect(r.error).toContain('two-factor login is already off for bob');
+    expect(await c.page('/activity')).not.toContain('turned off the two-factor login of bob');
+  });
+
+  test('wrong passwords at the login page do not stop the logged-in owner from turning two-factor off', async () => {
+    const anon = new Client(srv.base);
+    let last = 0;
+    for (let i = 0; i < 6; i++) last = (await anon.post('/login', { username: 'admin', password: `wrong ${i} password` }, { csrf: false })).status;
+    expect(last).toBe(429);
+    await c.page('/settings');
+    const r = await c.submit('/settings/2fa/disable', { password: PW });
+    expect(r.flash).toBe('Two-factor login is off for your account.');
+  });
+
+  test('a bad schedule in the environment stops the start with a plain message', async () => {
+    const out = await runMain(['serve'], { KONTAINERS_DATA: srv.dataDir, KONTAINERS_AUTOUPDATE_WINDOW: '2am to 5am' });
+    expect(out.code).toBe(1);
+    expect(out.out).toContain('kontainers: KONTAINERS_AUTOUPDATE_WINDOW must look like 02:00-05:00');
+    expect(out.out).not.toMatch(/\n\s+at /);
   });
 });

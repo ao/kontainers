@@ -22,11 +22,12 @@ import { Registries, registryOf } from './registries';
 import { AutoUpdates } from './autoupdate';
 import { EventWatcher, checkCertificates } from './events';
 
-const cfg = loadConfig();
+let cfg: ReturnType<typeof loadConfig>;
+try { cfg = loadConfig(); } catch (e) { console.error(`kontainers: ${(e as Error).message}`); process.exit(1); }
 const [cmd, arg] = process.argv.slice(2);
 
 if (cmd === 'backup') {
-  if (!arg) { console.error('usage: kontainers backup FILE'); process.exit(2); }
+  if (!arg) { console.error('usage: bun src/main.ts backup FILE (in the container)'); process.exit(2); }
   if (existsSync(arg)) { console.error(`kontainers: ${arg} already exists`); process.exit(1); }
   try {
     snapshot(openDb(cfg.dataDir), arg);
@@ -39,7 +40,7 @@ if (cmd === 'backup') {
   process.exit(0);
 } else if (cmd === 'reset-2fa') {
   // For an account locked out of two-factor login: run on the host, where only root can.
-  if (!arg) { console.error('usage: kontainers reset-2fa USERNAME'); process.exit(2); }
+  if (!arg) { console.error('usage: bun src/main.ts reset-2fa USERNAME (in the container)'); process.exit(2); }
   try {
     const d = openDb(cfg.dataDir);
     const u = d.query('SELECT id, username FROM users WHERE username = ?').get(arg) as { id: number; username: string } | null;
@@ -48,7 +49,7 @@ if (cmd === 'backup') {
     if (!tf.enabled(u.id)) { console.log(`kontainers: two-factor login was already off for ${u.username}`); process.exit(0); }
     tf.disable(u.id);
     d.query('INSERT INTO audit_log (at, username, action, target, ip, result) VALUES (?, ?, ?, ?, ?, ?)').run(Date.now(), null, '2fa-reset', u.username, null, 'note: from the command line');
-    console.log(`kontainers: two-factor login is off for ${u.username}`);
+    console.log(`kontainers: two-factor login is off for ${u.username}. If wrong codes locked the account's second step, restart kontainers to clear that too.`);
     process.exit(0);
   } catch (e) {
     const m = (e as Error).message;
@@ -56,7 +57,7 @@ if (cmd === 'backup') {
     process.exit(1);
   }
 } else if (cmd !== undefined && cmd !== 'serve') {
-  console.error(`kontainers: unknown command "${cmd}"; commands: serve, backup FILE, reset-2fa USERNAME`);
+  console.error(`kontainers: unknown command "${cmd}"; commands: serve, backup FILE, reset-2fa USERNAME (as bun src/main.ts COMMAND in the container)`);
   process.exit(2);
 }
 
