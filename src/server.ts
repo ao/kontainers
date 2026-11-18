@@ -12,10 +12,10 @@ import { Auth, RateLimiter, safeEqual, type Session } from './auth';
 import { Docker, DockerError, summarizeStats, type CreateSpec } from './docker';
 import type { ProxyManager, RuleStore } from './proxy';
 import { snapshot } from './db';
-import { recreateSpec, replaceContainer, updatable, updateContainerDetailed, type Journal } from './update';
+import { editable, recreateSpec, replaceContainer, updateContainerDetailed, type Journal } from './update';
 import type { Notifier } from './notify';
 import { EVENT_KINDS } from './notify';
-import type { AutoUpdates } from './autoupdate';
+import { labelledOn, type AutoUpdates } from './autoupdate';
 import type { EventWatcher } from './events';
 import { containerStatus, type UpdateChecker } from './updates';
 import { STATIC } from './static';
@@ -324,6 +324,8 @@ export function createHandler(d: Deps): Handler {
     }
     return selfCache ?? null;
   }
+  if (d.autoUpdates) d.autoUpdates.protect = async (c: any) => views.isSelf(c, await self());
+
   // The container that serves kontainers' Docker API, when DOCKER_HOST names one (tcp://docker-proxy:2375
   // in compose.yaml): by container name, by compose service in kontainers' own project, or by address.
   // Looked up again every 30 s, because compose recreates it under a new ID.
@@ -575,8 +577,8 @@ export function createHandler(d: Deps): Handler {
         const c = await docker.inspect(r[1]);
         const me = await self();
         if (me && views.isSelf(c, me)) throw new v.ValidationError("this is kontainers itself or the container that serves its Docker API; change it on the host");
-        const refusal = updatable(c);
-        if (refusal) throw new v.ValidationError(refusal.replace('can be updated here', 'can be edited here').replace('update it with', 'change it in the compose file and run'));
+        const refusal = editable(c);
+        if (refusal) throw new v.ValidationError(refusal);
         const oldImage = await docker.inspectImage(c.Image).catch(() => null);
         const spec = recreateSpec(c, oldImage);
         return page(views.editContainerPage(ctx(s), c, spec, cfg.allowBindMounts, !oldImage));
@@ -585,7 +587,7 @@ export function createHandler(d: Deps): Handler {
         const c = await docker.inspect(r[1]);
         const name = String(c.Name || '').replace(/^\//, '');
         const row = d.autoUpdates?.get(name) ?? null;
-        const auto = d.autoUpdates ? { on: d.autoUpdates.isOn(name, c.Id), row, waiting: d.autoUpdates.waitingFor(name) } : null;
+        const auto = d.autoUpdates ? { on: d.autoUpdates.isOn(name, c.Id, c.Config?.Labels), label: labelledOn(c.Config?.Labels), row, waiting: d.autoUpdates.waitingFor(name) } : null;
         return page(views.containerPage(ctx(s), c, await self(), updateView(), auto));
       }
       if ((r = /^\/api\/containers\/([^/]+)\/stats$/.exec(p))) {
@@ -694,8 +696,8 @@ export function createHandler(d: Deps): Handler {
       return act(s, ip, () => back, 'container-edit', id, async () => {
         await refuseSelf(id);
         const c = await docker.inspect(id);
-        const refusal = updatable(c);
-        if (refusal) throw new v.ValidationError(refusal.replace('can be updated here', 'can be edited here').replace('update it with', 'change it in the compose file and run'));
+        const refusal = editable(c);
+        if (refusal) throw new v.ValidationError(refusal);
         const name = String(c.Name || '').replace(/^\//, '');
         refuseSetAside(name);
         // Taken straight after the inspect, with nothing awaited in between, and held for the pull too.
@@ -751,7 +753,7 @@ export function createHandler(d: Deps): Handler {
         const n = await running;
         const newer = n === 0 ? [] : (await docker.listContainersWithRefs()).filter(c => containerStatus(d.updates!.get(c.Ref), c.ImageID)?.status === 'available');
         const uv = updateView();
-        const opted = newer.filter(c => { const nm = String(c.Names?.[0] || '').replace(/^\//, ''); return d.autoUpdates?.isOn(nm, c.Id) && !views.heldBack(uv, nm, c.Id, c.Ref); });
+        const opted = newer.filter(c => { const nm = String(c.Names?.[0] || '').replace(/^\//, ''); return d.autoUpdates?.isOn(nm, c.Id, c.Labels) && !views.heldBack(uv, nm, c.Id, c.Ref); });
         const waits = opted.filter(c => d.autoUpdates?.waitFor(c.Ref, d.updates!.get(c.Ref))).length;
         const auto = opted.length - waits;
         const available = newer.length;

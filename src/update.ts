@@ -1,17 +1,42 @@
 // "Update image": pull a container's image again and, if it changed, recreate the container with the
-// same settings. Only for containers kontainers created; compose owns its containers and would
-// recreate them its own way.
+// same settings. A container kontainers created is made again from the settings it was created
+// with; any other (compose, docker run) is copied whole, as clone.ts describes.
 
 import { Docker, DockerError, type CreateSpec } from './docker';
 import * as v from './validate';
+import { cloneBody, cloneDiff, cloneRefusal } from './clone';
 
-export function updatable(c: any): string | null {
+// Edit settings: only containers kontainers created; compose owns its containers' settings.
+export function editable(c: any): string | null {
   const labels = c?.Config?.Labels || {};
-  if (labels['com.docker.compose.project']) return 'this container belongs to a compose project; update it with docker compose pull && docker compose up -d';
-  if (labels['kontainers.managed'] !== 'true') return 'only containers created in kontainers can be updated here';
+  if (labels['com.docker.compose.project']) return 'this container belongs to a compose project; change it in the compose file and run docker compose up -d';
+  if (labels['kontainers.managed'] !== 'true') return 'only containers created in kontainers can be edited here';
   const mode = String(c?.HostConfig?.NetworkMode || '');
   if (mode === 'host' || mode.startsWith('container:')) return `it uses ${mode === 'host' ? "the host's network" : "another container's network"}, which kontainers does not set up, so it cannot be recreated here; recreate it with docker`;
   return null;
+}
+
+// How Update image recreates a container: from the settings kontainers made it with, or by copying.
+export const recreatedBy = (c: any): 'spec' | 'clone' => {
+  const labels = c?.Config?.Labels || {};
+  return labels['kontainers.managed'] === 'true' && !labels['com.docker.compose.project'] ? 'spec' : 'clone';
+};
+
+// Why Update image cannot handle `c`, or null. others: every other container, inspected (a copy
+// must not cut off containers that share its namespaces); without it that is not checked.
+export function updatable(c: any, others: any[] = []): string | null {
+  return recreatedBy(c) === 'spec' ? editable(c) : cloneRefusal(c, others);
+}
+
+// Every container but `id`, inspected, a few at a time. One that went away meanwhile is left out.
+export async function inspectOthers(docker: Docker, id: string): Promise<any[]> {
+  const list = (await docker.listContainers()).filter(c => String(c.Id) !== String(id));
+  const out: any[] = [];
+  for (let i = 0; i < list.length; i += 16) {
+    const got = await Promise.all(list.slice(i, i + 16).map(c => docker.inspect(c.Id).catch(() => null)));
+    for (const g of got) if (g) out.push(g);
+  }
+  return out;
 }
 
 const sameList = (a: unknown, b: unknown) => JSON.stringify(a || []) === JSON.stringify(b || []);
@@ -174,7 +199,8 @@ export async function updateContainer(docker: Docker, id: string, opts: UpdateOp
 
 export async function updateContainerDetailed(docker: Docker, id: string, opts: UpdateOptions = {}): Promise<UpdateResult> {
   const c = await docker.inspect(id);
-  const refusal = updatable(c);
+  const how = recreatedBy(c);
+  const refusal = updatable(c, how === 'clone' ? await inspectOthers(docker, c.Id) : []);
   if (refusal) throw new v.ValidationError(refusal);
   const name = String(c.Name).replace(/^\//, '');
   const ref = c.Config.Image as string;
@@ -183,7 +209,7 @@ export async function updateContainerDetailed(docker: Docker, id: string, opts: 
   // the two cannot be told apart, and guessing would copy the old image's settings into the new
   // container, so the update is refused.
   const oldImage = await docker.inspectImage(c.Image).catch(() => null);
-  if (!oldImage) throw new v.ValidationError(`the image ${name} was created from is no longer on this host (was ${ref} rebuilt?), so its settings cannot be told apart from the image's; use Edit settings to recreate it`);
+  if (!oldImage) throw new v.ValidationError(`the image ${name} was created from is no longer on this host (was ${ref} rebuilt?), so its settings cannot be told apart from the image's; ${how === 'spec' ? 'use Edit settings to recreate it' : 'recreate it with docker compose up -d or docker'}`);
 
   await docker.pull(ref);
   const fresh = await docker.inspectImage(ref);
@@ -196,7 +222,9 @@ export async function updateContainerDetailed(docker: Docker, id: string, opts: 
   }
 
   try {
-    const r = await replaceContainer(docker, c, recreateSpec(c, oldImage), { ...opts, keepBindMounts: true }, 'update');
+    const r = how === 'spec'
+      ? await replaceContainer(docker, c, recreateSpec(c, oldImage), { ...opts, keepBindMounts: true }, 'update')
+      : await replaceContainer(docker, c, { name, image: ref }, { ...opts, clone: { body: cloneBody(c, oldImage, fresh.Id), oldImage, newImage: fresh } }, 'update');
     return { changed: true, message: `Updated ${name} to the newest ${ref}${r.running ? '' : '; it was stopped and is left stopped'}${r.note ? `; ${r.note}` : ''}.`, oldImage: c.Image, newImage: fresh.Id, id: r.id, note: r.note, running: r.running };
   } catch (e) {
     throw new UpdateFailed((e as Error).message, fresh.Id, (e as { stage?: string }).stage === 'settle');
@@ -244,17 +272,34 @@ export function networkPlan(c: any): { network?: { mode: string; endpoint?: Retu
   return { network: { mode: first[0], endpoint: first[1] }, connect: rest.filter(r => r !== first) };
 }
 
-export async function replaceContainer(docker: Docker, c: any, spec: CreateSpec, opts: UpdateOptions & { keepBindMounts?: boolean; allowedBinds?: { source: string; readOnly: boolean }[] }, what: string): Promise<Replaced> {
+// clone: a copy of a container kontainers did not create (clone.ts): its create body, and the old
+// and new images, to compare the copy with the old container before it starts.
+export interface CloneJob { body: Record<string, any>; oldImage: any; newImage: any }
+
+export async function replaceContainer(docker: Docker, c: any, spec: CreateSpec, opts: UpdateOptions & { keepBindMounts?: boolean; allowedBinds?: { source: string; readOnly: boolean }[]; clone?: CloneJob }, what: string): Promise<Replaced> {
   const name = String(c.Name).replace(/^\//, '');
+  const mode = String(c.HostConfig?.NetworkMode || '');
+  // A copy keeps the host's network or another container's as it is: nothing to connect.
+  const sharedNet = !!opts.clone && (mode === 'host' || mode.startsWith('container:'));
   let plan: ReturnType<typeof networkPlan>;
-  try { plan = networkPlan(c); } catch (e) { throw new v.ValidationError(`${what} is not possible for ${name}: ${(e as Error).message}`); }
+  try { plan = sharedNet ? { connect: [] } : networkPlan(c); } catch (e) { throw new v.ValidationError(`${what} is not possible for ${name}: ${(e as Error).message}`); }
   const wasRunning = !!c.State?.Running;
   const createOpts = { keepBindMounts: opts.keepBindMounts, allowedBinds: opts.allowedBinds, replaces: String(c.Id), network: plan.network };
   // Docker names are at most 128 characters.
   const aside = `${name.slice(0, 128 - 13)}-old-${String(c.Id).slice(0, 8)}`;
-  // Bad input fails here, before the old container is touched: the settings, and an image that is
-  // not on this host (a typo, or Pull left unticked).
-  docker.createBody({ ...spec, name }, createOpts);
+  let cloneBodyNet: Record<string, any> | null = null;
+  if (opts.clone) {
+    cloneBodyNet = { ...opts.clone.body, HostConfig: { ...opts.clone.body.HostConfig } };
+    if (!sharedNet) {
+      cloneBodyNet.HostConfig.NetworkMode = plan.network?.mode ?? plan.disconnect ?? (mode === 'default' ? 'default' : 'bridge');
+      const ep = plan.network?.endpoint;
+      if (plan.network && plan.network.mode !== 'none' && ep && (ep.Aliases?.length || ep.IPAMConfig)) cloneBodyNet.NetworkingConfig = { EndpointsConfig: { [plan.network.mode]: ep } };
+    }
+  } else {
+    // Bad input fails here, before the old container is touched: the settings, and an image that is
+    // not on this host (a typo, or Pull left unticked).
+    docker.createBody({ ...spec, name }, createOpts);
+  }
   try {
     await docker.inspectImage(spec.image);
   } catch (e) {
@@ -299,9 +344,14 @@ export async function replaceContainer(docker: Docker, c: any, spec: CreateSpec,
   const check = () => { if (opts.signal?.aborted) throw new Interrupted('kontainers was stopped during the replacement'); };
   try {
     check();
-    newId = (await docker.create({ ...spec, name }, createOpts)).Id;
+    newId = (cloneBodyNet ? await docker.createCopy(name, cloneBodyNet) : await docker.create({ ...spec, name }, createOpts)).Id;
     for (const [n, ep] of plan.connect) await docker.connect(n, newId, ep);
     if (plan.disconnect) await docker.disconnect(plan.disconnect, newId);
+    if (opts.clone) {
+      // The copy must have every setting the old container had, before it runs.
+      const diff = cloneDiff(c, opts.clone.oldImage, await docker.inspect(newId), opts.clone.newImage);
+      if (diff.length) throw new v.ValidationError(`the new container's settings would differ from the old one's (${diff.join('; ')}); kontainers cannot copy this container faithfully, so recreate it with docker compose or docker`);
+    }
     if (wasRunning) {
       check();
       stage = 'start';
@@ -388,8 +438,16 @@ export async function recoverInterrupted(docker: Docker, kept: (name: string, id
   const push = (r: Recovered) => { out.push(r); more.report?.(r); };
   const ASIDE = /^(.+)-old-([0-9a-f]{8})$/;
   const nameOf = (c: any) => String(c.Names?.[0] || '').replace(/^\//, '');
-  const asideOf = (c: any) => { const m = ASIDE.exec(nameOf(c)); return m && c.Labels?.['kontainers.managed'] === 'true' && String(c.Id).startsWith(m[2]) ? m : null; };
   const readRows = () => { try { return journal?.all() ?? []; } catch { return []; } };
+  // A container set aside as <name>-old-<id>: one kontainers created, or any container (a copied
+  // one, from compose or docker run) that a journal entry names as the one it set aside. Without
+  // an entry, the name alone is never enough for one kontainers did not create.
+  const journalled = new Set(readRows().map(r => String(r.old_id)));
+  const asideOf = (c: any, oldId?: string) => {
+    const m = ASIDE.exec(nameOf(c));
+    if (!m || !String(c.Id).startsWith(m[2])) return null;
+    return c.Labels?.['kontainers.managed'] === 'true' || String(c.Id) === oldId || journalled.has(String(c.Id)) ? m : null;
+  };
   const endRow = (n: string) => { try { journal?.end(n); } catch { /* written again at the next replacement */ } };
   const later = (base: string, text: string) => push(final
     ? { name: base, trouble: true, text: `${text}; kontainers gave up trying for now (it looks again at its next start), so check them by hand` }
@@ -415,7 +473,7 @@ export async function recoverInterrupted(docker: Docker, kept: (name: string, id
       const row = readRows().find(r => r.name === base);
       if (!row) return;
       const now = first.find(x => nameOf(x) === base);
-      const c = first.find(x => asideOf(x) && String(x.Id) === row.old_id);
+      const c = first.find(x => asideOf(x, row.old_id) && String(x.Id) === row.old_id);
       if (c && now && now.Labels?.['kontainers.replaces'] === c.Id && runs(now.State) && runs(c.State)) { await docker.stop(c.Id); stoppedOld.add(base); }
     } catch { /* judged below */ } finally { release(); }
   }));
@@ -434,7 +492,7 @@ export async function recoverInterrupted(docker: Docker, kept: (name: string, id
       if (more.signal?.aborted) { if (row) later(base, `kontainers is shutting down, so the interrupted update of ${base} was not finished`); return; }
       const list = await docker.listContainers();
       const now = list.find(x => nameOf(x) === base);
-      const c = list.find(x => { const m = asideOf(x); return m && (row ? String(x.Id) === row.old_id : m[1] === base); });
+      const c = list.find(x => { const m = asideOf(x, row?.old_id); return m && (row ? String(x.Id) === row.old_id : m[1] === base); });
       const wasRunning = row ? !!row.was_running : true;
 
       if (!c) {

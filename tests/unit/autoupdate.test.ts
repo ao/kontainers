@@ -63,6 +63,17 @@ class FakeDocker {
     });
     return { Id: id };
   }
+  // A copy (Update image of a container kontainers did not create): the body as the daemon keeps it.
+  async createCopy(name: string, body: any) {
+    const id = `c${++this.n}`.padEnd(12, '0');
+    const { HostConfig, NetworkingConfig, ...cfg } = body;
+    this.containers.set(id, {
+      Id: id, Name: '/' + name, Image: this.tags.get(body.Image), RestartCount: 0, Config: structuredClone(cfg), HostConfig: structuredClone(HostConfig),
+      NetworkSettings: { Networks: { bridge: {} } }, State: { Running: false, Status: 'created' },
+    });
+    return { Id: id };
+  }
+  async disconnect() {}
   async connect() {}
   // Containers someone stopped on purpose: the events API reports a kill for them. killOnStart:
   // every container started from now on is "stopped by someone" at once.
@@ -238,14 +249,61 @@ describe('AutoUpdates', () => {
     expect(auto.isOn('web', other)).toBe(false);
   });
 
-  test('only containers kontainers created can be opted in; off forgets', async () => {
-    const { d, auto } = setup();
+  test('a container made outside kontainers can be opted in and is updated by copying it; off forgets', async () => {
+    const { d, auto, cycle } = setup();
     const ext = d.run('ext', 'app:1', false);
-    await expect(auto.set(ext, true)).rejects.toThrow('only containers created in kontainers');
-    const id = d.run('web', 'app:1');
-    await auto.set(id, true);
-    expect(await auto.set(id, false)).toContain('no longer');
-    expect(auto.get('web')).toBeNull();
+    d.find(ext).Config.Labels = { team: 'web' };
+    d.find(ext).HostConfig.CapAdd = ['NET_ADMIN'];
+    await auto.set(ext, true);
+    d.registry.set('app:1', 'i2');
+    await cycle();
+    const now = running(d, 'ext');
+    expect(now.Image).toBe('i2');
+    expect(now.Config.Labels).toEqual({ team: 'web', 'kontainers.replaces': ext });
+    expect(now.HostConfig.CapAdd).toEqual(['NET_ADMIN']);
+    expect(now.State.Running).toBe(true);
+    expect(d.containers.size).toBe(1);
+    expect(await auto.set(now.Id, false)).toContain('no longer');
+    expect(auto.get('ext')).toBeNull();
+    // A digest always means the same image.
+    const pinned = d.run('pinned', 'app:1', false);
+    d.find(pinned).Config.Image = 'app@sha256:' + 'a'.repeat(64);
+    await expect(auto.set(pinned, true)).rejects.toThrow('digest');
+  });
+
+  test('the label kontainers.autoupdate=true opts a container in, and keeps it in when compose recreates it', async () => {
+    const { d, auto, cycle } = setup();
+    const id = d.run('shop-web-1', 'app:1', false);
+    d.find(id).Config.Labels = { 'com.docker.compose.project': 'shop', 'kontainers.autoupdate': 'true' };
+    expect(auto.isOn('shop-web-1', id, d.find(id).Config.Labels)).toBe(true);
+    await expect(auto.set(id, false)).rejects.toThrow('remove the label');
+    d.registry.set('app:1', 'i2');
+    await cycle();
+    const after = running(d, 'shop-web-1');
+    expect(after.Image).toBe('i2');
+    expect(after.Config.Labels['kontainers.autoupdate']).toBe('true');
+    // Compose recreates it (an edit of the compose file): a new ID, the label still there.
+    d.containers.delete(after.Id);
+    const again = d.run('shop-web-1', 'app:1', false);
+    d.find(again).Config.Labels = { 'com.docker.compose.project': 'shop', 'kontainers.autoupdate': 'true' };
+    d.find(again).Image = 'i2';
+    d.registry.set('app:1', 'i4');
+    await cycle();
+    expect(running(d, 'shop-web-1').Image).toBe('i4');
+    expect(auto.get('shop-web-1')?.container_id).toBe(running(d, 'shop-web-1').Id);
+  });
+
+  test('kontainers itself and its Docker API container are never updated, whatever their labels say', async () => {
+    const { d, auto, cycle, sent } = setup();
+    const id = d.run('kontainers', 'app:1', false);
+    d.find(id).Config.Labels = { 'kontainers.autoupdate': 'true' };
+    auto.protect = async c => c.Id === id;
+    d.registry.set('app:1', 'i2');
+    await cycle();
+    expect(running(d, 'kontainers').Id).toBe(id);
+    expect(running(d, 'kontainers').Image).toBe('i1');
+    expect(auto.get('kontainers')).toBeNull();
+    expect(sent.map(s => s.kind)).toEqual(['update']);
   });
 
   test('a container being updated by hand is skipped', async () => {

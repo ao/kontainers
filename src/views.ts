@@ -315,7 +315,7 @@ ${filters}
 <p class="muted" id="nomatch"${list.length && !shown ? raw('') : raw(' hidden')}>No container matches. <a href="/containers">Show all ${list.length}</a>.</p>`);
 }
 
-export interface AutoView { on: boolean; row: { last_at: number | null; last_result: string | null; held_image: string | null } | null; waiting?: { until: number; why: 'window' | 'delay' } | null }
+export interface AutoView { on: boolean; label?: boolean; row: { last_at: number | null; last_result: string | null; held_image: string | null } | null; waiting?: { until: number; why: 'window' | 'delay' } | null }
 
 // The automatic-update switch on a container's page, with the last result.
 function autoForm(ctx: PageCtx, id: string, a: AutoView): Html {
@@ -323,6 +323,9 @@ function autoForm(ctx: PageCtx, id: string, a: AutoView): Html {
   const held = a.on && a.row?.held_image ? html`<small class="warn">Image ${shortId(a.row.held_image)} failed when it was tried and is held back; a newer image will be tried.</small>` : '';
   const at = (t: number) => new Date(t).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
   const waiting = a.on && a.waiting ? html`<small class="muted">A newer image is waiting ${a.waiting.why === 'window' ? 'for the update window' : 'out the delay set on the Settings page'}; it is installed from ${at(a.waiting.until)}.${a.waiting.why === 'delay' ? ' The delay counts from when a check first saw this image; if the tag moves on to another one meanwhile, that one waits its own delay.' : ''}</small>` : '';
+  if (a.label) return html`<div class="autoupdate"><p>Updated automatically when a check finds a newer image: the container has the label <code>kontainers.autoupdate=true</code> (remove it to turn this off).</p>
+<small class="muted">The new container is watched while it settles; if it stops, restarts or turns unhealthy, the old one is put back.</small>
+${last}${held}${waiting}</div>`;
   return html`<form method="post" action="/containers/${id}/autoupdate" class="autoupdate">${csrfField(ctx)}
 <label class="check"><input type="checkbox" name="on"${a.on ? raw(' checked') : raw('')}> Update automatically when a check finds a newer image</label>
 <button>Save</button>
@@ -342,6 +345,8 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
   const env = (c.Config?.Env || []).map((e: string) => html`<li><code>${e.replace(/=[\s\S]*/, '=…')}</code></li>`);
   const mounts = (c.Mounts || []).map((m: any) => html`<li><code>${m.Type} ${m.Name || m.Source} → ${m.Destination}${m.RW ? '' : ' (ro)'}</code></li>`);
   const nets = Object.keys(c.NetworkSettings?.Networks || {}).map(n => html`<li>${n}</li>`);
+  const project = c.Config?.Labels?.['com.docker.compose.project'] || '';
+  const madeHere = c.Config?.Labels?.['kontainers.managed'] === 'true' && !project;
   return layout(name, ctx, html`
 <p><a href="/containers">All containers</a></p>
 <dl class="facts">
@@ -356,10 +361,10 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
   ${inspectPorts(c) ? html`<dt>Ports</dt><dd><span class="ref">${inspectPorts(c)}</span></dd>` : ''}
 </dl>
 <div class="actions">${isSelf(c, me) ? selfNote(c, me) : ctx.busy?.(name) ? html`<p class="muted">${ctx.busy(name)}; reload in a moment.</p>` : containerActions(ctx, urlId(c), name, c.State?.Status || '', true)}
-${isSelf(c, me) || ctx.busy?.(name) ? '' : c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project']
-    ? html`${post(ctx, `/containers/${urlId(c)}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' && !held ? 'primary' : '' })} <a class="button" href="/containers/${urlId(c)}/edit">Edit settings</a>`
-    : c.Config?.Labels?.['com.docker.compose.project'] ? html`<small class="muted">Part of compose project ${c.Config.Labels['com.docker.compose.project']}: update it with <code>docker compose pull &amp;&amp; docker compose up -d</code>.</small>` : ''}</div>
-${auto && !isSelf(c, me) && !ctx.busy?.(name) && c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project'] ? autoForm(ctx, urlId(c), auto) : ''}
+${isSelf(c, me) || ctx.busy?.(name) ? '' : html`${post(ctx, `/containers/${urlId(c)}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' && !held ? 'primary' : '' })}${madeHere
+    ? html` <a class="button" href="/containers/${urlId(c)}/edit">Edit settings</a>`
+    : html` <small class="muted">${project ? html`Part of compose project ${project}. Update image copies its settings and compose labels to the new container, so <code>docker compose up -d</code> leaves it as it is; change its settings in the compose file.` : 'Created outside kontainers: Update image copies all of its settings to the new container. Edit settings is only for containers created here.'}</small>`}`}</div>
+${auto && !isSelf(c, me) && !ctx.busy?.(name) ? autoForm(ctx, urlId(c), auto) : ''}
 ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
 <dl class="facts" id="stats" data-stats="/api/containers/${urlId(c)}/stats">
   <dt>CPU</dt><dd data-k="cpu">…</dd><dt>Memory</dt><dd data-k="mem">…</dd>

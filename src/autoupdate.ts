@@ -1,5 +1,6 @@
-// Automatic updates: containers kontainers created can be opted in, by name (the name survives the
-// recreation an update does). After every update check, each opted-in container that has a newer
+// Automatic updates: any container Update image can handle can be opted in, by name (the name
+// survives the recreation an update does), on its page or with the label kontainers.autoupdate=true
+// (which survives compose recreating it). After every update check, each opted-in container that has a newer
 // image is updated the way Update image does it, and then watched: if the new container stops,
 // restarts or turns unhealthy while it settles, the old one is put back and that image is held
 // back, so the next check does not try it again. A newer image than the held one is tried.
@@ -9,7 +10,7 @@ import type { Database } from 'bun:sqlite';
 import type { Docker } from './docker';
 import type { Notifier } from './notify';
 import { containerStatus, type UpdateChecker } from './updates';
-import { updatable, updateContainerDetailed, UpdateFailed, type Journal } from './update';
+import { inspectOthers, updatable, updateContainerDetailed, UpdateFailed, type Journal } from './update';
 import * as v from './validate';
 import { NameLocks } from './locks';
 import { writeFailed } from './storage';
@@ -19,8 +20,13 @@ export interface AutoRow { container: string; container_id: string; created_at: 
 
 export interface AutoOptions { settleMs: number; healthTimeoutMs: number; signal?: AbortSignal; wasStopped?: (id: string) => boolean; journal?: Journal; schedule?: ScheduleStore }
 
-// A container set aside by an update that is still running or was interrupted: <name>-old-<id>.
-const setAside = (c: any, name: string) => c.Labels?.['kontainers.managed'] === 'true' && /-old-[0-9a-f]{8}$/.test(name) && String(c.Id).startsWith(name.slice(-8));
+// A container set aside by an update that is still running or was interrupted: <name>-old-<id>,
+// one kontainers created or one its journal names.
+const setAside = (c: any, name: string, journalled: Set<string>) => /-old-[0-9a-f]{8}$/.test(name) && String(c.Id).startsWith(name.slice(-8)) && (c.Labels?.['kontainers.managed'] === 'true' || journalled.has(String(c.Id)));
+
+// The label that opts a container in from its own configuration (a compose file, docker run -l).
+export const AUTO_LABEL = 'kontainers.autoupdate';
+export const labelledOn = (labels: Record<string, string> | null | undefined) => String(labels?.[AUTO_LABEL] ?? '').toLowerCase() === 'true';
 
 const nameOf = (c: any) => String(c.Names?.[0] || c.Name || '').replace(/^\//, '');
 
@@ -45,14 +51,19 @@ export class AutoUpdates {
   get(name: string): AutoRow | null { return (this.db.query('SELECT * FROM auto_update WHERE container = ?').get(name) as AutoRow | null) ?? null; }
   names(): Set<string> { return new Set((this.db.query('SELECT container FROM auto_update').all() as { container: string }[]).map(r => r.container)); }
 
+  // kontainers' own container and the one that serves its Docker API are never recreated by it,
+  // whatever their labels say (set by the server, which knows them).
+  protect: (c: any) => Promise<boolean> = async () => false;
+
   // Turns automatic updates on or off for a container, which must be one Update image can handle.
   async set(id: string, on: boolean): Promise<string> {
     const c = await this.docker.inspect(id);
     const name = String(c.Name || '').replace(/^\//, '');
+    if (!on && labelledOn(c.Config?.Labels)) throw new v.ValidationError(`${name} has the label ${AUTO_LABEL}=true, which turns automatic updates on; remove the label (in its compose file, say) to turn them off`);
     // While it is replaced, the container under the name may be the one about to be rolled back.
     if (on && this.busy.has(name)) throw new v.ValidationError(`an update or edit of ${name} is running; turn automatic updates on when it has finished`);
     if (on) {
-      const refusal = updatable(c);
+      const refusal = updatable(c, await inspectOthers(this.docker, c.Id));
       if (refusal) throw new v.ValidationError(refusal);
       this.db.query('INSERT INTO auto_update (container, container_id, created_at) VALUES (?, ?, ?) ON CONFLICT (container) DO UPDATE SET container_id = excluded.container_id').run(name, c.Id, this.now());
       return `${name} will be updated automatically when a check finds a newer image.`;
@@ -89,7 +100,12 @@ export class AutoUpdates {
 
   // Opted in, and still the same container: a container removed outside kontainers and replaced
   // by another under the same name is not updated automatically.
-  isOn(name: string, id: string): boolean { const row = this.get(name); return !!row && this.idOf(row) === id; }
+  // labels: the container's, when at hand; the label opts it in too.
+  isOn(name: string, id: string, labels?: Record<string, string> | null): boolean {
+    if (labelledOn(labels)) return true;
+    const row = this.get(name);
+    return !!row && this.idOf(row) === id;
+  }
 
   // The image an automatic update held back for this container, if any.
   heldImage(name: string): string | null { return this.get(name)?.held_image ?? null; }
@@ -165,17 +181,27 @@ export class AutoUpdates {
     const newer = new Map<string, { ref: string; names: string[] }>();
     const list = await this.docker.listContainersWithRefs();
     try { this.adopt(list); } catch (e) { console.error(`kontainers: ${(e as Error).message}`); }
+    const journalled = new Set((() => { try { return this.opts.journal?.all() ?? []; } catch { return []; } })().map(r => String(r.old_id)));
     for (const c of list) {
       const name = nameOf(c);
       // One container's trouble (a full data volume, a daemon error) must not stop the others.
       try {
-        if (setAside(c, name)) continue;
-        // Never recreated by kontainers; reported like any container that is not opted in.
+        if (setAside(c, name, journalled)) continue;
+        // A container kontainers created on the host's network or another container's is never
+        // recreated by it (Edit cannot make one); a copied one keeps its network as it is.
         const mode = String(c.HostConfig?.NetworkMode || '');
-        const recreatable = mode !== 'host' && !mode.startsWith('container:');
+        const madeHere = c.Labels?.['kontainers.managed'] === 'true' && !c.Labels?.['com.docker.compose.project'];
+        const recreatable = !madeHere || (mode !== 'host' && !mode.startsWith('container:'));
         const st = this.checker.get(c.Ref);
         if (containerStatus(st, c.ImageID)?.status !== 'available') continue;
-        const row = this.get(name);
+        // The label opts this container in, whichever container had the name before.
+        if (labelledOn(c.Labels) && !this.busy.has(name) && !(await this.protect(c))) {
+          const had = this.get(name);
+          if (!had) this.db.query('INSERT INTO auto_update (container, container_id, created_at) VALUES (?, ?, ?) ON CONFLICT (container) DO NOTHING').run(name, c.Id, this.now());
+          else if (this.idOf(had) !== c.Id && !list.some(x => String(x.Id) === this.idOf(had))) this.recreated(name, c.Id);
+        }
+        // Reported like any container that is not opted in.
+        const row = (await this.protect(c)) ? null : this.get(name);
         if (!row || this.idOf(row) !== c.Id || !recreatable) {
           const k = `${c.Ref}|${st?.remoteDigest || st?.imageId || ''}`;
           const g = newer.get(k) ?? { ref: String(c.Ref), names: [] as string[] };

@@ -202,6 +202,14 @@ export class Docker {
     return this.json('POST', `/containers/create${q}`, body);
   }
 
+  // A copy of an existing container (clone.ts): the body is that container's own configuration with
+  // a newer image, so it is sent as it is, privileged settings included; kontainers never makes up
+  // such settings. Only Update image uses it.
+  createCopy(name: string, body: Record<string, unknown>): Promise<{ Id: string }> {
+    v.image(String(body.Image || ''));
+    return this.json('POST', `/containers/create?name=${encodeURIComponent(v.name(name))}`, body);
+  }
+
   // The request body for create, after every check; throws a ValidationError for bad input. Called
   // on its own before a container is replaced, so bad input never stops the old one.
   createBody(spec: CreateSpec, opts: CreateOptions = {}): Record<string, unknown> {
