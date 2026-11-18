@@ -4,7 +4,7 @@
 #
 #   scripts/test.sh            everything below, in order
 #   scripts/test.sh unit       typecheck and unit tests
-#   scripts/test.sh api        the server process against dind
+#   scripts/test.sh api        the server process against dind (API_FILES=tests/api/x.test.ts for one file)
 #   scripts/test.sh image      build the image and smoke-test it behind the socket proxy
 #   scripts/test.sh e2e        Playwright (Chromium) against the image
 #   scripts/test.sh proxy      proxy rules and certificates against Pebble, all inside dind
@@ -70,7 +70,7 @@ if [ "$SUITE" != unit ]; then
 fi
 
 if [ "$SUITE" = all ] || [ "$SUITE" = api ]; then
-  bun_run -e KONTAINERS_TEST_DOCKER_HOST=tcp://dind:2375 "$BUN_IMAGE" bun test --timeout 120000 tests/api
+  bun_run -e KONTAINERS_TEST_DOCKER_HOST=tcp://dind:2375 "$BUN_IMAGE" bun test --timeout 120000 ${API_FILES:-tests/api}
 fi
 
 # A fresh app container from the image, Docker API through the socket proxy as in compose.yaml.

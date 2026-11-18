@@ -14,6 +14,7 @@ export interface Running {
   setupToken: string | null;
   output: () => string;
   stop: () => Promise<void>;
+  kill: () => Promise<void>;
 }
 
 let nextPort = 20000 + Math.floor(Math.random() * 20000);
@@ -43,6 +44,8 @@ export async function startServer(env: Record<string, string> = {}, dataDir = mk
     setupToken: m ? m[1] : null,
     output: () => out,
     stop: async () => { proc.kill('SIGTERM'); await proc.exited; },
+    // As a power cut or docker kill would: no shutdown at all.
+    kill: async () => { proc.kill('SIGKILL'); await proc.exited; },
   };
 }
 

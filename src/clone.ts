@@ -87,8 +87,11 @@ export function cloneBody(c: any, oldImage: any, newImageId: string): Record<str
   if (!body.MacAddress) delete body.MacAddress;
 
   const host: Record<string, any> = { ...(c?.HostConfig || {}) };
-  // Anonymous volumes (an image's VOLUME, compose's volumes without a name) are not in the create
-  // settings, only in Mounts; without them the data would stay behind in the old container's volume.
+  // Anonymous volumes: an image's VOLUME, or `docker run -v /path`, is not in the create settings at
+  // all, only in Mounts; compose's (`- /path`) is a volume mount with no source. Both get the volume
+  // the old container has, by name; otherwise the data would stay behind in it.
+  const actual = new Map<string, string>((c?.Mounts || []).filter((m: any) => m.Type === 'volume' && m.Name).map((m: any) => [m.Destination, m.Name]));
+  if (host.Mounts) host.Mounts = host.Mounts.map((m: any) => (m?.Type === 'volume' && !m.Source && actual.has(m.Target) ? { ...m, Source: actual.get(m.Target) } : m));
   const created = createdMountTargets(host);
   const extra = (c?.Mounts || []).filter((m: any) => m.Type === 'volume' && m.Name && m.Destination && !created.has(m.Destination))
     .map((m: any) => ({ Type: 'volume', Source: m.Name, Target: m.Destination, ReadOnly: m.RW === false }));

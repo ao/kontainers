@@ -71,6 +71,19 @@ describe('the copy of a container kontainers did not create', () => {
     expect(b.NetworkingConfig).toBeUndefined();
   });
 
+  test("compose's anonymous volume (a mount with no source) gets the old container's volume", () => {
+    const c = composeContainer();
+    c.HostConfig.Mounts = [{ Type: 'volume', Target: '/cache' } as any];
+    c.Mounts.push({ Type: 'volume', Name: 'a'.repeat(64), Source: '/var/lib/docker/volumes/aaa/_data', Destination: '/cache', RW: true });
+    const b = cloneBody(c, image, 'sha256:new');
+    expect(b.HostConfig.Mounts).toEqual([
+      { Type: 'volume', Target: '/cache', Source: 'a'.repeat(64) },
+      { Type: 'volume', Source: 'f'.repeat(64), Target: '/var/cache/nginx', ReadOnly: false },
+    ]);
+    // The container's own record is not changed.
+    expect(c.HostConfig.Mounts).toEqual([{ Type: 'volume', Target: '/cache' } as any]);
+  });
+
   test('an entrypoint of its own keeps the command too; a host name of its own stays', () => {
     const c = composeContainer();
     c.Config.Entrypoint = ['/bin/sh', '-c'];
