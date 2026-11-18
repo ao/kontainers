@@ -3,7 +3,7 @@
 Manage the containers on one Docker host from a browser, and point a domain at any of them with an
 HTTPS certificate it gets and renews for you. One container does both.
 
-![The containers page: each row's left edge shows its state](docs/screenshots/containers.png)
+![The containers page: each row's left edge shows its state](https://raw.githubusercontent.com/ao/kontainers/main/docs/screenshots/containers.png)
 
 [![ci](https://github.com/ao/kontainers/actions/workflows/ci.yml/badge.svg)](https://github.com/ao/kontainers/actions/workflows/ci.yml)
 
@@ -30,7 +30,7 @@ It is also careful about the host, because access to Docker is root on it. It li
 127.0.0.1, has no default password, never force-removes a container you made (only a
 replacement it is rolling back), and will not stop or remove itself. The Security section below lists every default.
 
-![HTTPS proxy rules with their certificate status](docs/screenshots/proxy.png)
+![HTTPS proxy rules with their certificate status](https://raw.githubusercontent.com/ao/kontainers/main/docs/screenshots/proxy.png)
 
 ## What it costs to run
 
@@ -341,4 +341,4 @@ anonymous pull limit; CI does.
 
 ## Licence
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](https://github.com/ao/kontainers/blob/main/LICENSE).
