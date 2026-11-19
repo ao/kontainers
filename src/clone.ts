@@ -82,6 +82,8 @@ function createdMountTargets(h: any): Set<string> {
 // containerd store. Told apart by what it recorded for the old image.
 export function composeImageLabel(oldLabel: string, oldImage: any, newImage: any): string {
   const manifest = (img: any) => img?.ImageManifestDescriptor?.digest ?? img?.ImageManifestDescriptor?.Digest ?? null;
+  // A single-manifest image has the manifest digest as its ID too: the manifest is asked first.
+  if (manifest(oldImage) && oldLabel === manifest(oldImage)) return manifest(newImage) ?? newImage.Id;
   if (oldLabel === oldImage?.Id) return newImage.Id;
   return manifest(newImage) ?? newImage.Id;
 }
@@ -159,11 +161,13 @@ export function imageDoubts(c: any, oldImage: any, newImage: any): { refuse: str
   const intoVolume = (p: string) => p.startsWith('/') && mounts.some((m: string) => p === m || p.startsWith(m.endsWith('/') ? m : `${m}/`));
   const had = kv(cfg.Env), wasEnv = kv(was.Env), nowEnv = kv(now.Env);
   for (const [k, v] of had) {
-    if (wasEnv.get(k) !== v || !nowEnv.has(k) || nowEnv.get(k) === v) continue;
-    if (intoVolume(v)) refuse.push(`${k} (${v} in the old image, which is in one of its volumes; ${nowEnv.get(k)} in the new one)`);
-    else if (k !== 'PATH' && !/(^|_)(VERSION|RELEASE|MAJOR|SHA1|SHA256|SHA512|MD5|CHECKSUM|URL|GPG_KEYS?)$/.test(k)) taken.push(`${k} (${v} -> ${nowEnv.get(k)})`);
+    // Changed, or no longer set at all (the copy then has none, since it equalled the old image's).
+    if (wasEnv.get(k) !== v || nowEnv.get(k) === v) continue;
+    const next = nowEnv.has(k) ? nowEnv.get(k)! : null;
+    if (intoVolume(v)) refuse.push(`${k} (${v} in the old image, which is in one of its volumes; ${next === null ? 'not set' : next} in the new one)`);
+    else if (k !== 'PATH' && !/(^|_)(VERSION|RELEASE|MAJOR|SHA1|SHA256|SHA512|MD5|CHECKSUM|URL|GPG_KEYS?)$/.test(k)) taken.push(`${k} (${v} -> ${next === null ? 'not set' : next})`);
   }
-  for (const k of ['WorkingDir', 'StopSignal']) if (cfg[k] && same(cfg[k], was[k]) && now[k] && !same(was[k], now[k])) taken.push(`${k === 'WorkingDir' ? 'the working directory' : 'the stop signal'} (${cfg[k]} -> ${now[k]})`);
+  for (const k of ['WorkingDir', 'StopSignal']) if (cfg[k] && same(cfg[k], was[k]) && !same(was[k], now[k])) taken.push(`${k === 'WorkingDir' ? 'the working directory' : 'the stop signal'} (${cfg[k]} -> ${now[k] || 'the default'})`);
   return { refuse, taken };
 }
 
@@ -175,7 +179,7 @@ function networksOf(c: any): Record<string, unknown> {
   for (const [n, ep] of Object.entries(c?.NetworkSettings?.Networks || {}) as [string, any][]) {
     out[n] = {
       aliases: (ep?.Aliases || []).filter((a: string) => a && !own.has(a)).sort(), v4: ep?.IPAMConfig?.IPv4Address || null, v6: ep?.IPAMConfig?.IPv6Address || null,
-      linkLocal: [...(ep?.IPAMConfig?.LinkLocalIPs || [])].sort(), links: [...(ep?.Links || [])].sort(), driverOpts: ep?.DriverOpts || null,
+      linkLocal: [...(ep?.IPAMConfig?.LinkLocalIPs || [])].sort(), links: [...(ep?.Links || [])].sort(), driverOpts: ep?.DriverOpts || null, gwPriority: ep?.GwPriority || null,
     };
   }
   return out;
@@ -247,8 +251,9 @@ export function cloneDiff(old: any, oldImage: any, copy: any): string[] {
   for (const k of ['Domainname', 'Tty', 'OpenStdin', 'StdinOnce', 'AttachStdin', 'StopTimeout']) if (!same(cfg[k], want[k])) out.push(k);
   if (!same(now.NetworkMode, want.NetworkMode)) out.push('NetworkMode');
   if (!same(now.Networks, want.Networks)) out.push('Networks');
-  const ha = want.HostConfig as Record<string, unknown>, hb = now.HostConfig as Record<string, unknown>;
-  for (const k of Object.keys(ha)) if (!same(ha[k], hb[k])) out.push(k);
+  const ha = want.HostConfig as Record<string, any>, hb = now.HostConfig as Record<string, any>;
+  // The daemon adds its own log options (daemon.json) at create: the old ones must all be there.
+  for (const k of Object.keys(ha)) if (k === 'LogConfig' ? !(same(ha[k]?.Type, hb[k]?.Type) && holds(hb[k]?.Config, ha[k]?.Config)) : !same(ha[k], hb[k])) out.push(k);
   const had = new Set<string>(mountsOf(copy));
   const lost = mountsOf(old).filter((m: string) => !had.has(m));
   if (lost.length) out.push(`mounts (${lost.join(', ')})`);

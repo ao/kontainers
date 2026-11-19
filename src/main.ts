@@ -164,7 +164,7 @@ else {
 // Activity page and sent as an automatic-update notification.
 async function tidyUp(attempt: number): Promise<void> {
   if (stopping.signal.aborted) return;
-  const kept = (name: string, id: string) => { if (autoUpdates.get(name)) autoUpdates.recreated(name, id); };
+  const kept = (name: string, id: string, from?: string) => { if (autoUpdates.get(name)) autoUpdates.recreated(name, id, from); };
   let again = false;
   try {
     events.noteSetAside(await docker.listContainers());

@@ -917,9 +917,11 @@ describe('ReplaceJournal', () => {
     const j = new ReplaceJournal(db, () => 1000);
     j.begin('web', 'a'.repeat(64), true);
     j.rollingBack('web');
-    expect(j.all()).toEqual([{ name: 'web', old_id: 'a'.repeat(64), was_running: 1, at: 1000, rollback: 1 }]);
+    expect(j.all()).toEqual([{ name: 'web', old_id: 'a'.repeat(64), was_running: 1, at: 1000, rollback: 1, phase: null, stopping_at: null }]);
+    j.phase('web', 'stopping');
+    expect(j.all()[0]).toMatchObject({ phase: 'stopping', stopping_at: 1000 });
     j.begin('web', 'b'.repeat(64), false);
-    expect(j.all()[0]).toMatchObject({ old_id: 'b'.repeat(64), was_running: 0, rollback: 0 });
+    expect(j.all()[0]).toMatchObject({ old_id: 'b'.repeat(64), was_running: 0, rollback: 0, phase: null, stopping_at: null });
     j.end('web');
     expect(j.all()).toEqual([]);
   });

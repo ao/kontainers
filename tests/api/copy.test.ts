@@ -215,7 +215,7 @@ describe.skipIf(!DOCKER)('updating containers made outside kontainers', () => {
     // Made from the good image of before (the failed update left the tag on the one that crashes).
     expect((await api(`/images/${v2}/tag?repo=${encodeURIComponent(REPO)}&tag=1`, { method: 'POST' })).status).toBe(201);
     expect((await post(`/containers/create?name=${PLAIN}`, {
-      Image: REF, Cmd: ['sleep', '600'], Labels: { app: 'plain' }, Env: ['TOKEN=abc'],
+      Image: REF, Cmd: ['sleep', '600'], Labels: { app: 'plain' }, Env: ['TOKEN=abc'], MacAddress: '02:42:ac:11:00:99',
       HostConfig: { CapAdd: ['SYS_PTRACE'], SecurityOpt: ['no-new-privileges'], ExtraHosts: ['db:10.1.2.3'], RestartPolicy: { Name: 'always' }, Tmpfs: { '/run/x': 'size=1m' } },
     })).status).toBe(201);
     expect((await post(`/containers/${PLAIN}/start`)).status).toBe(204);
@@ -229,6 +229,7 @@ describe.skipIf(!DOCKER)('updating containers made outside kontainers', () => {
     expect(now.Config.Env).toContain('RELEASE=4');
     expect(now.Config.Env).toContain('TOKEN=abc');
     for (const k of ['CapAdd', 'SecurityOpt', 'ExtraHosts', 'RestartPolicy', 'Tmpfs']) expect(now.HostConfig[k]).toEqual(old.HostConfig[k]);
+    expect(now.NetworkSettings.Networks.bridge.MacAddress).toBe('02:42:ac:11:00:99');
     expect(now.Config.Labels.app).toBe('plain');
   }, 60000);
 

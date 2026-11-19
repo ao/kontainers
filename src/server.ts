@@ -319,7 +319,9 @@ export function createHandler(d: Deps): Handler {
     try {
       const c = await docker.inspect(d.selfContainer);
       const project = c.Config?.Labels?.['com.docker.compose.project'] ?? null;
-      selfCache = { id: c.Id, project, apiId: await apiContainerId(project) };
+      // com.docker.compose.depends_on: "docker-proxy:service_started:false,..."
+      const deps = String(c.Config?.Labels?.['com.docker.compose.depends_on'] || '').split(',').map((d: string) => d.split(':')[0]).filter(Boolean);
+      selfCache = { id: c.Id, project, apiId: await apiContainerId(project), deps };
       selfAt = Date.now();
     } catch (e) {
       if (e instanceof DockerError && e.status === 404) selfCache = null; // not a container after all
@@ -327,10 +329,8 @@ export function createHandler(d: Deps): Handler {
     }
     return selfCache ?? null;
   }
-  // Never recreated by kontainers: itself, the container serving its Docker API, and anything else in
-  // its own compose project (the socket proxy may be reached by an alias kontainers cannot match).
-  const ownProject = (c: any, me: views.SelfInfo | null) => !!me?.project && (c?.Config?.Labels ?? c?.Labels)?.['com.docker.compose.project'] === me.project;
-  const untouchable = async (c: any) => { const me = await self(); return views.isSelf(c, me) || ownProject(c, me); };
+  // Never recreated by kontainers (views.isProtected).
+  const untouchable = async (c: any) => views.isProtected(c, await self());
   if (d.autoUpdates) d.autoUpdates.protect = untouchable;
 
   // The container that serves kontainers' Docker API, when DOCKER_HOST names one (tcp://docker-proxy:2375
@@ -353,7 +353,7 @@ export function createHandler(d: Deps): Handler {
   const updateView = (): views.UpdateView | null => d.updates
     ? { get: (ref: string) => d.updates!.get(ref), lastRun: d.updates.lastRun, scheduled: cfg.updateCheckHours > 0 ? cfg.updateCheckHours : null,
         held: (name: string, id: string) => (d.autoUpdates?.isOn(name, id) ? d.autoUpdates.heldImage(name) : null),
-        heldDigests: (imageId: string) => d.autoUpdates?.heldDigests(imageId) }
+        heldDigests: (name: string) => d.autoUpdates?.heldDigests(name) }
     : null;
 
   // A password asked again from a logged-in session (turning off two-factor, replacing its key,
@@ -747,7 +747,7 @@ export function createHandler(d: Deps): Handler {
       return act(s, ip, '/containers', 'container-update', id, async () => {
         await refuseSelf(id);
         const c = await docker.inspect(id);
-        if (await untouchable(c)) throw new v.ValidationError(`${String(c.Name || '').replace(/^\//, '')} is in kontainers' own compose project; update it with docker compose pull && docker compose up -d`);
+        if (await untouchable(c)) throw new v.ValidationError(`${String(c.Name || '').replace(/^\//, '')} is kontainers itself or a service it depends on; update it with docker compose pull && docker compose up -d`);
         const name = String(c.Name || '').replace(/^\//, '');
         refuseSetAside(name);
         const release = locks.take(name);
@@ -774,7 +774,7 @@ export function createHandler(d: Deps): Handler {
         const newer = n === 0 ? [] : (await docker.listContainersWithRefs()).filter(c => containerStatus(d.updates!.get(c.Ref), c.ImageID)?.status === 'available');
         const uv = updateView();
         const me = await self();
-        const opted = newer.filter(c => { const nm = String(c.Names?.[0] || '').replace(/^\//, ''); return !views.isSelf(c, me) && !ownProject(c, me) && d.autoUpdates?.isOn(nm, c.Id, c.Labels) && !views.heldBack(uv, nm, c.Id, c.Ref); });
+        const opted = newer.filter(c => { const nm = String(c.Names?.[0] || '').replace(/^\//, ''); return !views.isProtected(c, me) && d.autoUpdates?.isOn(nm, c.Id, c.Labels) && !views.heldBack(uv, nm, c.Id, c.Ref); });
         const waits = opted.filter(c => d.autoUpdates?.waitFor(c.Ref, d.updates!.get(c.Ref))).length;
         const auto = opted.length - waits;
         const available = newer.length;
@@ -808,7 +808,7 @@ export function createHandler(d: Deps): Handler {
       return act(s, ip, `/containers/${encodeURIComponent(id)}`, f.on ? 'autoupdate-on' : 'autoupdate-off', id, async () => {
         if (!d.autoUpdates) throw new v.ValidationError('automatic updates are not available');
         await refuseSelf(id);
-        if (f.on && await untouchable(await docker.inspect(id))) throw new v.ValidationError("this container is in kontainers' own compose project, which kontainers does not update; use docker compose pull && docker compose up -d");
+        if (f.on && await untouchable(await docker.inspect(id))) throw new v.ValidationError('kontainers does not update itself or a service it depends on; use docker compose pull && docker compose up -d');
         return d.autoUpdates.set(id, !!f.on);
       });
     }

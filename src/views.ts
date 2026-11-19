@@ -63,7 +63,8 @@ function containerActions(ctx: PageCtx, id: string, name: string, state: string,
 }
 
 // apiId: the container that serves kontainers' Docker API (the socket proxy), when there is one.
-export interface SelfInfo { id: string; project: string | null; apiId?: string | null }
+// deps: the compose services kontainers' own service depends on (its socket proxy).
+export interface SelfInfo { id: string; project: string | null; apiId?: string | null; deps?: string[] }
 
 const labelsOf = (c: any): Record<string, string> => c?.Labels || c?.Config?.Labels || {};
 
@@ -73,6 +74,15 @@ const labelsOf = (c: any): Record<string, string> => c?.Labels || c?.Config?.Lab
 export function isSelf(c: any, me: SelfInfo | null): boolean {
   if (!me) return false;
   return c?.Id === me.id || (!!me.apiId && c?.Id === me.apiId);
+}
+
+// Never updated by kontainers: itself, its Docker API container, and the services of its own
+// compose project that it depends on (the socket proxy, reached perhaps by an alias kontainers
+// cannot match).
+export function isProtected(c: any, me: SelfInfo | null): boolean {
+  if (isSelf(c, me)) return true;
+  const l = labelsOf(c);
+  return !!me?.project && l['com.docker.compose.project'] === me.project && (me.deps || []).includes(l['com.docker.compose.service'] || '');
 }
 
 const selfNote = (c: any, me: SelfInfo | null) =>
@@ -179,8 +189,8 @@ export interface UpdateView {
   get: (ref: string) => UpdateState | null;
   // The image an automatic update held back for an opted-in container (by name and ID), if any.
   held?: (name: string, id: string) => string | null;
-  // The registry digests of a held image, when known.
-  heldDigests?: (imageId: string) => string[] | undefined;
+  // The registry digests of the image held back for a container (by name), when known.
+  heldDigests?: (name: string) => string[] | undefined;
   lastRun: number | null;
   scheduled: number | null; // hours between scheduled checks, or null when off
 }
@@ -202,7 +212,7 @@ export function heldBack(u: UpdateView | null, name: string, id: string, ref: st
   if (st.imageId === held && st.status !== 'available') return held;
   // After a failed update the tag points back at the running image; the registry still serves the
   // held one.
-  const ds = u?.heldDigests?.(held);
+  const ds = u?.heldDigests?.(name);
   return ds && st.remoteDigest && ds.some(d => d.endsWith('@' + st.remoteDigest)) ? held : null;
 }
 
@@ -369,10 +379,10 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
   ${inspectPorts(c) ? html`<dt>Ports</dt><dd><span class="ref">${inspectPorts(c)}</span></dd>` : ''}
 </dl>
 <div class="actions">${isSelf(c, me) ? selfNote(c, me) : ctx.busy?.(name) ? html`<p class="muted">${ctx.busy(name)}; reload in a moment.</p>` : containerActions(ctx, urlId(c), name, c.State?.Status || '', true)}
-${isSelf(c, me) || ctx.busy?.(name) ? '' : html`${post(ctx, `/containers/${urlId(c)}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' && !held ? 'primary' : '' })}${madeHere
+${isProtected(c, me) || ctx.busy?.(name) ? '' : html`${post(ctx, `/containers/${urlId(c)}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' && !held ? 'primary' : '' })}${madeHere
     ? html` <a class="button" href="/containers/${urlId(c)}/edit">Edit settings</a>`
     : html` <small class="muted">${project ? html`Part of compose project ${project}. Update image copies its settings and compose labels to the new container, so <code>docker compose up -d</code> leaves it as it is; change its settings in the compose file.` : 'Created outside kontainers: Update image copies all of its settings to the new container. Edit settings is only for containers created here.'}</small>`}`}</div>
-${auto && !isSelf(c, me) && !ctx.busy?.(name) ? autoForm(ctx, urlId(c), auto) : ''}
+${auto && !isProtected(c, me) && !ctx.busy?.(name) ? autoForm(ctx, urlId(c), auto) : ''}
 ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
 <dl class="facts" id="stats" data-stats="/api/containers/${urlId(c)}/stats">
   <dt>CPU</dt><dd data-k="cpu">…</dd><dt>Memory</dt><dd data-k="mem">…</dd>

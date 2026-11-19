@@ -198,6 +198,12 @@ describe('round 10 QA', () => {
     expect(imageDoubts({ ...c, Config: { ...c.Config, User: '2000' } }, was, now).refuse).not.toContain('the user it runs as (1000 in the old image, root in the new one)');
   });
 
+  test('endpoints keep their MAC address and gateway priority', async () => {
+    const { endpointOf } = await import('../../src/update');
+    expect(endpointOf({ Id: ID, Name: '/x' }, { Aliases: ['web'], MacAddress: '02:42:0a:0a:00:11', GwPriority: 10, NetworkID: 'n', EndpointID: 'e', IPAddress: '10.0.0.2' }))
+      .toEqual({ Aliases: ['web'], MacAddress: '02:42:0a:0a:00:11', GwPriority: 10 });
+  });
+
   test("compose's record of the image: the image ID, or the platform manifest's digest with the containerd store", () => {
     const old = { Id: 'sha256:idx-old', ImageManifestDescriptor: { digest: 'sha256:man-old' } };
     const fresh = { Id: 'sha256:idx-new', ImageManifestDescriptor: { digest: 'sha256:man-new' } };

@@ -101,6 +101,12 @@ export const MIGRATIONS: string[] = [
      used_at INTEGER,
      PRIMARY KEY (user_id, code_hash)
    );`,
+  // 8 (0.6): how far a replacement got (verified: the copy was compared and is faithful; stopping:
+  // the old container is being stopped, since stopped_at; started: the new one was started, at
+  // `at`), and the registry digests of an image held back.
+  `ALTER TABLE replacing ADD COLUMN phase TEXT;
+   ALTER TABLE replacing ADD COLUMN stopping_at INTEGER;
+   ALTER TABLE auto_update ADD COLUMN held_digests TEXT;`,
 ];
 
 // degraded: opened without the shared-memory file, because the data volume had no room for it.

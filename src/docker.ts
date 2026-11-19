@@ -44,7 +44,7 @@ export interface CreateOptions {
   keepBindMounts?: boolean;
   allowedBinds?: { source: string; readOnly: boolean }[];
   replaces?: string;
-  network?: { mode: string; endpoint?: { Aliases?: string[]; IPAMConfig?: Record<string, unknown>; Links?: string[]; DriverOpts?: Record<string, string> } };
+  network?: { mode: string; endpoint?: { Aliases?: string[]; IPAMConfig?: Record<string, unknown>; Links?: string[]; DriverOpts?: Record<string, string>; GwPriority?: number } };
 }
 
 export interface DockerOptions {
@@ -134,14 +134,19 @@ export class Docker {
   inspect(id: string) { return this.json<any>('GET', `/containers/${encodeURIComponent(v.ref(id))}/json`); }
   // false: it was already running (start) or already stopped (stop).
   async start(id: string): Promise<boolean> { return (await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/start`)).status !== 304; }
-  // ownTimeoutSec: the container's own stop timeout (compose's stop_grace_period, docker run
-  // --stop-timeout), which Docker then uses; without it, 10 s.
+  // Docker stops a container with its own stop timeout (compose's stop_grace_period, docker run
+  // --stop-timeout; 10 s by default), as docker stop does; the request waits that long and 50 s
+  // more. ownTimeoutSec: that timeout when the caller has it, else it is looked up.
+  private async stopWait(id: string, ownTimeoutSec?: number | null): Promise<number> {
+    let own = ownTimeoutSec;
+    if (own === undefined) own = (await this.inspect(id).catch(() => null))?.Config?.StopTimeout ?? null;
+    return ((Number.isInteger(own) && (own as number) >= 0 ? (own as number) : 10) + 50) * 1000;
+  }
   async stop(id: string, ownTimeoutSec?: number | null): Promise<boolean> {
-    const own = Number.isInteger(ownTimeoutSec) && (ownTimeoutSec as number) >= 0 ? (ownTimeoutSec as number) : null;
-    return (await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/stop${own === null ? '?t=10' : ''}`, undefined, ((own ?? 10) + 50) * 1000)).status !== 304;
+    return (await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/stop`, undefined, await this.stopWait(id, ownTimeoutSec))).status !== 304;
   }
   async unpause(id: string) { await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/unpause`); }
-  async restart(id: string) { await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/restart?t=10`, undefined, 60000); }
+  async restart(id: string) { await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/restart`, undefined, await this.stopWait(id)); }
   async remove(id: string, force = false) {
     await this.req('DELETE', `/containers/${encodeURIComponent(v.ref(id))}?force=${force ? 1 : 0}&v=0`);
   }
@@ -216,11 +221,12 @@ export class Docker {
   // The daemon's own API version, for copies (clone.ts): at 1.41, settings newer than that (a
   // healthcheck's start interval, a volume's subpath, annotations) are left out of an inspect and
   // dropped from a create. Asked once; 1.41 if the daemon does not say.
+  // A failed lookup is kept for five minutes, so the calls of one update all use the same version.
   private fullApi: Promise<string> | null = null;
   private latest(): Promise<string> {
     this.fullApi ??= this.json<any>('GET', '/version').then(
       r => (/^1\.\d{2}$/.test(String(r?.ApiVersion)) && Number(String(r.ApiVersion).slice(2)) > 41 ? `/v${r.ApiVersion}` : API),
-      () => { this.fullApi = null; return API; });
+      () => { setTimeout(() => { this.fullApi = null; }, 5 * 60_000).unref?.(); return API; });
     return this.fullApi;
   }
   // An image as the daemon's own API version shows it (with the containerd image store, the
@@ -368,10 +374,12 @@ export class Docker {
   async removeNetwork(id: string) { await this.req('DELETE', `/networks/${encodeURIComponent(v.ref(id, 'network'))}`); }
   // endpoint: aliases and fixed addresses the container had on this network, carried over when it
   // is recreated.
-  async connect(network: string, container: string, endpoint?: { Aliases?: string[]; IPAMConfig?: Record<string, unknown>; Links?: string[]; DriverOpts?: Record<string, string> }) {
+  async connect(network: string, container: string, endpoint?: { Aliases?: string[]; IPAMConfig?: Record<string, unknown>; Links?: string[]; DriverOpts?: Record<string, string>; GwPriority?: number }, full = false) {
     const body: Record<string, unknown> = { Container: v.ref(container) };
-    if (endpoint && (endpoint.Aliases?.length || endpoint.IPAMConfig || endpoint.Links?.length || endpoint.DriverOpts)) body.EndpointConfig = endpoint;
-    await this.req('POST', `/networks/${encodeURIComponent(v.ref(network, 'network'))}/connect`, body);
+    if (endpoint && Object.keys(endpoint).length) body.EndpointConfig = endpoint;
+    // A copy's endpoints at the daemon's own API version, like the copy (newer fields such as
+    // GwPriority would be dropped at 1.41).
+    await this.req('POST', `/networks/${encodeURIComponent(v.ref(network, 'network'))}/connect`, body, undefined, {}, full ? await this.latest() : API);
   }
   async disconnect(network: string, container: string) {
     await this.req('POST', `/networks/${encodeURIComponent(v.ref(network, 'network'))}/disconnect`, { Container: v.ref(container), Force: false });

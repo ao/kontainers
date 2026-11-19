@@ -11,12 +11,13 @@ import type { Docker } from './docker';
 import type { Notifier } from './notify';
 import { containerStatus, type UpdateChecker } from './updates';
 import { inspectOthers, updatable, updateContainerDetailed, UpdateFailed, type Journal } from './update';
+import { cloneRefusal } from './clone';
 import * as v from './validate';
 import { NameLocks } from './locks';
 import { writeFailed } from './storage';
 import { inWindow, nextWindow, type ScheduleStore } from './schedule';
 
-export interface AutoRow { container: string; container_id: string; created_at: number; last_at: number | null; last_result: string | null; held_image: string | null }
+export interface AutoRow { container: string; container_id: string; created_at: number; last_at: number | null; last_result: string | null; held_image: string | null; held_digests?: string | null }
 
 export interface AutoOptions { settleMs: number; healthTimeoutMs: number; signal?: AbortSignal; wasStopped?: (id: string) => boolean; journal?: Journal; schedule?: ScheduleStore }
 
@@ -113,22 +114,20 @@ export class AutoUpdates {
   // The image an automatic update held back for this container, if any.
   heldImage(name: string): string | null { return this.get(name)?.held_image ?? null; }
 
-  // The registry digests of held images. After a failed update the tag points back at the image
-  // the container runs (update.ts), so a held image is told apart by the digest the registry
-  // still serves for the tag.
-  private digests = new Map<string, string[]>();
-  heldDigests(imageId: string): string[] | undefined { return this.digests.get(imageId); }
-  private async noteDigests(imageId: string | null): Promise<void> {
-    if (!imageId || this.digests.has(imageId)) return;
-    const img = await this.docker.inspectImage(imageId).catch(() => null);
-    if (img) this.digests.set(imageId, img.RepoDigests || []);
-    if (this.digests.size > 500) this.digests.delete(this.digests.keys().next().value!);
+  // The registry digests of the image held back for a container, saved when it was held. After a
+  // failed update the tag points back at the image the container runs (update.ts), so a held image
+  // is told apart by the digest the registry still serves for the tag; once untagged it may have
+  // no digests of its own any more (the containerd store), or be pruned.
+  heldDigests(name: string): string[] | undefined {
+    const raw = this.get(name)?.held_digests;
+    if (!raw) return undefined;
+    try { const d = JSON.parse(raw); return Array.isArray(d) ? d.map(String) : undefined; } catch { return undefined; }
   }
   // Whether the image held back for this container is still what the registry serves for its tag.
-  private heldIsNewest(held: string | null, st: { remoteDigest?: string; imageId?: string; status?: string } | null): boolean {
-    if (!held || !st) return false;
-    if (st.imageId === held && st.status !== 'available') return true;
-    return !!st.remoteDigest && (this.digests.get(held) || []).some(d => d.endsWith('@' + st.remoteDigest));
+  private heldIsNewest(row: AutoRow, st: { remoteDigest?: string; imageId?: string; status?: string } | null): boolean {
+    if (!row.held_image || !st) return false;
+    if (st.imageId === row.held_image && st.status !== 'available') return true;
+    return !!st.remoteDigest && (this.heldDigests(row.container) || []).some(d => d.endsWith('@' + st.remoteDigest));
   }
 
   // Containers with a newer image that wait for the update window or the delay: until when, and why.
@@ -219,6 +218,9 @@ export class AutoUpdates {
         // Update image refuses at a glance (a digest, an image ID, a swarm task).
         const refusedAtAGlance = String(c.Ref || '').includes('@') || /^(sha256:)?[0-9a-f]{12,64}$/.test(String(c.Ref || '')) || !!c.Labels?.['com.docker.swarm.task.id'];
         if (labelledOn(c.Labels) && !refusedAtAGlance && !this.busy.has(name) && !(await this.protect(c))) {
+          // Not one Update image would refuse (--rm, shared namespaces): it would fail every pass.
+          const full = await this.docker.inspect(c.Id).catch(() => null);
+          if (full && full.Config?.Labels?.['kontainers.managed'] !== 'true' && cloneRefusal(full, await inspectOthers(this.docker, c.Id))) continue;
           const had = this.get(name);
           if (!had) this.db.query('INSERT INTO auto_update (container, container_id, created_at) VALUES (?, ?, ?) ON CONFLICT (container) DO NOTHING').run(name, c.Id, this.now());
           else if (this.idOf(had) !== c.Id && !list.some(x => String(x.Id) === this.idOf(had))) this.recreated(name, c.Id);
@@ -237,14 +239,17 @@ export class AutoUpdates {
         // by hand after a "check by hand" note) and the replacement has the name, it is settled.
         const open = (() => { try { return this.opts.journal?.all().find(r => r.name === name) ?? null; } catch { return null; } })();
         if (open) {
-          if (list.some(x => String(x.Id) === open.old_id) || c.Labels?.['kontainers.replaces'] !== open.old_id) continue;
+          // A finished copy whose old container could not be removed: removed now, if it stopped.
+          const leftover = list.find(x => String(x.Id) === open.old_id);
+          if (leftover && c.Labels?.['kontainers.replaces'] === open.old_id && c.State === 'running' && ['exited', 'created', 'dead'].includes(String(leftover.State)) && open.phase === 'started') {
+            try { await this.docker.remove(open.old_id, false); } catch { continue; }
+          } else if (leftover || c.Labels?.['kontainers.replaces'] !== open.old_id) continue;
           try { this.opts.journal?.end(name); } catch { /* looked at again next time */ }
           this.recreated(name, c.Id);
           continue;
         }
         // The image that failed is still the newest for the tag.
-        await this.noteDigests(row.held_image);
-        if (this.heldIsNewest(row.held_image, st)) continue;
+        if (this.heldIsNewest(row, st)) continue;
         // Outside the update window, or the newer image not seen for long enough yet: later. With a
         // delay, the registry is asked again first: the last check may be hours old, and the update
         // must install the image that waited, not one pushed since.
@@ -275,6 +280,7 @@ export class AutoUpdates {
     if (!release) return;
     let result: string;
     let held: string | null = row?.held_image ?? null;
+    let heldDigests: string | null = row?.held_digests ?? null;
     // Sent after the lock is released: while it is held, the new container's own events are quiet.
     let note: { n: Parameters<Notifier['send']>[0]; key?: string; within?: number } | null = null;
     // Bookkeeping after the update must not turn an update that worked into a failure.
@@ -284,6 +290,7 @@ export class AutoUpdates {
       result = r.message;
       if (r.changed) {
         held = null;
+        heldDigests = null;
         this.recreated(name, r.id, id);
         quietly('could not record the automatic update', () => this.audit('auto-update', name));
         const what = r.running === false ? `${name} was recreated from the newest ${ref}; it was stopped before and is left stopped` : `${name} now runs the newest ${ref}`;
@@ -294,7 +301,7 @@ export class AutoUpdates {
       // Held back only when the new image ran and then failed; a port in use or a failed pull is
       // not the image's fault, and the next check tries again.
       const holds = e instanceof UpdateFailed && e.held && !!e.newImage;
-      if (holds) { held = (e as UpdateFailed).newImage; await this.noteDigests(held); }
+      if (holds) { held = (e as UpdateFailed).newImage; heldDigests = JSON.stringify((e as UpdateFailed).digests || []); }
       quietly('could not record the failed automatic update', () => this.audit('auto-update', name, `failed: ${result}`.slice(0, 500)));
       const next = holds ? 'That image is held back until a newer one appears.' : 'It will be tried again at the next check.';
       // kontainers stopping is not news to anyone; the next start's check tries again.
@@ -304,7 +311,7 @@ export class AutoUpdates {
     } finally {
       release();
     }
-    quietly('could not save the result', () => this.db.query('UPDATE auto_update SET last_at = ?, last_result = ?, held_image = ? WHERE container = ?').run(this.now(), result.slice(0, 500), held, name));
+    quietly('could not save the result', () => this.db.query('UPDATE auto_update SET last_at = ?, last_result = ?, held_image = ?, held_digests = ? WHERE container = ?').run(this.now(), result.slice(0, 500), held, held ? heldDigests : null, name));
     if (note) await this.notifier?.send(note.n, note.key, note.within).catch(e => console.error(`kontainers: notification failed: ${(e as Error).message}`));
     await this.checker.check(ref).catch(() => {});
   }
