@@ -281,12 +281,15 @@ describe.skipIf(!DOCKER)('updating containers made outside kontainers', () => {
   });
 
   test('Update all updates the members of a compose project that have a newer image, one at a time', async () => {
-    const proj2 = `${PROJ}b`;
-    const yaml = `\nservices:\n  a:\n    image: ${REF}\n    command: ["sleep", "600"]\n  b:\n    image: ${REF}\n    command: ["sleep", "601"]\n`;
+    // Its own repository: the automatic update of the labelled worker on REF would run at the same
+    // time and could move that tag meanwhile (which kontainers then refuses, rightly).
+    const proj2 = `${PROJ}b`, repo2 = `localhost:5002/kt/ua${run}`;
+    await publish('ENV RELEASE=7', repo2, true);
+    const yaml = `\nservices:\n  a:\n    image: ${repo2}:1\n    command: ["sleep", "600"]\n  b:\n    image: ${repo2}:1\n    command: ["sleep", "601"]\n`;
     await compose('up -d', yaml, proj2);
     try {
       const before = [await inspect(`${proj2}-a-1`), await inspect(`${proj2}-b-1`)];
-      await publish('ENV RELEASE=8');
+      await publish('ENV RELEASE=8', repo2);
       await c.submit('/updates/check', {});
       const page = await c.page('/containers');
       expect(page).toContain(`action="/projects/${proj2}/update"`);
