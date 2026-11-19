@@ -57,8 +57,29 @@ if (cmd === 'backup') {
     console.error(`kontainers: could not reset two-factor login: ${m}${/locked|busy/i.test(m) ? '. The running kontainers holds the database to itself (it started with the data volume full); free space and restart it, then run this again' : ''}`);
     process.exit(1);
   }
+} else if (cmd === 'set-role') {
+  // The role of an account, from the host: admin or viewer (read-only). One administrator stays.
+  const role = process.argv[4];
+  if (!arg || (role !== 'admin' && role !== 'viewer')) { console.error('usage: bun src/main.ts set-role USERNAME admin|viewer (in the container)'); process.exit(2); }
+  try {
+    const d = openDb(cfg.dataDir);
+    const u = d.query('SELECT id, username FROM users WHERE username = ?').get(arg) as { id: number; username: string } | null;
+    if (!u) { console.error(`kontainers: no user ${arg}`); process.exit(1); }
+    const what = role === 'viewer' ? 'read-only' : 'an administrator';
+    const res = new Auth(d).setRole(u.id, role, null);
+    if (!res.changed) { console.log(`kontainers: ${u.username} was ${what} already`); process.exit(0); }
+    try {
+      d.query('INSERT INTO audit_log (at, username, action, target, ip, result) VALUES (?, ?, ?, ?, ?, ?)').run(Date.now(), null, 'user-role', `${u.username} (${role === 'viewer' ? 'read-only' : 'administrator'})`, null, 'note: from the command line');
+    } catch (e) { console.error(`kontainers: the role was changed, but could not be noted on Activity: ${(e as Error).message}`); }
+    console.log(`kontainers: ${u.username} is ${what} now; its sessions were ended`);
+    process.exit(0);
+  } catch (e) {
+    const m = (e as Error).message;
+    console.error(`kontainers: could not change the role: ${m}${/locked|busy/i.test(m) ? '. The running kontainers holds the database to itself (it started with the data volume full); free space and restart it, then run this again' : ''}`);
+    process.exit(1);
+  }
 } else if (cmd !== undefined && cmd !== 'serve') {
-  console.error(`kontainers: unknown command "${cmd}"; commands: serve, backup FILE, reset-2fa USERNAME (as bun src/main.ts COMMAND in the container)`);
+  console.error(`kontainers: unknown command "${cmd}"; commands: serve, backup FILE, reset-2fa USERNAME, set-role USERNAME admin|viewer (as bun src/main.ts COMMAND in the container)`);
   process.exit(2);
 }
 
@@ -94,6 +115,8 @@ const idFromMounts = (): string | undefined => {
   try { return /\/containers\/([0-9a-f]{64})\/(?:hostname|hosts|resolv\.conf)\b/.exec(readFileSync('/proc/self/mountinfo', 'utf8'))?.[1]; } catch { return undefined; }
 };
 const selfContainer = process.env.KONTAINERS_SELF_CONTAINER || (cfg.inContainer ? idFromMounts() || hostname() : undefined);
+// If that names no container (a wrong KONTAINERS_SELF_CONTAINER), these are tried.
+const selfCandidates = cfg.inContainer ? [idFromMounts(), hostname()].filter((x): x is string => !!x) : [];
 proxy.selfContainer = selfContainer ?? null;
 const updates = new UpdateChecker(docker, cfg.updateCheckHours * 3600 * 1000);
 const notifier = new Notifier(db, undefined, undefined, [dockerApiAddress(cfg.dockerHost)].filter((h): h is string => !!h));
@@ -107,7 +130,7 @@ const autoUpdates: AutoUpdates = new AutoUpdates(db, docker, updates, notifier, 
 autoUpdates.start();
 updates.onChecked = () => autoUpdates.afterCheck();
 const events: EventWatcher = new EventWatcher(docker, notifier, Date.now, ms => Bun.sleep(ms), name => autoUpdates.busy.has(name));
-const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal, schedule, twoFactor: new TwoFactor(db), backups });
+const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, selfCandidates, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal, schedule, twoFactor: new TwoFactor(db), backups });
 updates.start();
 events.replaceWindowMs = (cfg.autoUpdateSettle + cfg.autoUpdateHealthTimeout + 60) * 1000;
 events.start();

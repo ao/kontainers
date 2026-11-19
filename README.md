@@ -37,13 +37,13 @@ replacement it is rolling back), and will not stop or remove itself. The Securit
 
 Memory and start time were measured on the 0.4.0 release candidate, on an EC2 m7g.4xlarge (arm64,
 16 vCPUs, Ubuntu 24.04, Docker 29.9.3), by `scripts/test.sh screenshots` in three runs. The download
-size is the published 0.4.1 image's, and 0.5.0's and 0.6.0's are the same: 19 MB more than 0.3.0's, because the Bun base image grew by
+size is the published 0.4.1 image's, and those of 0.5.0 to 0.7.0 are the same: 19 MB more than 0.3.0's, because the Bun base image grew by
 16 MB (oven/bun 1.4.4-slim against 1.3.1-slim) and Caddy and Debian by 4 MB. 0.4.0 also stored
 the Caddy binary twice (16.5 MB more), which 0.4.1 fixed.
 
 | | |
 |---|---|
-| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1 to 0.6.0, compressed layers on Docker Hub |
+| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1 to 0.7.0, compressed layers on Docker Hub |
 | Memory at idle | 30 to 34 MiB, with Caddy serving two HTTPS rules and four other containers on the host (`docker stats` after 30 s, three runs) |
 | Start | 239 to 299 ms from `docker start` to a healthy `/healthz` (fifteen starts over three runs) |
 
@@ -124,16 +124,31 @@ What works, and is covered by the test suites below:
   named volumes are never removed in bulk
 - proxy rules: hostname and path prefix to a container port, HTTPS with a certificate obtained
   automatically, or plain HTTP; edit, enable, disable, remove; kept across restarts
-- local accounts, first-run setup, database backup
+- local accounts, administrators or read-only, first-run setup, database backups
+- Update all, per compose project on the Containers page: the members with a newer image are
+  updated one at a time, as Update image does it
 - an Activity page: every action and failed attempt, by whom and from where, kept for a year
 
-Not included: exec/terminal, compose stacks, multiple hosts, roles (every account is an
-administrator).
+Not included: exec/terminal, compose stacks, multiple hosts, and roles finer than administrator
+and read-only.
 
 ## Security
 
-Access to the Docker API is root on the host. Anyone who can log in to kontainers can start a
-privileged container that mounts the host's filesystem, so treat every kontainers account as root.
+Access to the Docker API is root on the host. Anyone who can log in to kontainers as an
+administrator can start a privileged container that mounts the host's filesystem, so treat every
+administrator account as root.
+
+Accounts are administrators or read-only. A read-only account sees the containers, images,
+networks, volumes and proxy rules, container logs, and on the Activity page what was done to
+them (not by whom or from where); it changes nothing but its own password and two-factor login,
+and sends at most 30 forms a minute. The server refuses every other change and the database
+downloads, and the pages leave those controls out. It does not see the other accounts, logins,
+notification targets, registry logins, backups, or the logs of kontainers itself and its socket
+proxy. Environment values are hidden on the container pages for everyone, but commands,
+healthcheck output and logs are not: a read-only account reads whatever the containers print or
+were started with. An administrator changes a role on the Settings page (the account's sessions
+end), and so does `docker compose exec kontainers bun src/main.ts set-role USERNAME admin|viewer`
+on the host; one administrator always stays.
 
 What kontainers does about it:
 
@@ -204,7 +219,7 @@ With `docker run`, mounting the socket directly:
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.6.0
+      ataiva/kontainers:0.7.0
     docker logs kontainers | grep 'setup token'
 
 The image runs as an unprivileged user, so it needs the socket's group (`--group-add`). On
@@ -285,7 +300,7 @@ to be public: they serve the sites you route, not the kontainers UI.
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.6.0
+      ataiva/kontainers:0.7.0
 
 Use your own email address: Let's Encrypt rejects reserved domains such as example.com, and
 kontainers refuses to start with one.

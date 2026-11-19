@@ -72,10 +72,10 @@ function demux(buf: Uint8Array): string {
   return out;
 }
 // docker compose, run in a docker:29-cli container on the test daemon's own socket.
-async function compose(args: string): Promise<string> {
+async function compose(args: string, yaml = COMPOSE, proj = PROJ): Promise<string> {
   const name = `cp-cli-${Math.random().toString(36).slice(2, 8)}`;
   expect((await post(`/containers/create?name=${name}`, {
-    Image: 'docker:29-cli', Env: [`F=${COMPOSE}`], Cmd: ['sh', '-c', `printf '%s' "$F" > /c.yaml && docker compose -p ${PROJ} -f /c.yaml ${args}`],
+    Image: 'docker:29-cli', Env: [`F=${yaml}`], Cmd: ['sh', '-c', `printf '%s' "$F" > /c.yaml && docker compose -p ${proj} -f /c.yaml ${args}`],
     HostConfig: { Binds: ['/var/run/docker.sock:/var/run/docker.sock'] },
   })).status).toBe(201);
   await post(`/containers/${name}/start`);
@@ -279,6 +279,37 @@ describe.skipIf(!DOCKER)('updating containers made outside kontainers', () => {
       expect((await inspect(PLAIN)).Id).toBe(before);
     } finally { await api(`/containers/${side}?force=1`, { method: 'DELETE' }); }
   });
+
+  test('Update all updates the members of a compose project that have a newer image, one at a time', async () => {
+    // Its own repository: the automatic update of the labelled worker on REF would run at the same
+    // time and could move that tag meanwhile (which kontainers then refuses, rightly).
+    const proj2 = `${PROJ}b`, repo2 = `localhost:5002/kt/ua${run}`;
+    await publish('ENV RELEASE=7', repo2, true);
+    const yaml = `\nservices:\n  a:\n    image: ${repo2}:1\n    command: ["sleep", "600"]\n  b:\n    image: ${repo2}:1\n    command: ["sleep", "601"]\n`;
+    await compose('up -d', yaml, proj2);
+    try {
+      const before = [await inspect(`${proj2}-a-1`), await inspect(`${proj2}-b-1`)];
+      await publish('ENV RELEASE=8', repo2);
+      await c.submit('/updates/check', {});
+      const page = await c.page('/containers');
+      expect(page).toContain(`action="/projects/${proj2}/update"`);
+      expect(page).toContain('Update all (2)');
+      const r = await c.submit(`/projects/${proj2}/update`, {});
+      expect(r.error).toBe('');
+      // Done within 20 s, or going on in the background.
+      expect([`Updated 2 of 2 containers of ${proj2} (${proj2}-a-1, ${proj2}-b-1).`, `Updating 2 containers of ${proj2}, one at a time; this takes a while. Each update shows on the Activity page; reload the Containers page later.`]).toContain(r.flash);
+      // In either order: each one created, then (old one stopped) started.
+      const updated = async (n: string) => { const x = await inspect(n); return x.Config?.Env?.includes('RELEASE=8') && x.State?.Running; };
+      await until('both updated', async () => (await updated(`${proj2}-a-1`)) && (await updated(`${proj2}-b-1`)), 90000);
+      // Each container's update is on Activity (b's once its settle is over).
+      await until('the update of b on Activity', async () => (await c.page(`/activity?q=${proj2}-b-1`)).includes('updated the image of'), 60000);
+      const after = [await inspect(`${proj2}-a-1`), await inspect(`${proj2}-b-1`)];
+      for (let i = 0; i < 2; i++) { expect(after[i].Id).not.toBe(before[i].Id); expect(after[i].Config.Env).toContain('RELEASE=8'); expect(after[i].State.Running).toBe(true); }
+      expect(await compose('up -d', yaml, proj2)).not.toMatch(/Recreate/);
+      // Nothing newer now.
+      await until('Update all finished', async () => (await c.submit(`/projects/${proj2}/update`, {})).flash.includes(`Nothing to update in ${proj2}`), 60000);
+    } finally { await compose('down', yaml, proj2).catch(() => {}); }
+  }, 180000);
 
   test('kontainers killed while the copy settles: the next start keeps the copy and removes the old one', async () => {
     await publish('ENV RELEASE=5');

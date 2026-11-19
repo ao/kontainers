@@ -107,7 +107,7 @@ describe('Notifier', () => {
   });
 
   test('failures are kept on the target and never thrown', async () => {
-    for (const [answer, expected] of [[500, /^failed: HTTP 500 nope$/], [new Error('getaddrinfo ENOTFOUND a.example.net'), /^failed: getaddrinfo ENOTFOUND/]] as const) {
+    for (const [answer, expected] of [[500, /^failed: HTTP 500$/], [new Error('getaddrinfo ENOTFOUND a.example.net'), /^failed: getaddrinfo ENOTFOUND/]] as const) {
       const n = new Notifier(db(), recorder(answer).f);
       const t = n.add({ kind: 'webhook', url: 'https://a.example.net/h', events: ['exit'] });
       expect(await n.send({ kind: 'exit', title: 't', message: 'm' })).toBe(1);
@@ -299,11 +299,19 @@ describe('where notifications may not go', () => {
     expect(() => validateTarget({ ...ok, token: 'tokén' })).toThrow('printable ASCII');
     expect(validateTarget({ ...ok, url: 'http://ntfy.lan:8080/t' }, ['docker-proxy']).url).toBe('http://ntfy.lan:8080/t');
   });
+  test('an error that quotes the address shows it masked', async () => {
+    const n = new Notifier(db(), async u => { throw new Error(`Malformed_HTTP_Response fetching "${u}". For more information, pass \`verbose: true\``); });
+    const t = n.add({ kind: 'webhook', url: 'http://hooks.example.net/secret/path', events: ['exit'] });
+    const r = await n.test(t.id);
+    expect(r).toContain('fetching "http://hooks.example.net/…"');
+    expect(r).not.toContain('secret');
+  });
   test('a redirect is not followed, and says where it pointed', async () => {
     let calls = 0, mode = '';
     const n = new Notifier(db(), async (_u, init) => { calls++; mode = String(init.redirect); return new Response(null, { status: 301, headers: { location: 'https://elsewhere.example.net/x' } }); });
     const t = n.add({ kind: 'webhook', url: 'http://hooks.example.net/a', events: ['exit'] });
-    expect(await n.test(t.id)).toBe('failed: the target redirected (HTTP 301) to https://elsewhere.example.net/x; use that address');
+    // The path can hold the target's secret: masked.
+    expect(await n.test(t.id)).toBe('failed: the target redirected (HTTP 301) to https://elsewhere.example.net/… (path not shown); use the address it redirects to');
     expect(calls).toBe(1);
     expect(mode).toBe('manual');
   });

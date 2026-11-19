@@ -38,6 +38,8 @@ export function html(strings: TemplateStringsArray, ...values: unknown[]): Html 
 
 export interface PageCtx {
   user?: string; csrf?: string; flash?: string; error?: string; proxyEnabled?: boolean;
+  readOnly?: boolean; // a read-only account: the pages leave out what it cannot do
+  projectBusy?: (project: string) => boolean; // an Update all of this compose project runs now
   username?: string; token?: string; // re-filled after a failed login or setup (never the password)
   form?: Record<string, string>; // a failed form, to fill in again
   alert?: string | null; // trouble with kontainers itself, shown on every page
@@ -64,7 +66,8 @@ function containerActions(ctx: PageCtx, id: string, name: string, state: string,
 
 // apiId: the container that serves kontainers' Docker API (the socket proxy), when there is one.
 // deps: the compose services kontainers' own service depends on (its socket proxy).
-export interface SelfInfo { id: string; project: string | null; apiId?: string | null; deps?: string[] }
+// unknown: kontainers could not find its own container (id is then empty).
+export interface SelfInfo { id: string; project: string | null; apiId?: string | null; deps?: string[]; unknown?: boolean }
 
 const labelsOf = (c: any): Record<string, string> => c?.Labels || c?.Config?.Labels || {};
 
@@ -107,13 +110,29 @@ export function formatPorts(ports: any[]): string {
 const SECTIONS = ['Containers', 'Images', 'Networks', 'Volumes', 'Proxy', 'Activity', 'Settings'];
 
 // `section` marks the nav entry for pages whose title is not the section name (a container's page).
+// What a read-only account may send: logging out, its own password and two-factor login.
+export function viewerMayPost(path: string): boolean {
+  return path === '/logout' || path === '/settings/password' || /^\/settings\/2fa\/(start|confirm|disable)$/.test(path);
+}
+
+// A page as a read-only account sees it: without the forms that change something and the links to
+// forms it may not open. The server refuses them anyway; this is so it does not offer them.
+export function readOnlyView(h: string): string {
+  return h
+    .replace(/<form method="post" action="([^"]*)"[\s\S]*?<\/form>/g, (m, action: string) => (viewerMayPost(action) ? m : ''))
+    .replace(/ ?<a class="button[^"]*" href="\/containers\/(new|[^"/]+\/edit)">[^<]*<\/a>/g, '')
+    .replace(/ ?<a class="button" href="\/proxy\/\d+\/edit">Edit<\/a>/g, '')
+    .replace(/<a href="\/containers\/new">Create one<\/a>, or start/g, 'Start')
+    .replace(/<p><a href="\/cleanup">Clean up<\/a>[^<]*<\/p>/g, '');
+}
+
 export function layout(title: string, ctx: PageCtx, body: Html, section = title): string {
   const links = SECTIONS.map(s => html`<a href="/${s.toLowerCase()}"${s === section ? raw(' aria-current="page"') : raw('')}>${s}</a>`);
   const nav = ctx.user ? html`
     <nav>
       ${links}
       <span class="spacer"></span>
-      <span class="who">${ctx.user}</span>
+      <span class="who">${ctx.user}${ctx.readOnly ? html` <small class="muted">read-only</small>` : ''}</span>
       <form method="post" action="/logout" class="inline">${csrfField(ctx)}<button class="link">Log out</button></form>
     </nav>` : raw('');
   return '<!doctype html>' + html`<html lang="en"><head><meta charset="utf-8">
@@ -125,14 +144,14 @@ export function layout(title: string, ctx: PageCtx, body: Html, section = title)
 ${ctx.alert ? html`<p class="warn" role="alert">${ctx.alert}</p>` : ''}
 ${ctx.flash ? html`<p class="flash" role="status">${ctx.flash}</p>` : ''}
 ${ctx.error ? html`<p class="error" role="alert">${ctx.error}</p>` : ''}
-${body}
+${raw(ctx.readOnly ? readOnlyView(body.__html) : body.__html)}
 </main></body></html>`.__html;
 }
 
 export function setupPage(ctx: PageCtx): string {
   return layout('First-run setup', ctx, html`
 <p>Create the first account. The setup token is printed in the kontainers log
-(<code>docker compose logs kontainers</code>, or <code>docker logs kontainers</code>). Every account has full control of the Docker host.</p>
+(<code>docker compose logs kontainers</code>, or <code>docker logs kontainers</code>). This first account is an administrator, with full control of the Docker host.</p>
 <form method="post" action="/setup" class="stack">
   <label>Setup token <input name="token" required autocomplete="off" value="${ctx.token || ''}"></label>
   <label>Username <input name="username" required autocomplete="username" value="${ctx.username || ''}"></label>
@@ -191,6 +210,8 @@ export interface UpdateView {
   held?: (name: string, id: string) => string | null;
   // The registry digests of the image held back for a container (by name), when known.
   heldDigests?: (name: string) => string[] | undefined;
+  // The held image failed under Update image or Update all, not an automatic update.
+  heldManually?: (name: string, id: string) => boolean;
   lastRun: number | null;
   scheduled: number | null; // hours between scheduled checks, or null when off
 }
@@ -305,8 +326,10 @@ export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = 
       const visible = members.some(c => matchesFilter(c, f));
       // A compose project's header can start, stop or restart its containers together (kontainers
       // and its Docker API container are skipped).
-      const others = members.filter(c => !isSelf(c, me));
-      const acts = k && others.length ? html`<span class="groupacts">${others.some(c => c.State !== 'running') ? post(ctx, `/projects/${k}/start`, 'Start all') : ''} ${others.some(c => c.State === 'running') ? html`${post(ctx, `/projects/${k}/restart`, 'Restart all', { confirm: `Restart every container of ${k}?` })} ${post(ctx, `/projects/${k}/stop`, 'Stop all', { confirm: `Stop every container of ${k}?` })}` : ''}</span>` : '';
+      // Not the old container of one being updated now (it is set aside until the update finishes).
+      const others = members.filter(c => !isSelf(c, me) && !String(ctx.busy?.(String(c.Names?.[0] || '').replace(/^\//, '')) ?? '').startsWith('old container'));
+      const newer = others.filter(c => !isProtected(c, me) && hasNewer(updates, c.Ref, c.ImageID) && !heldBack(updates, String(c.Names?.[0] || '').replace(/^\//, ''), c.Id, c.Ref));
+      const acts = k && others.length ? html`<span class="groupacts">${ctx.projectBusy?.(k) ? html`<small class="muted">updating</small> ` : newer.length ? html`${post(ctx, `/projects/${k}/update`, `Update all (${newer.length})`, { cls: 'primary', confirm: `Update the ${newer.length} container${newer.length === 1 ? '' : 's'} of ${k} that ${newer.length === 1 ? 'has' : 'have'} a newer image, one at a time?` })} ` : ''}${others.some(c => c.State !== 'running') ? post(ctx, `/projects/${k}/start`, 'Start all') : ''} ${others.some(c => c.State === 'running') ? html`${post(ctx, `/projects/${k}/restart`, 'Restart all', { confirm: `Restart every container of ${k}?` })} ${post(ctx, `/projects/${k}/stop`, 'Stop all', { confirm: `Stop every container of ${k}?` })}` : ''}</span>` : '';
       return [html`<tr class="group" data-group="${k}"${visible ? raw('') : raw(' hidden')}><th colspan="5" scope="rowgroup">${k ? html`compose project ${brk(k)}` : 'not in a compose project'} <small>${up} of ${members.length} running</small>${acts}</th></tr>`, ...members.map(row)];
     });
   } else rows = sorted.map(row);
@@ -357,7 +380,9 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
   const upd = raw && !ctx.busy?.(String(c.Name || '').replace(/^\//, '')) ? { ...containerStatus(raw, c.Image)!, checkedAt: raw.checkedAt } : null;
   const name = String(c.Name || '').replace(/^\//, '');
   const held = upd?.status === 'available' ? heldBack(updates, name, c.Id, c.Config?.Image) : null;
-  const updText = !upd ? '' : held ? `the newest image for this tag (${shortId(held)}) failed when it was tried automatically and is held back; a newer one will be tried`
+  const updText = !upd ? '' : held ? (updates?.heldManually?.(name, c.Id)
+      ? `the newest image for this tag (${shortId(held)}) failed when Update image or Update all tried it; Update all skips it until a newer one appears, Update image tries it again`
+      : `the newest image for this tag (${shortId(held)}) failed when it was tried automatically and is held back; a newer one will be tried`)
     : upd.status === 'available' ? (raw!.status === 'available' ? 'a newer image is available for this tag' : upd.reason)
     : upd.status === 'current' ? 'the newest image for this tag' : `update status unknown: ${upd.reason || ''}`;
   const env = (c.Config?.Env || []).map((e: string) => html`<li><code>${e.replace(/=[\s\S]*/, '=…')}</code></li>`);
@@ -570,9 +595,10 @@ export function editRulePage(ctx: PageCtx, r: Rule): string {
 </form>`, 'Proxy');
 }
 
-export function settingsPage(ctx: PageCtx, users: { id: number; username: string }[], selfId: number, targets: Target[] | null = null, watch: { connected: boolean; error: string | null } | null = null, logins: RegistryLogin[] | null = null, schedule: Schedule | null = null, tf: { mine: boolean; left: number; users: Set<number> } | null = null, backups: { keep: number; files: BackupFile[]; dir: string } | null = null): string {
-  const rows = users.map(u => html`<tr><td>${u.username}${tf?.users.has(u.id) ? html` <small class="muted">two-factor</small>` : ''}</td>
-<td class="actions">${u.id === selfId ? html`<em>you</em>` : html`${post(ctx, `/settings/users/${u.id}/remove`, 'Remove', { confirm: `Remove user ${u.username}?`, cls: 'danger' })}${tf?.users.has(u.id) ? html` ${post(ctx, `/settings/users/${u.id}/2fa-reset`, 'Turn off two-factor', { confirm: `Turn off two-factor login for ${u.username}? They log in with the password alone until they set it up again.` })}` : ''}`}</td></tr>`);
+export function settingsPage(ctx: PageCtx, users: { id: number; username: string; role?: string }[], selfId: number, targets: Target[] | null = null, watch: { connected: boolean; error: string | null } | null = null, logins: RegistryLogin[] | null = null, schedule: Schedule | null = null, tf: { mine: boolean; left: number; users: Set<number> } | null = null, backups: { keep: number; files: BackupFile[]; dir: string } | null = null): string {
+  const viewer = (u: { role?: string }) => u.role === 'viewer';
+  const rows = users.map(u => html`<tr><td>${u.username}${tf?.users.has(u.id) ? html` <small class="muted">two-factor</small>` : ''}</td><td>${viewer(u) ? 'read-only' : 'administrator'}</td>
+<td class="actions">${u.id === selfId ? html`<em>you</em>` : html`${post(ctx, `/settings/users/${u.id}/role`, viewer(u) ? 'Make administrator' : 'Make read-only', { fields: { role: viewer(u) ? 'admin' : 'viewer' }, confirm: viewer(u) ? `Make ${u.username} an administrator, with full control of the Docker host?` : `Make ${u.username} read-only? Its sessions end.` })} ${post(ctx, `/settings/users/${u.id}/remove`, 'Remove', { confirm: `Remove user ${u.username}?`, cls: 'danger' })}${tf?.users.has(u.id) ? html` ${post(ctx, `/settings/users/${u.id}/2fa-reset`, 'Turn off two-factor', { confirm: `Turn off two-factor login for ${u.username}? They log in with the password alone until they set it up again.` })}` : ''}`}</td></tr>`);
   const twoFactor = !tf ? '' : tf.mine
     ? html`<h2>Two-factor login</h2><p>On: logging in asks for a code from your authenticator app. ${tf.left} recovery code${tf.left === 1 ? '' : 's'} left.</p>
 <form method="post" action="/settings/2fa/disable" class="stack">${csrfField(ctx)}<label>Your password, to turn it off <input name="password" type="password" required autocomplete="current-password"></label><button class="danger">Turn off two-factor login</button></form>
@@ -587,20 +613,21 @@ export function settingsPage(ctx: PageCtx, users: { id: number; username: string
   <button>Change password</button>
 </form>
 ${twoFactor}
-<h2>Users</h2>
-<p>Every user has full control of the Docker host.</p>
-<div class="scroll"><table><tbody>${rows}</tbody></table></div>
+${ctx.readOnly ? html`<h2>Your account</h2><p>This account is read-only: it sees the pages and the logs, and changes nothing but its own password and two-factor login. An administrator can change that.</p>` : html`<h2>Users</h2>
+<p>Administrators have full control of the Docker host. Read-only accounts see the pages and the logs and change nothing (not the settings of other accounts, notification targets, registry logins or backups either).</p>
+<div class="scroll"><table><thead><tr><th scope="col">User</th><th scope="col">Role</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${rows}</tbody></table></div>
 <form method="post" action="/settings/users" class="stack">${csrfField(ctx)}
   <label>Username <input name="username" required></label>
   <label>Password <input name="password" type="password" required minlength="12" autocomplete="new-password"></label>
+  <label>Role <select name="role"><option value="viewer">Read-only</option><option value="admin">Administrator</option></select></label>
   <button>Add user</button>
-</form>
+</form>`}
 ${schedule ? scheduleSection(ctx, schedule) : ''}
 ${targets ? notifySection(ctx, targets, watch) : ''}
 ${logins ? registrySection(ctx, logins) : ''}
-<h2>Backup</h2>
+${ctx.readOnly ? '' : html`<h2>Backup</h2>
 <p><a href="/api/backup">Download a database snapshot</a>. Certificates are in the data volume; see the README for a full backup.${logins?.length ? ' The snapshot holds registry passwords encrypted; the key, registry.key, stays in the data volume, so after restoring on another host enter them again.' : ''}</p>
-${backups ? backupSection(backups) : ''}`);
+${backups ? backupSection(backups) : ''}`}`);
 }
 
 function backupSection(b: { keep: number; files: BackupFile[]; dir: string }): Html {
@@ -686,7 +713,7 @@ ${p.namedUnused ? html`<p class="muted">${p.namedUnused} named volume${p.namedUn
 // What each audit action means, for the Activity page.
 const ACTIONS: Record<string, string> = {
   'login': 'logged in', 'login-failed': 'failed to log in', 'logout': 'logged out', 'setup': 'created the first account',
-  'password-change': 'changed their password', 'user-create': 'added a user', 'user-remove': 'removed a user', 'backup': 'downloaded a backup',
+  'password-change': 'changed their password', 'user-create': 'added a user', 'user-remove': 'removed a user', 'user-role': 'changed the role of', 'project-update': 'updated the compose project', 'refused': 'was refused, as a read-only account,', 'backup': 'downloaded a backup',
   'container-create': 'created a container', 'container-start': 'started', 'container-stop': 'stopped', 'container-restart': 'restarted',
   'container-unpause': 'unpaused', 'container-remove': 'removed', 'container-update': 'updated the image of', 'container-edit': 'edited the settings of',
   'autoupdate-on': 'turned on automatic updates for', 'autoupdate-off': 'turned off automatic updates for', 'auto-update': 'updated automatically',
@@ -705,15 +732,18 @@ const ACTIONS: Record<string, string> = {
 export interface AuditRow { id: number; at: number; username: string | null; action: string; target: string | null; ip: string | null; result: string | null }
 
 export function activityPage(ctx: PageCtx, rows: AuditRow[], q: string, older: number | null): string {
-  const who = (r: AuditRow) => r.username ?? (r.ip ? html`<span class="muted">not logged in</span>` : html`<span class="muted">kontainers</span>`);
+  // A read-only account sees who only as itself, an account, or kontainers; and not from where.
+  const who = (r: AuditRow) => (ctx.readOnly && r.username && r.username !== ctx.user ? html`<span class="muted">an account</span>` : r.username)
+    ?? (r.ip ? html`<span class="muted">not logged in</span>` : html`<span class="muted">kontainers</span>`);
+  const from = (r: AuditRow) => (ctx.readOnly ? '' : html`<td><span class="ref addr">${brk(r.ip || '')}</span></td>`);
   // A result that starts with "note: " is something kontainers did and says more about, not a failure.
   const failed = (r: AuditRow) => !!r.result && !r.result.startsWith('note: ');
   const list = rows.map(r => html`<tr${failed(r) ? raw(' class="failed"') : raw('')}><td>${new Date(r.at).toISOString().slice(0, 19).replace('T', ' ')}</td><td>${who(r)}</td>
-<td>${ACTIONS[r.action] || r.action}${r.target ? html` <span class="ref">${brk(r.target)}</span>` : ''}${r.result ? html`<br><small class="${failed(r) ? 'error' : 'muted'}">${failed(r) ? r.result : r.result.slice(6)}</small>` : ''}</td><td><span class="ref addr">${brk(r.ip || '')}</span></td></tr>`);
+<td>${ACTIONS[r.action] || r.action}${r.target ? html` <span class="ref">${brk(r.target)}</span>` : ''}${r.result ? html`<br><small class="${failed(r) ? 'error' : 'muted'}">${failed(r) ? r.result : r.result.slice(6)}</small>` : ''}</td>${from(r)}</tr>`);
   return layout('Activity', ctx, html`
-<p>Who did what, newest first, including failed attempts and what kontainers did on its own. Entries older than a year are removed.</p>
-<form method="get" action="/activity" class="filters" role="search"><label>Search <input type="search" name="q" value="${q}" placeholder="user, action or name"></label><button>Apply</button>${q ? html` <a href="/activity">Clear</a>` : ''}</form>
-${list.length ? html`<div class="scroll"><table><thead><tr><th>When (UTC)</th><th>Who</th><th>What</th><th>From</th></tr></thead><tbody>${list}</tbody></table></div>` : html`<p class="muted">${q ? 'Nothing matches.' : 'Nothing yet.'}</p>`}
+<p>${ctx.readOnly ? 'What was done to containers, images, networks, volumes and proxy rules, newest first, including failed attempts and what kontainers did on its own.' : 'Who did what, newest first, including failed attempts and what kontainers did on its own.'} Entries older than a year are removed.</p>
+<form method="get" action="/activity" class="filters" role="search"><label>Search <input type="search" name="q" value="${q}" placeholder="${ctx.readOnly ? 'action or name' : 'user, action or name'}"></label><button>Apply</button>${q ? html` <a href="/activity">Clear</a>` : ''}</form>
+${list.length ? html`<div class="scroll"><table><thead><tr><th>When (UTC)</th><th>Who</th><th>What</th>${ctx.readOnly ? '' : html`<th>From</th>`}</tr></thead><tbody>${list}</tbody></table></div>` : html`<p class="muted">${q ? 'Nothing matches.' : 'Nothing yet.'}</p>`}
 ${older ? html`<p><a href="/activity?before=${older}${q ? `&q=${encodeURIComponent(q)}` : ''}">Older</a></p>` : ''}`);
 }
 
