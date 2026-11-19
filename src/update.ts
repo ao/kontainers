@@ -503,12 +503,19 @@ export async function replaceContainer(docker: Docker, c: any, spec: CreateSpec,
       : runs && wasRunning && !oldStopped ? `${what} did not go ahead, and the old container kept running: ${msg}`
       : `${what} failed, so the old container was put back: ${msg}`), { stage });
   }
-  const removedOld = await docker.remove(c.Id, false).then(() => true, err => { console.error(`kontainers: could not remove ${aside}: ${(err as Error).message}`); return false; });
+  // Gone already (a docker compose up removed it meanwhile) counts as removed.
+  let leftoverRuns = false;
+  const removedOld = await docker.remove(c.Id, false).then(() => true, async err => {
+    if ((err as { status?: number })?.status === 404) return true;
+    console.error(`kontainers: could not remove ${aside}: ${(err as Error).message}`);
+    leftoverRuns = !!(await docker.inspect(c.Id).catch(() => null))?.State?.Running;
+    return false;
+  });
   // A copy's old container left over is known only by the journal entry: it stays until it is
   // removed (the next automatic-update pass, the next start's tidy-up, or by hand), so it is not
   // taken for a container of its own.
   if (removedOld || !opts.clone) opts.journal?.end(name);
-  if (!removedOld) note = [note, `the old container, ${aside}, could not be removed; remove it with docker rm ${aside}`].filter(Boolean).join('; ');
+  if (!removedOld) note = [note, `the old container, ${aside}, could not be removed${leftoverRuns ? ' (someone started it again)' : ''}; remove it with docker rm ${leftoverRuns ? '-f ' : ''}${aside}`].filter(Boolean).join('; ');
   return { id: newId, note, running: wasRunning };
 }
 

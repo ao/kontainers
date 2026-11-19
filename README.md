@@ -89,7 +89,8 @@ What works, and is covered by the test suites below:
   and the update says which. Not handled: `--rm` containers, digest-pinned and image-ID references,
   swarm tasks, images built on the host, containers whose network, process or IPC namespace
   another container shares (`network_mode: service:...`) or whose volumes another mounts by ID,
-  and kontainers' own compose project. A copy mounts the old container's anonymous volumes by
+  and kontainers itself, its socket proxy and the services its own `depends_on` named when it was
+  created (other services in its compose project are updated like any). A copy mounts the old container's anonymous volumes by
   name, so `docker compose down -v` leaves them; Clean up lists them as unused anonymous volumes.
 - edit settings, for containers created in kontainers (compose ones change in the compose file): change the image, command, ports,
   environment, volumes or restart policy; saving recreates the container the same way, with the
@@ -203,7 +204,7 @@ With `docker run`, mounting the socket directly:
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.5.0
+      ataiva/kontainers:0.6.0
     docker logs kontainers | grep 'setup token'
 
 The image runs as an unprivileged user, so it needs the socket's group (`--group-add`). On
@@ -243,7 +244,8 @@ A compose container keeps its compose labels, and compose's record of its image
 (`com.docker.compose.image`) is set to the new image, so a later `docker compose up -d` leaves it
 running instead of recreating it (tested with Docker Compose from `docker:29-cli`, on Docker 28 and on
 Docker 29 with its containerd image store). Its settings
-still change only in the compose file. kontainers itself and the container serving its Docker API
+still change only in the compose file. kontainers itself, the container serving its Docker API
+and the services kontainers depends on (its `depends_on`, as it was when kontainers was created)
 are never updated by it, whatever their labels say.
 
 When automatic updates run is set on the Settings page: an update window (hours in UTC, which may
@@ -283,7 +285,7 @@ to be public: they serve the sites you route, not the kontainers UI.
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.5.0
+      ataiva/kontainers:0.6.0
 
 Use your own email address: Let's Encrypt rejects reserved domains such as example.com, and
 kontainers refuses to start with one.
