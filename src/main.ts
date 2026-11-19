@@ -65,12 +65,17 @@ if (cmd === 'backup') {
     const d = openDb(cfg.dataDir);
     const u = d.query('SELECT id, username FROM users WHERE username = ?').get(arg) as { id: number; username: string } | null;
     if (!u) { console.error(`kontainers: no user ${arg}`); process.exit(1); }
-    new Auth(d).setRole(u.id, role, null);
-    d.query('INSERT INTO audit_log (at, username, action, target, ip, result) VALUES (?, ?, ?, ?, ?, ?)').run(Date.now(), null, 'user-role', u.username, null, `note: ${role === 'viewer' ? 'read-only' : 'administrator'}, from the command line`);
-    console.log(`kontainers: ${u.username} is ${role === 'viewer' ? 'read-only' : 'an administrator'} now; its sessions were ended`);
+    const what = role === 'viewer' ? 'read-only' : 'an administrator';
+    const res = new Auth(d).setRole(u.id, role, null);
+    if (!res.changed) { console.log(`kontainers: ${u.username} was ${what} already`); process.exit(0); }
+    try {
+      d.query('INSERT INTO audit_log (at, username, action, target, ip, result) VALUES (?, ?, ?, ?, ?, ?)').run(Date.now(), null, 'user-role', `${u.username} (${role === 'viewer' ? 'read-only' : 'administrator'})`, null, 'note: from the command line');
+    } catch (e) { console.error(`kontainers: the role was changed, but could not be noted on Activity: ${(e as Error).message}`); }
+    console.log(`kontainers: ${u.username} is ${what} now; its sessions were ended`);
     process.exit(0);
   } catch (e) {
-    console.error(`kontainers: could not change the role: ${(e as Error).message}`);
+    const m = (e as Error).message;
+    console.error(`kontainers: could not change the role: ${m}${/locked|busy/i.test(m) ? '. The running kontainers holds the database to itself (it started with the data volume full); free space and restart it, then run this again' : ''}`);
     process.exit(1);
   }
 } else if (cmd !== undefined && cmd !== 'serve') {

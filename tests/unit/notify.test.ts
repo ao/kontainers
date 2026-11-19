@@ -107,7 +107,7 @@ describe('Notifier', () => {
   });
 
   test('failures are kept on the target and never thrown', async () => {
-    for (const [answer, expected] of [[500, /^failed: HTTP 500 nope$/], [new Error('getaddrinfo ENOTFOUND a.example.net'), /^failed: getaddrinfo ENOTFOUND/]] as const) {
+    for (const [answer, expected] of [[500, /^failed: HTTP 500$/], [new Error('getaddrinfo ENOTFOUND a.example.net'), /^failed: getaddrinfo ENOTFOUND/]] as const) {
       const n = new Notifier(db(), recorder(answer).f);
       const t = n.add({ kind: 'webhook', url: 'https://a.example.net/h', events: ['exit'] });
       expect(await n.send({ kind: 'exit', title: 't', message: 'm' })).toBe(1);
@@ -303,7 +303,8 @@ describe('where notifications may not go', () => {
     let calls = 0, mode = '';
     const n = new Notifier(db(), async (_u, init) => { calls++; mode = String(init.redirect); return new Response(null, { status: 301, headers: { location: 'https://elsewhere.example.net/x' } }); });
     const t = n.add({ kind: 'webhook', url: 'http://hooks.example.net/a', events: ['exit'] });
-    expect(await n.test(t.id)).toBe('failed: the target redirected (HTTP 301) to https://elsewhere.example.net/x; use that address');
+    // The path can hold the target's secret: masked.
+    expect(await n.test(t.id)).toBe('failed: the target redirected (HTTP 301) to https://elsewhere.example.net/… (path not shown); use the address it redirects to');
     expect(calls).toBe(1);
     expect(mode).toBe('manual');
   });

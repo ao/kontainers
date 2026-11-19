@@ -14,7 +14,8 @@ export const SESSION_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 export type Role = 'admin' | 'viewer';
 export const ROLES: Role[] = ['admin', 'viewer'];
 export interface User { id: number; username: string; role?: Role }
-export const roleOf = (r: unknown): Role => (r === 'viewer' ? 'viewer' : 'admin');
+// Anything but 'admin' counts as read-only: a value kontainers does not know never gives more.
+export const roleOf = (r: unknown): Role => (r === 'admin' ? 'admin' : 'viewer');
 export interface Session { user: User; csrf: string; idHash: string }
 
 const hash = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -79,32 +80,34 @@ export class Auth {
     return (this.db.query('SELECT id, username, created_at, role FROM users ORDER BY id').all() as any[]).map(u => ({ ...u, role: roleOf(u.role) }));
   }
 
-  private admins(): number { return (this.db.query("SELECT COUNT(*) AS n FROM users WHERE role != 'viewer'").get() as { n: number }).n; }
+  private admins(): number { return (this.db.query("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'").get() as { n: number }).n; }
 
   deleteUser(id: number, actingUserId: number): void {
     if (id === actingUserId) throw new v.ValidationError('you cannot delete your own account');
-    if (this.userCount() <= 1) throw new v.ValidationError('cannot delete the last user');
-    const row = this.db.query('SELECT role FROM users WHERE id = ?').get(id) as { role: string } | null;
-    // One administrator always stays, or nobody could change anything again.
+    // One administrator always stays, or nobody could change anything again. Immediate: a second
+    // writer (the command line) waits instead of failing half way.
     this.db.transaction(() => {
+      if (this.userCount() <= 1) throw new v.ValidationError('cannot delete the last user');
+      const row = this.db.query('SELECT role FROM users WHERE id = ?').get(id) as { role: string } | null;
       if (row && roleOf(row.role) === 'admin' && this.admins() <= 1) throw new v.ValidationError('cannot remove the last administrator');
       this.db.query('DELETE FROM users WHERE id = ?').run(id);
-    })();
+    }).immediate();
   }
 
   // Changes an account's role; its sessions end, so pages opened with the old role go too.
   // actingUserId: null from the command line, which may change any account.
-  setRole(id: number, role: unknown, actingUserId: number | null): User {
+  setRole(id: number, role: unknown, actingUserId: number | null): User & { changed: boolean } {
     if (role !== 'admin' && role !== 'viewer') throw new v.ValidationError('the role must be admin or viewer');
     if (actingUserId !== null && id === actingUserId) throw new v.ValidationError('you cannot change your own role; another administrator can');
     return this.db.transaction(() => {
       const row = this.db.query('SELECT id, username, role FROM users WHERE id = ?').get(id) as { id: number; username: string; role: string } | null;
       if (!row) throw Object.assign(new v.ValidationError('no such user'), { status: 404 });
       if (roleOf(row.role) === 'admin' && role === 'viewer' && this.admins() <= 1) throw new v.ValidationError('cannot make the last administrator read-only');
+      const changed = roleOf(row.role) !== role;
       this.db.query('UPDATE users SET role = ? WHERE id = ?').run(role, id);
-      if (roleOf(row.role) !== role) this.db.query('DELETE FROM sessions WHERE user_id = ?').run(id);
-      return { id: row.id, username: row.username, role: role as Role };
-    })();
+      if (changed) this.db.query('DELETE FROM sessions WHERE user_id = ?').run(id);
+      return { id: row.id, username: row.username, role: role as Role, changed };
+    }).immediate();
   }
 
   async changePassword(userId: number, current: string, next: string): Promise<void> {
@@ -138,6 +141,13 @@ export class Auth {
 
   hasUser(username: string): boolean {
     return !!this.db.query('SELECT 1 FROM users WHERE username = ?').get(username);
+  }
+
+  // The session again, by its hash: after a request's body is read, its role may have changed or
+  // the account may be gone.
+  refresh(s: Session): Session | null {
+    const row = this.db.query('SELECT u.id, u.username, u.role FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id_hash = ?').get(s.idHash) as { id: number; username: string; role: string } | null;
+    return row ? { ...s, user: { id: row.id, username: row.username, role: roleOf(row.role) } } : null;
   }
 
   getSession(id: string | undefined): Session | null {

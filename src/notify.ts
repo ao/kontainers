@@ -222,9 +222,11 @@ export class Notifier {
       if (no) throw new Error(`not sent: ${no}`);
       // Redirects are not followed: the body and the token would go to an address nobody chose.
       const res = await this.fetchImpl(t.url, { method: 'POST', headers, body, redirect: 'manual', signal: AbortSignal.timeout(10000) });
+      // The address and the answer can hold the target's secret (a topic, a token in the path):
+      // results are shown on Settings and Activity and logged, so only masked, and no body.
       result = res.status >= 300 && res.status < 400
-        ? `failed: the target redirected (HTTP ${res.status}) to ${String(res.headers.get('location') || '?').slice(0, 200)}; use that address`
-        : res.ok ? `sent (HTTP ${res.status})` : `failed: HTTP ${res.status} ${(await res.text().catch(() => '')).slice(0, 200)}`.trim();
+        ? `failed: the target redirected (HTTP ${res.status}) to ${maskUrl(String(res.headers.get('location') || '?')).slice(0, 200)} (path not shown); use the address it redirects to`
+        : res.ok ? `sent (HTTP ${res.status})` : `failed: HTTP ${res.status}`;
     } catch (e) {
       result = `failed: ${((e as Error).message || String(e)).slice(0, 200)}`;
     }

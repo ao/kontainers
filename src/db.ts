@@ -108,7 +108,7 @@ export const MIGRATIONS: string[] = [
    ALTER TABLE replacing ADD COLUMN stopping_at INTEGER;
    ALTER TABLE auto_update ADD COLUMN held_digests TEXT;`,
   // 9 (0.7): a role per account: admin (everything) or viewer (read-only).
-  `ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin';`,
+  `ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin' CHECK (role IN ('admin', 'viewer'));`,
 ];
 
 // degraded: opened without the shared-memory file, because the data volume had no room for it.

@@ -56,6 +56,37 @@ describe.skipIf(!DOCKER)('read-only accounts', () => {
     expect((await reader.get('/containers/new')).status).toBe(403);
     expect((await reader.get(`/containers/${NAME}/edit`)).status).toBe(403);
     expect(await admin.page('/activity?q=read-only')).toContain('was refused, as a read-only account,');
+    // Its own Activity: what was done to containers, by "an account", with no addresses, and none
+    // of the account or login rows; a search does not look at user names.
+    const act = await reader.page('/activity');
+    expect(act).toContain(`<span class="ref">${NAME}</span>`);
+    expect(act).toContain('an account');
+    expect(act).not.toContain('>admin<');
+    expect(act).not.toContain('127.0.0.1');
+    expect(act).not.toContain('added a user');
+    expect(act).not.toContain('logged in');
+    expect(await reader.page('/activity?q=admin')).toContain('Nothing matches.');
+  });
+
+  test('a form still being sent when its account is made read-only is not done', async () => {
+    await admin.page('/settings');
+    expect((await admin.submit('/settings/users', { username: 'bob', password: PW, role: 'admin' })).error).toBe('');
+    const bobId = Number(/<tr><td>bob<\/td>[\s\S]*?action="\/settings\/users\/(\d+)\/role"/.exec(await admin.page('/settings'))![1]);
+    const bob = await login('bob');
+    await bob.page(`/containers/${NAME}`);
+    let push!: (t: string) => void, end!: () => void;
+    const body = new ReadableStream<Uint8Array>({ start(ctrl) { push = t => ctrl.enqueue(new TextEncoder().encode(t)); end = () => ctrl.close(); } });
+    const sending = fetch(`${srv.base}/containers/${NAME}/stop`, { method: 'POST', headers: { ...bob.headers(), 'content-type': 'application/x-www-form-urlencoded' }, body, duplex: 'half', redirect: 'manual' } as RequestInit);
+    push(`_csrf=${encodeURIComponent(bob.csrf)}`);
+    await Bun.sleep(500);
+    await admin.page('/settings');
+    expect((await admin.submit(`/settings/users/${bobId}/role`, { role: 'viewer' })).flash).toBe('bob is read-only now; its sessions were ended.');
+    push('&back=detail');
+    end();
+    const res = await sending;
+    expect(res.status).toBe(401);
+    expect(await res.text()).toContain('Your session ended while this was being sent');
+    expect((await inspect(NAME)).State.Running).toBe(true);
   });
 
   test('its own password it can change', async () => {

@@ -139,12 +139,14 @@ administrator can start a privileged container that mounts the host's filesystem
 administrator account as root.
 
 Accounts are administrators or read-only. A read-only account sees the containers, images,
-networks, volumes, proxy rules, the Activity page and container logs, and changes nothing but its
-own password and two-factor login; the server refuses every other change and the database
-downloads, and the pages leave those controls out. It does not see the other accounts, the
-notification targets, the registry logins or the backups. Environment values are hidden on the
-container pages for everyone, but logs are not: a read-only account reads whatever the
-containers print. An administrator changes a role on the Settings page (the account's sessions
+networks, volumes and proxy rules, container logs, and on the Activity page what was done to
+them (not by whom or from where); it changes nothing but its own password and two-factor login,
+and sends at most 30 forms a minute. The server refuses every other change and the database
+downloads, and the pages leave those controls out. It does not see the other accounts, logins,
+notification targets, registry logins, backups, or the logs of kontainers itself and its socket
+proxy. Environment values are hidden on the container pages for everyone, but commands,
+healthcheck output and logs are not: a read-only account reads whatever the containers print or
+were started with. An administrator changes a role on the Settings page (the account's sessions
 end), and so does `docker compose exec kontainers bun src/main.ts set-role USERNAME admin|viewer`
 on the host; one administrator always stays.
 

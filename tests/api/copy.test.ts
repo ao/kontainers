@@ -293,12 +293,18 @@ describe.skipIf(!DOCKER)('updating containers made outside kontainers', () => {
       expect(page).toContain('Update all (2)');
       const r = await c.submit(`/projects/${proj2}/update`, {});
       expect(r.error).toBe('');
-      expect(r.flash).toBe(`Updated 2 of 2 containers of ${proj2} (${proj2}-a-1, ${proj2}-b-1).`);
+      // Done within 20 s, or going on in the background.
+      expect([`Updated 2 of 2 containers of ${proj2} (${proj2}-a-1, ${proj2}-b-1).`, `Updating 2 containers of ${proj2}, one at a time; this takes a while. Each update shows on the Activity page; reload the Containers page later.`]).toContain(r.flash);
+      // In either order: each one created, then (old one stopped) started.
+      const updated = async (n: string) => { const x = await inspect(n); return x.Config?.Env?.includes('RELEASE=8') && x.State?.Running; };
+      await until('both updated', async () => (await updated(`${proj2}-a-1`)) && (await updated(`${proj2}-b-1`)), 90000);
+      // Each container's update is on Activity (b's once its settle is over).
+      await until('the update of b on Activity', async () => (await c.page(`/activity?q=${proj2}-b-1`)).includes('updated the image of'), 60000);
       const after = [await inspect(`${proj2}-a-1`), await inspect(`${proj2}-b-1`)];
       for (let i = 0; i < 2; i++) { expect(after[i].Id).not.toBe(before[i].Id); expect(after[i].Config.Env).toContain('RELEASE=8'); expect(after[i].State.Running).toBe(true); }
       expect(await compose('up -d', yaml, proj2)).not.toMatch(/Recreate/);
       // Nothing newer now.
-      expect((await c.submit(`/projects/${proj2}/update`, {})).flash).toContain(`Nothing to update in ${proj2}`);
+      await until('Update all finished', async () => (await c.submit(`/projects/${proj2}/update`, {})).flash.includes(`Nothing to update in ${proj2}`), 60000);
     } finally { await compose('down', yaml, proj2).catch(() => {}); }
   }, 180000);
 

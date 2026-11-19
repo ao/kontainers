@@ -13,7 +13,7 @@ import { Auth, RateLimiter, safeEqual, type Session } from './auth';
 import { Docker, DockerError, summarizeStats, type CreateSpec } from './docker';
 import type { ProxyManager, RuleStore } from './proxy';
 import { snapshot } from './db';
-import { editable, recreateSpec, replaceContainer, updateContainerDetailed, type Journal } from './update';
+import { editable, recreateSpec, replaceContainer, updateContainerDetailed, UpdateFailed, type Journal } from './update';
 import type { Notifier } from './notify';
 import { EVENT_KINDS } from './notify';
 import { labelledOn, type AutoUpdates } from './autoupdate';
@@ -271,6 +271,11 @@ export function createHandler(d: Deps): Handler {
   // Wrong two-factor codes per account over a day: someone who has the password cannot keep
   // guessing at the per-15-minute rate for long.
   const codeLimiter = new RateLimiter(20, 24 * 3600_000);
+  // Forms a read-only account sends, per session, and when a refused one was last recorded.
+  const viewerPosts = new RateLimiter(30, 60_000);
+  const refusedAt = new Map<string, number>();
+  // Compose projects an Update all runs for now.
+  const projectUpdates = new Set<string>();
   // Pulls that outlived the request (see /images/pull), shown on the Images page.
   const pulls = new Map<string, { state: 'pulling' | 'failed'; error?: string; at: number }>();
   const secure = !!cfg.publicUrl?.startsWith('https:');
@@ -350,10 +355,19 @@ export function createHandler(d: Deps): Handler {
     }
     return null;
   }
+  // Images that failed when Update image or Update all tried them on a container that is not
+  // updated automatically (those keep theirs in the database): by name, for the container that was
+  // put back. Update all skips them until a newer one appears; Update image still tries.
+  const failedHere = new Map<string, { id: string; image: string; digests: string[] }>();
+  const noteFailure = (name: string, containerId: string, e: unknown) => {
+    if (e instanceof UpdateFailed && e.held && e.newImage) failedHere.set(name, { id: containerId, image: e.newImage, digests: e.digests });
+    if (failedHere.size > 1000) failedHere.delete(failedHere.keys().next().value!);
+  };
+  const manualHeld = (name: string, id: string) => { const f = failedHere.get(name); return f && f.id === id ? f : null; };
   const updateView = (): views.UpdateView | null => d.updates
     ? { get: (ref: string) => d.updates!.get(ref), lastRun: d.updates.lastRun, scheduled: cfg.updateCheckHours > 0 ? cfg.updateCheckHours : null,
-        held: (name: string, id: string) => (d.autoUpdates?.isOn(name, id) ? d.autoUpdates.heldImage(name) : null),
-        heldDigests: (name: string) => d.autoUpdates?.heldDigests(name) }
+        held: (name: string, id: string) => (d.autoUpdates?.isOn(name, id) ? d.autoUpdates.heldImage(name) : manualHeld(name, id)?.image ?? null),
+        heldDigests: (name: string) => d.autoUpdates?.heldDigests(name) ?? failedHere.get(name)?.digests }
     : null;
 
   // A password asked again from a logged-in session (turning off two-factor, replacing its key,
@@ -577,6 +591,7 @@ export function createHandler(d: Deps): Handler {
   }
 
   async function routes(req: Request, url: URL, s: Session, ip: string): Promise<Response> {
+    // (s is replaced by the session read again once a form's body has arrived.)
     const p = url.pathname, m = req.method;
     let r: RegExpExecArray | null;
 
@@ -584,7 +599,7 @@ export function createHandler(d: Deps): Handler {
       if (p === '/') return redirect('/containers');
       if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainersWithRefs(), await self(), updateView(), views.parseFilter(url.searchParams)));
       // What only an administrator may open: forms that change things, and copies of the database.
-      if (s.user.role === 'viewer' && (p === '/containers/new' || /^\/containers\/[^/]+\/edit$/.test(p) || p === '/api/backup' || p.startsWith('/settings/backups/'))) {
+      if (s.user.role === 'viewer' && (p === '/containers/new' || /^\/containers\/[^/]+\/edit$/.test(p) || /^\/proxy\/\d+\/edit$/.test(p) || p === '/api/backup' || p.startsWith('/settings/backups/'))) {
         return p.startsWith('/api/') ? text('a read-only account cannot do this\n', 403) : page(views.layout('Read-only account', ctx(s), views.html`<p class="error">This account is read-only.</p><p><a href="/containers">Containers</a></p>`), 403);
       }
       if (p === '/containers/new') return page(views.newContainerPage(ctx(s), cfg.allowBindMounts, !!d.autoUpdates));
@@ -604,6 +619,11 @@ export function createHandler(d: Deps): Handler {
         const row = d.autoUpdates?.get(name) ?? null;
         const auto = d.autoUpdates ? { on: d.autoUpdates.isOn(name, c.Id, c.Config?.Labels), label: labelledOn(c.Config?.Labels), row, waiting: d.autoUpdates.waitingFor(name) } : null;
         return page(views.containerPage(ctx(s), c, await self(), updateView(), auto));
+      }
+      // kontainers' own logs (and its socket proxy's) are for administrators: they can hold what
+      // only Settings shows.
+      if (s.user.role === 'viewer' && (r = /^\/api\/containers\/([^/]+)\/(stats|logs|logs\.txt)$/.exec(p)) && views.isProtected(await docker.inspect(r[1]), await self())) {
+        return text('a read-only account cannot read the logs of kontainers itself\n', 403);
       }
       if ((r = /^\/api\/containers\/([^/]+)\/stats$/.exec(p))) {
         return new Response(JSON.stringify(summarizeStats(await docker.stats(r[1]))), { headers: { 'content-type': 'application/json' } });
@@ -642,11 +662,18 @@ export function createHandler(d: Deps): Handler {
         const before = v.intInRange(url.searchParams.get('before'), 1, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
         const like = `%${q.replace(/[\\%_]/g, ch => '\\' + ch)}%`;
         const keys = views.actionsMatching(q);
-        const rows = db.query(`SELECT id, at, username, action, target, ip, result FROM audit_log WHERE id < ? AND (? = ''
-            OR username LIKE ? ESCAPE '\\' OR target LIKE ? ESCAPE '\\' OR ip LIKE ? ESCAPE '\\' OR result LIKE ? ESCAPE '\\'
+        // A read-only account sees what was done to containers, images, networks, volumes and
+        // proxy rules, not who did it or from where, and nothing about accounts, logins, registry
+        // logins, notification targets or backups; its search does not look at users or addresses.
+        const ro = s.user.role === 'viewer' ? 1 : 0;
+        const rows = db.query(`SELECT id, at, username, action, target, ip, result FROM audit_log WHERE id < ?
+            AND (? = 0 OR NOT (action LIKE 'user-%' OR action LIKE '2fa-%' OR action LIKE 'login%' OR action LIKE 'registry-%' OR action LIKE 'notify-%'
+              OR action IN ('logout', 'setup', 'password-change', 'backup', 'backup-daily', 'refused', 'schedule-set')))
+            AND (? = ''
+            OR (? = 0 AND (username LIKE ? ESCAPE '\\' OR ip LIKE ? ESCAPE '\\')) OR target LIKE ? ESCAPE '\\' OR result LIKE ? ESCAPE '\\'
             OR action IN (SELECT value FROM json_each(?))
             OR (username IS NULL AND ip IS NULL AND 'kontainers' LIKE ? ESCAPE '\\')) ORDER BY id DESC LIMIT 101`)
-          .all(before, q, like, like, like, like, JSON.stringify(keys), like) as views.AuditRow[];
+          .all(before, ro, q, ro, like, like, like, like, JSON.stringify(keys), like) as views.AuditRow[];
         return page(views.activityPage(ctx(s), rows.slice(0, 100), q, rows.length > 100 ? rows[99].id : null));
       }
       if (p === '/cleanup') return page(views.cleanupPage(ctx(s), await cleanup.currentPlan(docker)));
@@ -692,10 +719,23 @@ export function createHandler(d: Deps): Handler {
       return page(views.layout('Form too large', ctx(s), views.html`<p class="error">${errorMessage(e)}.</p>`), 413);
     }
     if (typeof f._csrf !== 'string' || !safeEqual(f._csrf, s.csrf)) return text('invalid or missing CSRF token\n', 403);
+    // The account as it is now: the body can take a while to arrive, and a role change or a
+    // removal meanwhile must apply to this request too.
+    const now = auth.refresh(s);
+    if (!now) return page(views.layout('Logged out', {}, views.html`<p class="error">Your session ended while this was being sent (the password or role of the account changed, or it was removed), so it was not done.</p><p><a href="/login">Log in again</a></p>`), 401, { 'set-cookie': clearCookie() });
+    s = now;
 
-    // A read-only account changes nothing but its own password and two-factor login.
+    // A read-only account changes nothing but its own password and two-factor login, and sends at
+    // most 30 forms a minute (each refused one is a row on Activity; at most one a minute is kept).
+    if (s.user.role === 'viewer') {
+      const wait = viewerPosts.blocked(s.idHash);
+      if (wait > 0) return text('too many requests\n', 429, { 'retry-after': String(wait) });
+      viewerPosts.fail(s.idHash);
+    }
     if (s.user.role === 'viewer' && !views.viewerMayPost(p)) {
-      safeAudit(s, 'refused', p.slice(0, 200), ip, 'failed: a read-only account');
+      const last = refusedAt.get(s.idHash) ?? 0;
+      if (Date.now() - last > 60_000) { refusedAt.set(s.idHash, Date.now()); safeAudit(s, 'refused', p.slice(0, 200), ip, 'failed: a read-only account'); }
+      if (refusedAt.size > 1000) refusedAt.clear();
       return page(views.layout('Read-only account', ctx(s), views.html`<p class="error">This account is read-only: it can look at everything, but not change it. An administrator can change its role on the Settings page.</p><p><a href="/containers">Containers</a></p>`), 403);
     }
 
@@ -770,8 +810,10 @@ export function createHandler(d: Deps): Handler {
         let r: Awaited<ReturnType<typeof updateContainerDetailed>>;
         try {
           // Watched for a few seconds, so an image that crashes at once is caught and rolled back.
-          r = await updateContainerDetailed(docker, id, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, healthTimeoutMs: 0, ...replaceOpts() });
-          if (r.changed) d.autoUpdates?.recreated(name, r.id, c.Id);
+          try {
+            r = await updateContainerDetailed(docker, id, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, healthTimeoutMs: 0, ...replaceOpts() });
+          } catch (e) { noteFailure(name, c.Id, e); throw e; }
+          if (r.changed) { d.autoUpdates?.recreated(name, r.id, c.Id); failedHere.delete(name); }
         } finally { release(); }
         if (c.Config?.Image && d.updates) await d.updates.check(c.Config.Image).catch(() => {});
         return r.message;
@@ -798,29 +840,52 @@ export function createHandler(d: Deps): Handler {
     }
     if ((r = /^\/projects\/([^/]+)\/update$/.exec(p))) {
       const project = r[1];
-      // Each member with a newer image, one at a time, as Update image does it.
+      // Each member with a newer image, one at a time, as Update image does it. A project with big
+      // images can take minutes: after 20 s the page comes back and the rest goes on, each update
+      // on Activity.
       return act(s, ip, '/containers', 'project-update', project, async () => {
         v.name(project, 'compose project');
+        if (projectUpdates.has(project)) throw new v.ValidationError(`an Update all of ${project} is running already`);
         const me = await self();
-        const members = (await docker.listContainersWithRefs()).filter(c => c.Labels?.['com.docker.compose.project'] === project);
-        if (!members.length) throw Object.assign(new v.ValidationError(`no containers in compose project ${project}`), { status: 404 });
-        const uv = updateView();
+        if (d.selfContainer && !me) throw new v.ValidationError('kontainers cannot tell its own container from the others right now (the Docker API did not answer); try again in a minute');
         const nameOf = (c: any) => String(c.Names?.[0] || c.Id).replace(/^\//, '');
-        const todo = members.filter(c => !views.isProtected(c, me) && containerStatus(d.updates?.get(c.Ref) ?? null, c.ImageID)?.status === 'available' && !views.heldBack(uv, nameOf(c), c.Id, c.Ref));
-        if (!todo.length) return `Nothing to update in ${project}: as far as the last check knows, every container runs the newest image for its tag.`;
-        const done: string[] = [], fails: string[] = [];
-        for (const c of todo) {
-          const n = nameOf(c);
-          if (setAsideOf(n)) { fails.push(`${n}: an update or edit is running`); continue; }
-          const release = locks.take(n);
-          if (!release) { fails.push(`${n}: an update or edit is running`); continue; }
+        const uv = updateView();
+        const due = (c: any) => !views.isProtected(c, me) && containerStatus(d.updates?.get(c.Ref) ?? null, c.ImageID)?.status === 'available' && !views.heldBack(uv, nameOf(c), c.Id, c.Ref);
+        // The old container of an update that is under way or was interrupted is not a member.
+        const members = (await docker.listContainersWithRefs()).filter(c => c.Labels?.['com.docker.compose.project'] === project && !setAsideOf(nameOf(c)));
+        if (!members.length) throw Object.assign(new v.ValidationError(`no containers in compose project ${project}`), { status: 404 });
+        const todo = members.filter(due).map(nameOf);
+        const skipped = members.length - todo.length;
+        if (!todo.length) return `Nothing to update in ${project}: as far as the last check knows, no container that kontainers may update has a newer image${skipped ? ` (${skipped} skipped: current, held back, or kontainers' own)` : ''}.`;
+        projectUpdates.add(project);
+        const done: string[] = [], same: string[] = [], fails: string[] = [], notes: string[] = [];
+        const work = (async () => {
           try {
-            const res = await updateContainerDetailed(docker, c.Id, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, healthTimeoutMs: 0, ...replaceOpts() });
-            if (res.changed) { d.autoUpdates?.recreated(n, res.id, c.Id); done.push(n); }
-          } catch (e) { fails.push(`${n}: ${errorMessage(e)}`); } finally { release(); }
-        }
-        if (d.updates) for (const ref of new Set(todo.map(c => String(c.Ref)))) await d.updates.check(ref).catch(() => {});
-        const msg = `Updated ${done.length} of ${todo.length} container${todo.length === 1 ? '' : 's'} of ${project}${done.length ? ` (${done.join(', ')})` : ''}`;
+            for (const n of todo) {
+              if (d.stopping?.aborted) { fails.push(`${n}: kontainers is shutting down`); continue; }
+              if (setAsideOf(n)) { fails.push(`${n}: an update or edit is running`); continue; }
+              const release = locks.take(n);
+              if (!release) { fails.push(`${n}: an update or edit is running`); continue; }
+              try {
+                // As it is now, under the lock: it may have been recreated since the list.
+                const c = await docker.inspect(n).catch(() => null);
+                if (!c || c.Config?.Labels?.['com.docker.compose.project'] !== project || views.isProtected(c, me)) { fails.push(`${n}: no longer in ${project}`); continue; }
+                const res = await updateContainerDetailed(docker, c.Id, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, healthTimeoutMs: 0, ...replaceOpts() });
+                if (res.changed) { d.autoUpdates?.recreated(n, res.id, c.Id); failedHere.delete(n); done.push(n); if (res.note) notes.push(`${n}: ${res.note}`); } else same.push(`${n}: ${res.message}`);
+                safeAudit(s, 'container-update', n, ip, res.changed ? (res.note ? `note: ${res.note}`.slice(0, 500) : null) : `note: ${res.message}`.slice(0, 500));
+              } catch (e) {
+                fails.push(`${n}: ${errorMessage(e)}`);
+                const now = await docker.inspect(n).catch(() => null);
+                if (now) noteFailure(n, now.Id, e);
+                safeAudit(s, 'container-update', n, ip, `failed: ${errorMessage(e)}`.slice(0, 500));
+              } finally { release(); }
+            }
+            if (d.updates) for (const c of members) await d.updates.check(String(c.Ref)).catch(() => {});
+          } finally { projectUpdates.delete(project); }
+        })();
+        const finished = await Promise.race([work.then(() => true), Bun.sleep(20000).then(() => false)]);
+        if (!finished) { work.catch(() => {}); return `Updating ${todo.length} container${todo.length === 1 ? '' : 's'} of ${project}, one at a time; this takes a while. Each update shows on the Activity page; reload the Containers page later.`; }
+        const msg = `Updated ${done.length} of ${todo.length} container${todo.length === 1 ? '' : 's'} of ${project}${done.length ? ` (${done.join(', ')})` : ''}${same.length ? `; not changed: ${same.join('; ')}` : ''}${notes.length ? `; ${notes.join('; ')}` : ''}`;
         if (fails.length) throw new v.ValidationError(`${msg}; ${fails.join('; ')}`);
         return `${msg}.`;
       });
@@ -1132,9 +1197,11 @@ export function createHandler(d: Deps): Handler {
     if (p === '/settings/users') return act(s, ip, '/settings', 'user-create', f.username ?? null, async () => { const u = await auth.createUser(f.username, f.password, f.role || 'admin'); return `Added ${u.username}${u.role === 'viewer' ? ', read-only' : ''}.`; });
     if ((r = /^\/settings\/users\/(\d+)\/role$/.exec(p))) {
       const id = Number(r[1]);
-      return act(s, ip, '/settings', 'user-role', auth.listUsers().find(x => x.id === id)?.username ?? String(id), () => {
+      const who = auth.listUsers().find(x => x.id === id)?.username ?? String(id);
+      return act(s, ip, '/settings', 'user-role', `${who} (${f.role === 'viewer' ? 'read-only' : 'administrator'})`, () => {
         const u = auth.setRole(id, f.role, s.user.id);
-        return u.role === 'viewer' ? `${u.username} is read-only now; its sessions were ended.` : `${u.username} is an administrator now; its sessions were ended.`;
+        const what = u.role === 'viewer' ? 'read-only' : 'an administrator';
+        return u.changed ? `${u.username} is ${what} now; its sessions were ended.` : `${u.username} was ${what} already.`;
       });
     }
     if ((r = /^\/settings\/users\/(\d+)\/remove$/.exec(p))) { const id = Number(r[1]); return act(s, ip, '/settings', 'user-remove', auth.listUsers().find(x => x.id === id)?.username ?? String(id), () => auth.deleteUser(id, s.user.id)); }
@@ -1188,7 +1255,12 @@ export function createHandler(d: Deps): Handler {
     }
 
     const s = auth.getSession(cookieId);
-    if (!s) return req.method === 'GET' && !p.startsWith('/api/') ? redirect('/login') : text('login required\n', 401);
+    // A form sent after the session ended (expired, a password or role change): a page that says so.
+    if (!s) {
+      if (req.method === 'GET' && !p.startsWith('/api/')) return redirect('/login');
+      if (req.method === 'POST' && !p.startsWith('/api/')) return page(views.layout('Logged out', {}, views.html`<p class="error">Your session has ended (it expired, or the password or role of the account changed), so this was not done.</p><p><a href="/login">Log in again</a></p>`), 401);
+      return text('login required\n', 401);
+    }
 
     try {
       return await routes(req, url, s, ip);

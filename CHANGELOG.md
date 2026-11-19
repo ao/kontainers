@@ -5,10 +5,18 @@
 - Read-only accounts: a role per account, administrator or read-only (Settings, or
   `bun src/main.ts set-role USERNAME admin|viewer`). A read-only account sees the pages and the
   container logs and changes nothing but its own password and two-factor login; the server
-  refuses everything else, and the pages leave the controls out. Existing accounts stay
-  administrators; one administrator always stays.
+  refuses everything else, and the pages leave the controls out. Its Activity page shows what
+  was done to containers, images, networks, volumes and proxy rules, not by whom or from where;
+  it cannot read the logs of kontainers itself. Existing accounts stay administrators; one
+  administrator always stays. A form still being sent when its account's role changes, or the
+  account is removed, is not done.
+- Notification results no longer hold the target's answer or the path it redirected to (either
+  can hold the target's secret).
+- Update image and Update all remember an image that failed on a container that is not updated
+  automatically; Update all skips it until a newer one appears.
 - Update all, per compose project on the Containers page: the members with a newer image are
-  updated one at a time, as Update image does it.
+  updated one at a time, as Update image does it; after 20 s the page comes back and the rest goes
+  on, each update recorded on Activity.
 
 ## 0.6.0
 

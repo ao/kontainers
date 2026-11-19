@@ -612,7 +612,7 @@ ${ctx.readOnly ? html`<h2>Your account</h2><p>This account is read-only: it sees
 <form method="post" action="/settings/users" class="stack">${csrfField(ctx)}
   <label>Username <input name="username" required></label>
   <label>Password <input name="password" type="password" required minlength="12" autocomplete="new-password"></label>
-  <label>Role <select name="role"><option value="admin">Administrator</option><option value="viewer">Read-only</option></select></label>
+  <label>Role <select name="role"><option value="viewer">Read-only</option><option value="admin">Administrator</option></select></label>
   <button>Add user</button>
 </form>`}
 ${schedule ? scheduleSection(ctx, schedule) : ''}
@@ -725,15 +725,18 @@ const ACTIONS: Record<string, string> = {
 export interface AuditRow { id: number; at: number; username: string | null; action: string; target: string | null; ip: string | null; result: string | null }
 
 export function activityPage(ctx: PageCtx, rows: AuditRow[], q: string, older: number | null): string {
-  const who = (r: AuditRow) => r.username ?? (r.ip ? html`<span class="muted">not logged in</span>` : html`<span class="muted">kontainers</span>`);
+  // A read-only account sees who only as itself, an account, or kontainers; and not from where.
+  const who = (r: AuditRow) => (ctx.readOnly && r.username && r.username !== ctx.user ? html`<span class="muted">an account</span>` : r.username)
+    ?? (r.ip ? html`<span class="muted">not logged in</span>` : html`<span class="muted">kontainers</span>`);
+  const from = (r: AuditRow) => (ctx.readOnly ? '' : html`<td><span class="ref addr">${brk(r.ip || '')}</span></td>`);
   // A result that starts with "note: " is something kontainers did and says more about, not a failure.
   const failed = (r: AuditRow) => !!r.result && !r.result.startsWith('note: ');
   const list = rows.map(r => html`<tr${failed(r) ? raw(' class="failed"') : raw('')}><td>${new Date(r.at).toISOString().slice(0, 19).replace('T', ' ')}</td><td>${who(r)}</td>
-<td>${ACTIONS[r.action] || r.action}${r.target ? html` <span class="ref">${brk(r.target)}</span>` : ''}${r.result ? html`<br><small class="${failed(r) ? 'error' : 'muted'}">${failed(r) ? r.result : r.result.slice(6)}</small>` : ''}</td><td><span class="ref addr">${brk(r.ip || '')}</span></td></tr>`);
+<td>${ACTIONS[r.action] || r.action}${r.target ? html` <span class="ref">${brk(r.target)}</span>` : ''}${r.result ? html`<br><small class="${failed(r) ? 'error' : 'muted'}">${failed(r) ? r.result : r.result.slice(6)}</small>` : ''}</td>${from(r)}</tr>`);
   return layout('Activity', ctx, html`
-<p>Who did what, newest first, including failed attempts and what kontainers did on its own. Entries older than a year are removed.</p>
-<form method="get" action="/activity" class="filters" role="search"><label>Search <input type="search" name="q" value="${q}" placeholder="user, action or name"></label><button>Apply</button>${q ? html` <a href="/activity">Clear</a>` : ''}</form>
-${list.length ? html`<div class="scroll"><table><thead><tr><th>When (UTC)</th><th>Who</th><th>What</th><th>From</th></tr></thead><tbody>${list}</tbody></table></div>` : html`<p class="muted">${q ? 'Nothing matches.' : 'Nothing yet.'}</p>`}
+<p>${ctx.readOnly ? 'What was done to containers, images, networks, volumes and proxy rules, newest first, including failed attempts and what kontainers did on its own.' : 'Who did what, newest first, including failed attempts and what kontainers did on its own.'} Entries older than a year are removed.</p>
+<form method="get" action="/activity" class="filters" role="search"><label>Search <input type="search" name="q" value="${q}" placeholder="${ctx.readOnly ? 'action or name' : 'user, action or name'}"></label><button>Apply</button>${q ? html` <a href="/activity">Clear</a>` : ''}</form>
+${list.length ? html`<div class="scroll"><table><thead><tr><th>When (UTC)</th><th>Who</th><th>What</th>${ctx.readOnly ? '' : html`<th>From</th>`}</tr></thead><tbody>${list}</tbody></table></div>` : html`<p class="muted">${q ? 'Nothing matches.' : 'Nothing yet.'}</p>`}
 ${older ? html`<p><a href="/activity?before=${older}${q ? `&q=${encodeURIComponent(q)}` : ''}">Older</a></p>` : ''}`);
 }
 
