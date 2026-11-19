@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Read-only accounts: a role per account, administrator or read-only (Settings, or
+  `bun src/main.ts set-role USERNAME admin|viewer`). A read-only account sees the pages and the
+  container logs and changes nothing but its own password and two-factor login; the server
+  refuses everything else, and the pages leave the controls out. Existing accounts stay
+  administrators; one administrator always stays.
+- Update all, per compose project on the Containers page: the members with a newer image are
+  updated one at a time, as Update image does it.
+
 ## 0.6.0
 
 Updates, manual and automatic, for containers kontainers did not create (compose and

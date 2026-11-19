@@ -57,8 +57,24 @@ if (cmd === 'backup') {
     console.error(`kontainers: could not reset two-factor login: ${m}${/locked|busy/i.test(m) ? '. The running kontainers holds the database to itself (it started with the data volume full); free space and restart it, then run this again' : ''}`);
     process.exit(1);
   }
+} else if (cmd === 'set-role') {
+  // The role of an account, from the host: admin or viewer (read-only). One administrator stays.
+  const role = process.argv[4];
+  if (!arg || (role !== 'admin' && role !== 'viewer')) { console.error('usage: bun src/main.ts set-role USERNAME admin|viewer (in the container)'); process.exit(2); }
+  try {
+    const d = openDb(cfg.dataDir);
+    const u = d.query('SELECT id, username FROM users WHERE username = ?').get(arg) as { id: number; username: string } | null;
+    if (!u) { console.error(`kontainers: no user ${arg}`); process.exit(1); }
+    new Auth(d).setRole(u.id, role, null);
+    d.query('INSERT INTO audit_log (at, username, action, target, ip, result) VALUES (?, ?, ?, ?, ?, ?)').run(Date.now(), null, 'user-role', u.username, null, `note: ${role === 'viewer' ? 'read-only' : 'administrator'}, from the command line`);
+    console.log(`kontainers: ${u.username} is ${role === 'viewer' ? 'read-only' : 'an administrator'} now; its sessions were ended`);
+    process.exit(0);
+  } catch (e) {
+    console.error(`kontainers: could not change the role: ${(e as Error).message}`);
+    process.exit(1);
+  }
 } else if (cmd !== undefined && cmd !== 'serve') {
-  console.error(`kontainers: unknown command "${cmd}"; commands: serve, backup FILE, reset-2fa USERNAME (as bun src/main.ts COMMAND in the container)`);
+  console.error(`kontainers: unknown command "${cmd}"; commands: serve, backup FILE, reset-2fa USERNAME, set-role USERNAME admin|viewer (as bun src/main.ts COMMAND in the container)`);
   process.exit(2);
 }
 

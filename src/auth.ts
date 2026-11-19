@@ -8,7 +8,13 @@ import * as v from './validate';
 export const SESSION_IDLE_MS = 12 * 60 * 60 * 1000;
 export const SESSION_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 
-export interface User { id: number; username: string }
+// admin: everything. viewer: looks at everything an admin sees on the pages (not the settings of
+// other accounts, notification targets, registry logins or backups) and changes nothing but its
+// own password and two-factor login.
+export type Role = 'admin' | 'viewer';
+export const ROLES: Role[] = ['admin', 'viewer'];
+export interface User { id: number; username: string; role?: Role }
+export const roleOf = (r: unknown): Role => (r === 'viewer' ? 'viewer' : 'admin');
 export interface Session { user: User; csrf: string; idHash: string }
 
 const hash = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -55,12 +61,13 @@ export class Auth {
     }
   }
 
-  async createUser(username: string, password: string): Promise<User> {
+  async createUser(username: string, password: string, role: unknown = 'admin'): Promise<User> {
     const u = v.username(username);
+    if (role !== 'admin' && role !== 'viewer') throw new v.ValidationError('the role must be admin or viewer');
     const h = await Bun.password.hash(v.password(password), { algorithm: 'argon2id' });
     try {
-      const row = this.db.query('INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?) RETURNING id, username')
-        .get(u, h, this.now()) as User;
+      const row = this.db.query('INSERT INTO users (username, password_hash, created_at, role) VALUES (?, ?, ?, ?) RETURNING id, username, role')
+        .get(u, h, this.now(), role) as User;
       return row;
     } catch (e) {
       if (String(e).includes('UNIQUE')) { const err = new v.ValidationError('username already exists'); err.status = 409; throw err; }
@@ -68,14 +75,36 @@ export class Auth {
     }
   }
 
-  listUsers(): (User & { created_at: number })[] {
-    return this.db.query('SELECT id, username, created_at FROM users ORDER BY id').all() as any;
+  listUsers(): (User & { created_at: number; role: Role })[] {
+    return (this.db.query('SELECT id, username, created_at, role FROM users ORDER BY id').all() as any[]).map(u => ({ ...u, role: roleOf(u.role) }));
   }
+
+  private admins(): number { return (this.db.query("SELECT COUNT(*) AS n FROM users WHERE role != 'viewer'").get() as { n: number }).n; }
 
   deleteUser(id: number, actingUserId: number): void {
     if (id === actingUserId) throw new v.ValidationError('you cannot delete your own account');
     if (this.userCount() <= 1) throw new v.ValidationError('cannot delete the last user');
-    this.db.query('DELETE FROM users WHERE id = ?').run(id);
+    const row = this.db.query('SELECT role FROM users WHERE id = ?').get(id) as { role: string } | null;
+    // One administrator always stays, or nobody could change anything again.
+    this.db.transaction(() => {
+      if (row && roleOf(row.role) === 'admin' && this.admins() <= 1) throw new v.ValidationError('cannot remove the last administrator');
+      this.db.query('DELETE FROM users WHERE id = ?').run(id);
+    })();
+  }
+
+  // Changes an account's role; its sessions end, so pages opened with the old role go too.
+  // actingUserId: null from the command line, which may change any account.
+  setRole(id: number, role: unknown, actingUserId: number | null): User {
+    if (role !== 'admin' && role !== 'viewer') throw new v.ValidationError('the role must be admin or viewer');
+    if (actingUserId !== null && id === actingUserId) throw new v.ValidationError('you cannot change your own role; another administrator can');
+    return this.db.transaction(() => {
+      const row = this.db.query('SELECT id, username, role FROM users WHERE id = ?').get(id) as { id: number; username: string; role: string } | null;
+      if (!row) throw Object.assign(new v.ValidationError('no such user'), { status: 404 });
+      if (roleOf(row.role) === 'admin' && role === 'viewer' && this.admins() <= 1) throw new v.ValidationError('cannot make the last administrator read-only');
+      this.db.query('UPDATE users SET role = ? WHERE id = ?').run(role, id);
+      if (roleOf(row.role) !== role) this.db.query('DELETE FROM sessions WHERE user_id = ?').run(id);
+      return { id: row.id, username: row.username, role: role as Role };
+    })();
   }
 
   async changePassword(userId: number, current: string, next: string): Promise<void> {
@@ -115,8 +144,8 @@ export class Auth {
     if (!id || id.length > 100) return null;
     const idHash = hash(id);
     const row = this.db.query(
-      'SELECT s.csrf, s.created_at, s.last_seen, u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id_hash = ?'
-    ).get(idHash) as { csrf: string; created_at: number; last_seen: number; id: number; username: string } | null;
+      'SELECT s.csrf, s.created_at, s.last_seen, u.id, u.username, u.role FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id_hash = ?'
+    ).get(idHash) as { csrf: string; created_at: number; last_seen: number; id: number; username: string; role: string } | null;
     if (!row) return null;
     const t = this.now();
     if (t - row.last_seen > SESSION_IDLE_MS || t - row.created_at > SESSION_MAX_MS) {
@@ -127,7 +156,7 @@ export class Auth {
     if (t - row.last_seen > 60000) {
       try { this.db.query('UPDATE sessions SET last_seen = ? WHERE id_hash = ?').run(t, idHash); } catch { /* noted by the next write that matters */ }
     }
-    return { user: { id: row.id, username: row.username }, csrf: row.csrf, idHash };
+    return { user: { id: row.id, username: row.username, role: roleOf(row.role) }, csrf: row.csrf, idHash };
   }
 
   // Every session of the account but one (after two-factor login is turned on, a session made

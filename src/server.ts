@@ -305,7 +305,7 @@ export function createHandler(d: Deps): Handler {
   function ctx(s: Session): views.PageCtx {
     const f = flashes.get(s.idHash);
     flashes.delete(s.idHash);
-    return { user: s.user.username, csrf: s.csrf, flash: f?.flash, error: f?.error, form: f?.form, proxyEnabled: cfg.proxy.enabled, alert: storageTrouble(),
+    return { user: s.user.username, readOnly: s.user.role === 'viewer', csrf: s.csrf, flash: f?.flash, error: f?.error, form: f?.form, proxyEnabled: cfg.proxy.enabled, alert: storageTrouble(),
       busy: (name: string) => locks.has(name) ? 'being updated or edited' : setAsideOf(name) ? `old container of ${setAsideOf(name)}, kept until its update or edit finishes` : null };
   }
 
@@ -583,6 +583,10 @@ export function createHandler(d: Deps): Handler {
     if (m === 'GET') {
       if (p === '/') return redirect('/containers');
       if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainersWithRefs(), await self(), updateView(), views.parseFilter(url.searchParams)));
+      // What only an administrator may open: forms that change things, and copies of the database.
+      if (s.user.role === 'viewer' && (p === '/containers/new' || /^\/containers\/[^/]+\/edit$/.test(p) || p === '/api/backup' || p.startsWith('/settings/backups/'))) {
+        return p.startsWith('/api/') ? text('a read-only account cannot do this\n', 403) : page(views.layout('Read-only account', ctx(s), views.html`<p class="error">This account is read-only.</p><p><a href="/containers">Containers</a></p>`), 403);
+      }
       if (p === '/containers/new') return page(views.newContainerPage(ctx(s), cfg.allowBindMounts, !!d.autoUpdates));
       if ((r = /^\/containers\/([^/]+)\/edit$/.exec(p))) {
         const c = await docker.inspect(r[1]);
@@ -660,6 +664,11 @@ export function createHandler(d: Deps): Handler {
         const rule = rules.get(Number(r[1]));
         return rule ? page(views.editRulePage(ctx(s), rule)) : page(views.layout('Not found', ctx(s), views.html`<p>There is no proxy rule ${r[1]}. <a href="/proxy">Proxy</a></p>`), 404);
       }
+      if (p === '/settings' && s.user.role === 'viewer') {
+        // Its own account only: not the others, notification targets, registry logins or backups.
+        return page(views.settingsPage(ctx(s), auth.listUsers().filter(u => u.id === s.user.id), s.user.id, null, null, null, null,
+          d.twoFactor ? { mine: d.twoFactor.enabled(s.user.id), left: d.twoFactor.recoveryLeft(s.user.id), users: new Set<number>() } : null, null));
+      }
       if (p === '/settings') return page(views.settingsPage(ctx(s), auth.listUsers(), s.user.id, d.notifier ? d.notifier.list() : null, d.events ? { connected: d.events.connected, error: d.events.lastError } : null, d.registries ? d.registries.list() : null, d.schedule ? d.schedule.get() : null,
         d.twoFactor ? { mine: d.twoFactor.enabled(s.user.id), left: d.twoFactor.recoveryLeft(s.user.id), users: new Set(auth.listUsers().filter(u => d.twoFactor!.enabled(u.id)).map(u => u.id)) } : null,
         d.backups ? { keep: d.backups.keep, files: d.backups.list(), dir: join(cfg.dataDir, 'backups') } : null));
@@ -683,6 +692,12 @@ export function createHandler(d: Deps): Handler {
       return page(views.layout('Form too large', ctx(s), views.html`<p class="error">${errorMessage(e)}.</p>`), 413);
     }
     if (typeof f._csrf !== 'string' || !safeEqual(f._csrf, s.csrf)) return text('invalid or missing CSRF token\n', 403);
+
+    // A read-only account changes nothing but its own password and two-factor login.
+    if (s.user.role === 'viewer' && !views.viewerMayPost(p)) {
+      safeAudit(s, 'refused', p.slice(0, 200), ip, 'failed: a read-only account');
+      return page(views.layout('Read-only account', ctx(s), views.html`<p class="error">This account is read-only: it can look at everything, but not change it. An administrator can change its role on the Settings page.</p><p><a href="/containers">Containers</a></p>`), 403);
+    }
 
     if (p === '/logout') {
       auth.destroySession(s.idHash);
@@ -779,6 +794,35 @@ export function createHandler(d: Deps): Handler {
         const auto = opted.length - waits;
         const available = newer.length;
         return `Checked ${n} image${n === 1 ? '' : 's'}: ${available === 0 ? 'every container runs the newest image for its tag' : `${available} container${available === 1 ? ' has' : 's have'} a newer image`}${auto ? `; ${auto} ${auto === 1 ? 'is' : 'are'} being updated automatically` : ''}${waits ? `; ${waits} ${waits === 1 ? 'waits' : 'wait'} for the update window or delay (Settings)` : ''}.`;
+      });
+    }
+    if ((r = /^\/projects\/([^/]+)\/update$/.exec(p))) {
+      const project = r[1];
+      // Each member with a newer image, one at a time, as Update image does it.
+      return act(s, ip, '/containers', 'project-update', project, async () => {
+        v.name(project, 'compose project');
+        const me = await self();
+        const members = (await docker.listContainersWithRefs()).filter(c => c.Labels?.['com.docker.compose.project'] === project);
+        if (!members.length) throw Object.assign(new v.ValidationError(`no containers in compose project ${project}`), { status: 404 });
+        const uv = updateView();
+        const nameOf = (c: any) => String(c.Names?.[0] || c.Id).replace(/^\//, '');
+        const todo = members.filter(c => !views.isProtected(c, me) && containerStatus(d.updates?.get(c.Ref) ?? null, c.ImageID)?.status === 'available' && !views.heldBack(uv, nameOf(c), c.Id, c.Ref));
+        if (!todo.length) return `Nothing to update in ${project}: as far as the last check knows, every container runs the newest image for its tag.`;
+        const done: string[] = [], fails: string[] = [];
+        for (const c of todo) {
+          const n = nameOf(c);
+          if (setAsideOf(n)) { fails.push(`${n}: an update or edit is running`); continue; }
+          const release = locks.take(n);
+          if (!release) { fails.push(`${n}: an update or edit is running`); continue; }
+          try {
+            const res = await updateContainerDetailed(docker, c.Id, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, healthTimeoutMs: 0, ...replaceOpts() });
+            if (res.changed) { d.autoUpdates?.recreated(n, res.id, c.Id); done.push(n); }
+          } catch (e) { fails.push(`${n}: ${errorMessage(e)}`); } finally { release(); }
+        }
+        if (d.updates) for (const ref of new Set(todo.map(c => String(c.Ref)))) await d.updates.check(ref).catch(() => {});
+        const msg = `Updated ${done.length} of ${todo.length} container${todo.length === 1 ? '' : 's'} of ${project}${done.length ? ` (${done.join(', ')})` : ''}`;
+        if (fails.length) throw new v.ValidationError(`${msg}; ${fails.join('; ')}`);
+        return `${msg}.`;
       });
     }
     if ((r = /^\/projects\/([^/]+)\/(start|stop|restart)$/.exec(p))) {
@@ -1085,7 +1129,14 @@ export function createHandler(d: Deps): Handler {
       flashes.set(fresh.idHash, { flash: 'Password changed. Other sessions were logged out.' });
       return redirect('/settings', { 'set-cookie': setCookie(id) });
     }
-    if (p === '/settings/users') return act(s, ip, '/settings', 'user-create', f.username ?? null, async () => { const u = await auth.createUser(f.username, f.password); return `Added ${u.username}.`; });
+    if (p === '/settings/users') return act(s, ip, '/settings', 'user-create', f.username ?? null, async () => { const u = await auth.createUser(f.username, f.password, f.role || 'admin'); return `Added ${u.username}${u.role === 'viewer' ? ', read-only' : ''}.`; });
+    if ((r = /^\/settings\/users\/(\d+)\/role$/.exec(p))) {
+      const id = Number(r[1]);
+      return act(s, ip, '/settings', 'user-role', auth.listUsers().find(x => x.id === id)?.username ?? String(id), () => {
+        const u = auth.setRole(id, f.role, s.user.id);
+        return u.role === 'viewer' ? `${u.username} is read-only now; its sessions were ended.` : `${u.username} is an administrator now; its sessions were ended.`;
+      });
+    }
     if ((r = /^\/settings\/users\/(\d+)\/remove$/.exec(p))) { const id = Number(r[1]); return act(s, ip, '/settings', 'user-remove', auth.listUsers().find(x => x.id === id)?.username ?? String(id), () => auth.deleteUser(id, s.user.id)); }
 
     return text('not found\n', 404);

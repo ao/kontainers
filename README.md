@@ -124,16 +124,29 @@ What works, and is covered by the test suites below:
   named volumes are never removed in bulk
 - proxy rules: hostname and path prefix to a container port, HTTPS with a certificate obtained
   automatically, or plain HTTP; edit, enable, disable, remove; kept across restarts
-- local accounts, first-run setup, database backup
+- local accounts, administrators or read-only, first-run setup, database backups
+- Update all, per compose project on the Containers page: the members with a newer image are
+  updated one at a time, as Update image does it
 - an Activity page: every action and failed attempt, by whom and from where, kept for a year
 
-Not included: exec/terminal, compose stacks, multiple hosts, roles (every account is an
-administrator).
+Not included: exec/terminal, compose stacks, multiple hosts, and roles finer than administrator
+and read-only.
 
 ## Security
 
-Access to the Docker API is root on the host. Anyone who can log in to kontainers can start a
-privileged container that mounts the host's filesystem, so treat every kontainers account as root.
+Access to the Docker API is root on the host. Anyone who can log in to kontainers as an
+administrator can start a privileged container that mounts the host's filesystem, so treat every
+administrator account as root.
+
+Accounts are administrators or read-only. A read-only account sees the containers, images,
+networks, volumes, proxy rules, the Activity page and container logs, and changes nothing but its
+own password and two-factor login; the server refuses every other change and the database
+downloads, and the pages leave those controls out. It does not see the other accounts, the
+notification targets, the registry logins or the backups. Environment values are hidden on the
+container pages for everyone, but logs are not: a read-only account reads whatever the
+containers print. An administrator changes a role on the Settings page (the account's sessions
+end), and so does `docker compose exec kontainers bun src/main.ts set-role USERNAME admin|viewer`
+on the host; one administrator always stays.
 
 What kontainers does about it:
 

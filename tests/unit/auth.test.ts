@@ -169,3 +169,38 @@ describe('RateLimiter', () => {
     expect(rl.blocked('k')).toBe(0);
   });
 });
+
+describe('roles', () => {
+  test('accounts are administrators unless made read-only; the role travels with the session', async () => {
+    const { auth } = fresh();
+    const a = await auth.createUser('admin', 'correct horse battery');
+    const v = await auth.createUser('reader', 'correct horse battery', 'viewer');
+    expect(a.role).toBe('admin');
+    expect(v.role).toBe('viewer');
+    await expect(auth.createUser('x', 'correct horse battery', 'root')).rejects.toThrow('admin or viewer');
+    const { id } = auth.createSession(v);
+    expect(auth.getSession(id)?.user.role).toBe('viewer');
+    expect(auth.listUsers().map(u => [u.username, u.role])).toEqual([['admin', 'admin'], ['reader', 'viewer']]);
+  });
+
+  test('changing a role ends its sessions; one administrator always stays', async () => {
+    const { auth } = fresh();
+    const a = await auth.createUser('admin', 'correct horse battery');
+    const b = await auth.createUser('second', 'correct horse battery');
+    const { id } = auth.createSession(b);
+    expect(() => auth.setRole(a.id, 'viewer', a.id)).toThrow('your own role');
+    expect(auth.setRole(b.id, 'viewer', a.id).role).toBe('viewer');
+    expect(auth.getSession(id)).toBeNull();
+    // a is now the only administrator.
+    expect(() => auth.setRole(a.id, 'viewer', null)).toThrow('last administrator');
+    expect(() => auth.deleteUser(a.id, b.id)).toThrow('last administrator');
+    expect(() => auth.setRole(999, 'admin', a.id)).toThrow('no such user');
+    expect(() => auth.setRole(b.id, 'god', a.id)).toThrow('admin or viewer');
+    // The same role again keeps its sessions.
+    const s2 = auth.createSession(b);
+    auth.setRole(b.id, 'viewer', a.id);
+    expect(auth.getSession(s2.id)?.user.role).toBe('viewer');
+    auth.deleteUser(b.id, a.id);
+    expect(auth.listUsers().map(u => u.username)).toEqual(['admin']);
+  });
+});
