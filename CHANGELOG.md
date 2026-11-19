@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
+
+Read-only accounts, and Update all for compose projects.
+
+Upgrading from 0.6.x:
+
+- Nothing to do by hand. At the first start 0.7.0 copies the database to
+  `/data/backups/before-schema-9-YYYYMMDD-HHMMSS.db` and migrates it (schema 8 to 9: a role per
+  account). Every existing account stays an administrator. 0.6.x refuses the migrated database; to
+  go back, restore that copy as the README's "Backup and restore" shows.
 
 - Read-only accounts: a role per account, administrator or read-only (Settings, or
   `bun src/main.ts set-role USERNAME admin|viewer`). A read-only account sees the pages and the
