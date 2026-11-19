@@ -42,28 +42,44 @@ export class Backups {
     return p;
   }
 
+  // The day a copy last failed (a full volume, say): not tried again until the next day, so a
+  // volume that is nearly full is not filled up and emptied again every hour.
+  private failedDay: string | null = null;
+
   // Today's copy, if there is none yet; then the old ones beyond `keep` are removed. Returns the
-  // name written, or null (none due, or daily copies are off).
+  // name written, or null (none due, or daily copies are off). A copy that fails is removed.
   daily(): string | null {
-    if (this.keep <= 0) return null;
-    const name = `kontainers-${new Date(this.now()).toISOString().slice(0, 10)}.db`;
+    const day = new Date(this.now()).toISOString().slice(0, 10);
+    if (this.keep <= 0 || this.failedDay === day) { this.prune(); return null; }
+    const name = `kontainers-${day}.db`;
     const dir = backupDir(this.dataDir);
     let wrote: string | null = null;
     if (!this.list().some(b => b.name === name)) {
       const tmp = join(dir, `.${name}.part`);
-      try { unlinkSync(tmp); } catch { /* none */ }
-      snapshot(this.db, tmp);
-      // Renamed into place only when complete, so a half-written copy never looks like a backup.
-      renameSync(tmp, join(dir, name));
+      try {
+        try { unlinkSync(tmp); } catch { /* none */ }
+        snapshot(this.db, tmp);
+        // Renamed into place only when complete, so a half-written copy never looks like a backup.
+        renameSync(tmp, join(dir, name));
+      } catch (e) {
+        try { unlinkSync(tmp); } catch { /* not written */ }
+        this.failedDay = day;
+        throw e;
+      }
       wrote = name;
     }
     this.prune();
     return wrote;
   }
 
+  // Old copies beyond the ones kept, and half-written ones left by a crash. With daily copies off,
+  // the daily ones already there are left alone.
   prune(): void {
     const all = this.list();
-    const drop = [...all.filter(b => b.kind === 'daily').slice(Math.max(this.keep, 0)), ...all.filter(b => b.kind === 'before-migration').slice(3)];
+    const drop = [...(this.keep > 0 ? all.filter(b => b.kind === 'daily').slice(this.keep) : []), ...all.filter(b => b.kind === 'before-migration').slice(3)];
     for (const b of drop) { try { unlinkSync(join(this.dataDir, 'backups', b.name)); } catch { /* gone */ } }
+    try {
+      for (const n of readdirSync(join(this.dataDir, 'backups'))) if (/^\.kontainers-\d{4}-\d{2}-\d{2}\.db\.part$/.test(n) && !n.includes(new Date(this.now()).toISOString().slice(0, 10))) unlinkSync(join(this.dataDir, 'backups', n));
+    } catch { /* no directory yet */ }
   }
 }

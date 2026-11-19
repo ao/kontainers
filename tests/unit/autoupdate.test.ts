@@ -75,6 +75,9 @@ class FakeDocker {
   }
   async disconnect() {}
   async connect() {}
+  async inspectFull(id: string) { return this.inspect(id); }
+  async inspectImageFull(ref: string) { return this.inspectImage(ref); }
+  async tag(imageId: string, ref: string) { this.tags.set(ref, imageId); }
   // Containers someone stopped on purpose: the events API reports a kill for them. killOnStart:
   // every container started from now on is "stopped by someone" at once.
   killed = new Set<string>();
@@ -271,6 +274,35 @@ describe('AutoUpdates', () => {
     await expect(auto.set(pinned, true)).rejects.toThrow('digest');
   });
 
+  test('a failed update points the tag back at the running image; the held image is not pulled again', async () => {
+    const { d, auto, cycle } = setup();
+    const id = d.run('web', 'app:1');
+    await auto.set(id, true);
+    d.registry.set('app:1', 'i3'); // crashes
+    await cycle();
+    expect(running(d, 'web').Id).toBe(id);
+    expect(d.tags.get('app:1')).toBe('i1');
+    expect(auto.get('web')?.held_image).toBe('i3');
+    d.pulls.length = 0;
+    await cycle();
+    expect(d.pulls).toEqual([]);
+    expect(running(d, 'web').Id).toBe(id);
+    // A newer one is tried.
+    d.registry.set('app:1', 'i4');
+    await cycle();
+    expect(running(d, 'web').Image).toBe('i4');
+  });
+
+  test('the opt-in moves only from the container that had it', async () => {
+    const { d, auto } = setup();
+    const id = d.run('web', 'app:1');
+    await auto.set(id, true);
+    auto.recreated('web', 'other', 'not-it');
+    expect(auto.get('web')?.container_id).toBe(id);
+    auto.recreated('web', 'new', id);
+    expect(auto.get('web')?.container_id).toBe('new');
+  });
+
   test('the label kontainers.autoupdate=true opts a container in, and keeps it in when compose recreates it', async () => {
     const { d, auto, cycle } = setup();
     const id = d.run('shop-web-1', 'app:1', false);
@@ -430,6 +462,20 @@ describe('recoverInterrupted', () => {
   const journalOf = (rows: { name: string; old_id: string; was_running: number; at?: number }[]) => ({ begin() {}, end(n: string) { const i = rows.findIndex(r => r.name === n); if (i >= 0) rows.splice(i, 1); }, all: () => rows.map(r => ({ at: Date.now() - 1000, ...r })) });
   // The replacement kontainers makes carries the ID of the container it replaces.
   const replacing = (d: FakeDocker, id: string, old: string) => { d.find(id).Config.Labels['kontainers.replaces'] = old; return id; };
+  test('killed while it stopped the old container: once that stop finishes, the old one is started again', async () => {
+    const { d } = setup();
+    const id = d.run('web', 'app:1');
+    // kontainers sent the stop (a signal the process takes its time over) and died meanwhile.
+    d.pastEvents = async (f: any) => (f.container.includes(id) ? [{ Action: 'kill', Actor: { ID: id, Attributes: { signal: '28' } } }] : []);
+    setTimeout(() => { d.find(id).State = { Running: false, Status: 'exited', ExitCode: 137 }; }, 1500);
+    const rows = [{ name: 'web', old_id: id, was_running: 1 }];
+    const { recoverInterrupted } = await import('../../src/update');
+    const r = await recoverInterrupted(d as any, () => {}, journalOf(rows));
+    expect(r.map(x => x.text)).toEqual(['started web again: kontainers stopped while web was stopped for an update or edit']);
+    expect(d.find('web').State.Running).toBe(true);
+    expect(rows).toHaveLength(0);
+  }, 15000);
+
   test('with the journal: a new one that never started goes, and the old one is back and running', async () => {
     const { d } = setup();
     const old = aside(d, 'web', false);
@@ -857,7 +903,7 @@ describe('code review of round 5', () => {
     const marks: string[] = [];
     const remove = d.remove.bind(d);
     d.remove = async (i: string, f?: boolean) => { marks.push(`remove ${i === id ? 'old' : 'new'}`); return remove(i); };
-    const journal = { begin: () => marks.push('begin'), rollingBack: () => marks.push('rollback'), end: () => marks.push('end'), all: () => [] };
+    const journal = { begin: () => { marks.push('begin'); }, rollingBack: () => marks.push('rollback'), end: () => marks.push('end'), all: () => [] };
     const { replaceContainer } = await import('../../src/update');
     await expect(replaceContainer(d as any, d.find(id), { name: 'web', image: 'bad:1' }, { journal }, 'update')).rejects.toThrow('put back');
     expect(marks).toEqual(['begin', 'rollback', 'remove new', 'end']);

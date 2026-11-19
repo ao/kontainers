@@ -42,22 +42,22 @@ async function stream(path: string, headers: Record<string, string> = {}) {
   const body = await res.text();
   if (res.status !== 200 || /"error"/.test(body)) throw new Error(`${path}: ${res.status} ${body.slice(-300)}`);
 }
-const push = async () => {
+const push = async (repo = REPO) => {
   for (let i = 0; ; i++) {
-    try { return await stream(`/images/${encodeURIComponent(REPO)}/push?tag=1`, AUTH); } catch (e) { if (i > 20) throw e; await Bun.sleep(500); }
+    try { return await stream(`/images/${encodeURIComponent(repo)}/push?tag=1`, AUTH); } catch (e) { if (i > 20) throw e; await Bun.sleep(500); }
   }
 };
-// Publishes busybox with Dockerfile-style changes under REF, as a new release, and points the local
-// tag back at what it was. Returns the new image's ID.
-async function publish(changes: string): Promise<string> {
-  const before = await imageId(REF);
+// Publishes busybox with Dockerfile-style changes under repo:1, as a new release, and points the
+// local tag back at what it was (with first, the release stays local too). Returns its image ID.
+async function publish(changes: string, repo = REPO, first = false): Promise<string> {
+  const before = first ? null : await imageId(`${repo}:1`);
   const tmp = `cp-tmp-${Math.random().toString(36).slice(2, 8)}`;
   expect((await post(`/containers/create?name=${tmp}`, { Image: 'busybox:1.36', Cmd: ['true'] })).status).toBe(201);
-  expect((await post(`/commit?container=${tmp}&repo=${encodeURIComponent(REPO)}&tag=1&changes=${encodeURIComponent(changes)}`, {})).status).toBe(201);
+  expect((await post(`/commit?container=${tmp}&repo=${encodeURIComponent(repo)}&tag=1&changes=${encodeURIComponent(changes)}`, {})).status).toBe(201);
   await api(`/containers/${tmp}?force=1`, { method: 'DELETE' });
-  await push();
-  const id = await imageId(REF);
-  expect((await api(`/images/${before}/tag?repo=${encodeURIComponent(REPO)}&tag=1`, { method: 'POST' })).status).toBe(201);
+  await push(repo);
+  const id = await imageId(`${repo}:1`);
+  if (before) expect((await api(`/images/${before}/tag?repo=${encodeURIComponent(repo)}&tag=1`, { method: 'POST' })).status).toBe(201);
   return id;
 }
 // Docker's multiplexed log stream to text.
@@ -106,8 +106,9 @@ describe.skipIf(!DOCKER)('updating containers made outside kontainers', () => {
     await stream('/images/create?fromImage=docker&tag=29-cli');
     expect((await post(`/containers/create?name=${REG}`, { Image: 'registry:2', HostConfig: { PortBindings: { '5000/tcp': [{ HostIp: '127.0.0.1', HostPort: '5002' }] } } })).status).toBe(201);
     expect((await post(`/containers/${REG}/start`)).status).toBe(204);
-    expect((await api(`/images/busybox:1.36/tag?repo=${encodeURIComponent(REPO)}&tag=1`, { method: 'POST' })).status).toBe(201);
-    await push();
+    // A release made here: with Docker 29's containerd store, pushing a retagged multi-platform
+    // busybox sends one platform's manifest, so the registry's digest would not be the local one.
+    await publish('ENV RELEASE=1', REPO, true);
     await compose('up -d --quiet-pull');
     ({ srv, c } = await readyServer({ KONTAINERS_UPDATE_CHECK_HOURS: '0', KONTAINERS_AUTOUPDATE_SETTLE: '3', KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT: '20' }));
   }, 180000);
@@ -144,7 +145,7 @@ describe.skipIf(!DOCKER)('updating containers made outside kontainers', () => {
     const old = await inspect(WEB);
     const r = await c.submit(`/containers/${WEB}/update`, {});
     expect(r.error).toBe('');
-    expect(r.flash).toBe(`Updated ${WEB} to the newest ${REF}.`);
+    expect(r.flash).toBe(`Updated ${WEB} to the newest ${REF}.`); // RELEASE changes with every release: not named
     const now = await inspect(WEB);
     expect(now.Id).not.toBe(old.Id);
     expect(now.Image).toBe(v2);
@@ -191,7 +192,23 @@ describe.skipIf(!DOCKER)('updating containers made outside kontainers', () => {
     // Nothing was left behind under another name.
     const all = (await (await api('/containers/json?all=1')).json()) as any[];
     expect(all.filter(x => String(x.Names[0]).includes('-old-'))).toEqual([]);
-  }, 120000);
+    // The tag points back at the image they run, so docker compose does not install the one that
+    // failed behind kontainers' back.
+    expect(await imageId(REF)).toBe(v2);
+    expect(await compose('up -d')).not.toMatch(/Recreate/);
+    expect((await inspect(WEB)).Id).toBe(web);
+  }, 180000);
+
+  test('a container started with --rm is refused, and keeps running', async () => {
+    const rm = `cp-rm-${run}`;
+    expect((await post(`/containers/create?name=${rm}`, { Image: REF, Cmd: ['sleep', '600'], HostConfig: { AutoRemove: true } })).status).toBe(201);
+    expect((await post(`/containers/${rm}/start`)).status).toBe(204);
+    try {
+      const r = await c.submit(`/containers/${rm}/update`, {});
+      expect(r.error).toContain('started with --rm');
+      expect((await inspect(rm)).State.Running).toBe(true);
+    } finally { await api(`/containers/${rm}?force=1`, { method: 'DELETE' }); }
+  });
 
   test('a docker run container with privileges of its own is copied with them', async () => {
     await publish('ENV RELEASE=4');
@@ -213,6 +230,42 @@ describe.skipIf(!DOCKER)('updating containers made outside kontainers', () => {
     expect(now.Config.Env).toContain('TOKEN=abc');
     for (const k of ['CapAdd', 'SecurityOpt', 'ExtraHosts', 'RestartPolicy', 'Tmpfs']) expect(now.HostConfig[k]).toEqual(old.HostConfig[k]);
     expect(now.Config.Labels.app).toBe('plain');
+  }, 60000);
+
+  test('a cleared entrypoint stays cleared in the copy', async () => {
+    const repo = `localhost:5002/kt/ep${run}`, name = `cp-ep-${run}`;
+    await publish('ENTRYPOINT ["sh", "-c", "echo IMAGE-ENTRYPOINT; sleep 600"]', repo, true);
+    expect((await post(`/containers/create?name=${name}`, { Image: `${repo}:1`, Entrypoint: [''], Cmd: ['sh', '-c', 'echo OWN-COMMAND; sleep 600'] })).status).toBe(201);
+    expect((await post(`/containers/${name}/start`)).status).toBe(204);
+    try {
+      await publish('ENTRYPOINT ["sh", "-c", "echo IMAGE-ENTRYPOINT; sleep 600"]\nENV RELEASE=2', repo);
+      const r = await c.submit(`/containers/${name}/update`, {});
+      expect(r.error).toBe('');
+      const now = await inspect(name);
+      expect(now.Config.Env).toContain('RELEASE=2');
+      expect(now.Config.Entrypoint ?? []).toEqual([]);
+      const logs = demux(new Uint8Array(await (await api(`/containers/${name}/logs?stdout=1&stderr=1`)).arrayBuffer()));
+      expect(logs).toContain('OWN-COMMAND');
+      expect(logs).not.toContain('IMAGE-ENTRYPOINT');
+    } finally { await api(`/containers/${name}?force=1`, { method: 'DELETE' }); }
+  }, 60000);
+
+  test('a new image that changes the user it runs as is refused, before anything stops', async () => {
+    const repo = `localhost:5002/kt/us${run}`, name = `cp-us-${run}`;
+    await publish('USER 1000', repo, true);
+    expect((await post(`/containers/create?name=${name}`, { Image: `${repo}:1`, Cmd: ['sleep', '600'] })).status).toBe(201);
+    expect((await post(`/containers/${name}/start`)).status).toBe(204);
+    try {
+      const before = await inspect(name);
+      await publish('USER 0', repo);
+      const r = await c.submit(`/containers/${name}/update`, {});
+      expect(r.error).toContain('the user it runs as (1000 in the old image, 0 in the new one)');
+      const now = await inspect(name);
+      expect(now.Id).toBe(before.Id);
+      expect(now.State.StartedAt).toBe(before.State.StartedAt);
+      // The tag is back on the image it runs.
+      expect(await imageId(`${repo}:1`)).toBe(before.Image);
+    } finally { await api(`/containers/${name}?force=1`, { method: 'DELETE' }); }
   }, 60000);
 
   test('another container sharing its network: Update image is refused and nothing changes', async () => {

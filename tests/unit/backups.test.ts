@@ -34,6 +34,25 @@ describe('daily copies of the database', () => {
     expect(readdirSync(join(dir, 'backups')).filter(n => n.endsWith('.part'))).toEqual([]);
   });
 
+  test('a copy that fails leaves no file behind and is not tried again that day', () => {
+    const { dir, db, b, later } = setup();
+    db.close(); // every snapshot fails now
+    expect(() => b.daily()).toThrow();
+    expect(readdirSync(join(dir, 'backups'))).toEqual([]);
+    expect(b.daily()).toBeNull(); // the same day: not tried
+    later(DAY);
+    expect(() => b.daily()).toThrow(); // the next day it is
+  });
+
+  test('turned off, the daily copies there are kept; old copies before migrations still go', () => {
+    const { dir, b } = setup(3);
+    b.daily();
+    for (const n of ['before-schema-5-20261101-000000.db', 'before-schema-6-20261110-000000.db', 'before-schema-7-20261118-000000.db', 'before-schema-8-20261119-000000.db']) writeFileSync(join(dir, 'backups', n), 'x');
+    const off = new Backups(new Database(':memory:'), dir, 0);
+    expect(off.daily()).toBeNull();
+    expect(off.list().map(f => f.name).sort()).toEqual(['before-schema-6-20261110-000000.db', 'before-schema-7-20261118-000000.db', 'before-schema-8-20261119-000000.db', 'kontainers-2026-11-19.db']);
+  });
+
   test('KONTAINERS_BACKUP_KEEP=0 turns them off', () => {
     const { dir, b } = setup(0);
     expect(b.daily()).toBeNull();

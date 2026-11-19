@@ -77,12 +77,20 @@ What works, and is covered by the test suites below:
   name, on the same networks with the same aliases, with the same volumes (anonymous ones
   included). One created in kontainers gets the settings it was created with. Any other
   (compose, `docker run`) is copied whole from `docker inspect`, privileges and limits included,
-  except what came from the old image (its environment, command, user, healthcheck, labels), which
-  the new image supplies; before the copy starts, its settings are compared with the old
-  container's, and any difference puts the old one back. The old container is stopped and set
-  aside first and is put back if the new one cannot be created or started or stops within 5
-  seconds. Not handled: digest-pinned and image-ID references, swarm tasks, and containers whose
-  network, process or IPC namespace another container shares (`network_mode: service:...`).
+  except values equal to the old image's (environment entries, command, working directory,
+  healthcheck fields, labels), which the new image supplies. The copy is created and compared with
+  the old container while the old one still runs; only if nothing is missing is the old one
+  stopped (with its own stop timeout, compose's `stop_grace_period`) and set aside. It is put back
+  if the new one cannot be started or stops within 5 seconds.
+  A value equal to the old image's may have been set on purpose (`user: "1000"` in a compose file
+  when the image says the same). kontainers cannot tell, so when the new image changes the user
+  it runs as, or an environment value that is a path into one of its volumes (`PGDATA`), the
+  update is refused; other such values (a working directory, `JAVA_HOME`) take the new image's,
+  and the update says which. Not handled: `--rm` containers, digest-pinned and image-ID references,
+  swarm tasks, images built on the host, containers whose network, process or IPC namespace
+  another container shares (`network_mode: service:...`) or whose volumes another mounts by ID,
+  and kontainers' own compose project. A copy mounts the old container's anonymous volumes by
+  name, so `docker compose down -v` leaves them; Clean up lists them as unused anonymous volumes.
 - edit settings, for containers created in kontainers (compose ones change in the compose file): change the image, command, ports,
   environment, volumes or restart policy; saving recreates the container the same way, with the
   old one put back if the new one does not stay up. Bad input is refused before anything stops.
@@ -233,7 +241,8 @@ was replacing, and whether that was running, is written down before anything is 
 
 A compose container keeps its compose labels, and compose's record of its image
 (`com.docker.compose.image`) is set to the new image, so a later `docker compose up -d` leaves it
-running instead of recreating it (tested with Docker Compose from `docker:29-cli`). Its settings
+running instead of recreating it (tested with Docker Compose from `docker:29-cli`, on Docker 28 and on
+Docker 29 with its containerd image store). Its settings
 still change only in the compose file. kontainers itself and the container serving its Docker API
 are never updated by it, whatever their labels say.
 
@@ -355,7 +364,15 @@ or download one from Settings. kontainers also copies its database once a day to
 lists them with download links. They are in the same volume, so they help after a mistake or a bad
 upgrade, not after losing the volume: copy them elsewhere for that. To restore, stop kontainers,
 replace `kontainers.db` in the volume with the backup (and delete any `kontainers.db-wal` and
-`kontainers.db-shm`), then start it. Certificates that are not restored are obtained again.
+`kontainers.db-shm`), then start it. kontainers runs as uid 1000, so the file must belong to it.
+With `compose.yaml` (the volume is `<project>_kontainers-data`; `docker volume ls` shows it):
+
+    docker compose stop kontainers
+    docker run --rm -v kontainers_kontainers-data:/data busybox sh -c \
+      'cp /data/backups/kontainers-2026-11-19.db /data/kontainers.db && rm -f /data/kontainers.db-wal /data/kontainers.db-shm && chown 1000:1000 /data/kontainers.db && chmod 600 /data/kontainers.db'
+    docker compose start kontainers
+
+Certificates that are not restored are obtained again.
 
 Upgrades run database migrations at start, after copying the database to
 `/data/backups/before-schema-N-YYYYMMDD-HHMMSS.db` (the newest 3 are kept); if the copy cannot be
@@ -370,12 +387,13 @@ the host.
 
     scripts/test.sh            # all suites
     scripts/test.sh unit       # typecheck and unit tests
-    scripts/test.sh api        # the server process against dind
+    scripts/test.sh api        # the server process against dind (Docker 28), with real docker compose
     scripts/test.sh image      # the built image, behind docker-socket-proxy
     scripts/test.sh e2e        # Playwright (Chromium) against the image
     scripts/test.sh proxy      # proxy rules and certificates against Pebble, inside dind
     scripts/test.sh renewal    # Pebble issues 90-second certificates; Caddy must renew them itself
     scripts/test.sh compose    # the README compose instructions, verbatim, inside dind
+    scripts/test.sh copies     # updates of compose and docker run containers on Docker 29 (containerd image store)
 
 The image suite also runs the image with its data volume on a 1 MB tmpfs and fills it; the browser
 suite runs axe-core (WCAG 2 A and AA) on every page at desktop and phone size. Set

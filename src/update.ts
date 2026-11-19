@@ -4,7 +4,7 @@
 
 import { Docker, DockerError, type CreateSpec } from './docker';
 import * as v from './validate';
-import { cloneBody, cloneDiff, cloneRefusal } from './clone';
+import { cloneBody, cloneDiff, cloneRefusal, composeImageLabel, imageDoubts } from './clone';
 
 // Edit settings: only containers kontainers created; compose owns its containers' settings.
 export function editable(c: any): string | null {
@@ -102,7 +102,8 @@ export interface UpdateOptions {
 }
 
 export interface Journal {
-  begin(name: string, oldId: string, wasRunning: boolean): void;
+  // false: it could not be written (a full data volume).
+  begin(name: string, oldId: string, wasRunning: boolean): boolean | void;
   // kontainers is putting the old container back: what follows (its own kills) is not a stop
   // someone asked for.
   rollingBack?(name: string): void;
@@ -197,9 +198,25 @@ export async function updateContainer(docker: Docker, id: string, opts: UpdateOp
   return (await updateContainerDetailed(docker, id, opts)).message;
 }
 
+// When an update does not install the image it pulled (it failed, or that image is held back or
+// newer than the one that waited out the delay), the tag is pointed back at the image the
+// container runs: otherwise a `docker compose up -d` would install the pulled one unwatched. Not
+// when another container already runs the pulled image (compose would then recreate that one).
+async function tagBack(docker: Docker, ref: string, oldImage: string, pulled: string): Promise<void> {
+  if (pulled === oldImage || ref.includes('@')) return;
+  try {
+    if ((await docker.listContainers()).some(x => x.ImageID === pulled)) return;
+    await docker.tag(oldImage, ref);
+  } catch (e) { console.error(`kontainers: could not point ${ref} back at ${oldImage.slice(7, 19)}: ${(e as Error).message}`); }
+}
+
+const platformOf = (img: any) => (img?.Os && img?.Architecture ? `${img.Os}/${img.Architecture}${img.Variant ? `/${img.Variant}` : ''}` : null);
+
 export async function updateContainerDetailed(docker: Docker, id: string, opts: UpdateOptions = {}): Promise<UpdateResult> {
-  const c = await docker.inspect(id);
-  const how = recreatedBy(c);
+  const first = await docker.inspect(id);
+  const how = recreatedBy(first);
+  // A copy is made from everything the daemon knows about the container.
+  const c = how === 'clone' ? await docker.inspectFull(first.Id) : first;
   const refusal = updatable(c, how === 'clone' ? await inspectOthers(docker, c.Id) : []);
   if (refusal) throw new v.ValidationError(refusal);
   const name = String(c.Name).replace(/^\//, '');
@@ -208,26 +225,52 @@ export async function updateContainerDetailed(docker: Docker, id: string, opts: 
   // settings apart from the user's. A docker build that reused the tag can have deleted it; then
   // the two cannot be told apart, and guessing would copy the old image's settings into the new
   // container, so the update is refused.
-  const oldImage = await docker.inspectImage(c.Image).catch(() => null);
+  const oldImage = await (how === 'clone' ? docker.inspectImageFull(c.Image) : docker.inspectImage(c.Image)).catch(() => null);
   if (!oldImage) throw new v.ValidationError(`the image ${name} was created from is no longer on this host (was ${ref} rebuilt?), so its settings cannot be told apart from the image's; ${how === 'spec' ? 'use Edit settings to recreate it' : 'recreate it with docker compose up -d or docker'}`);
 
-  await docker.pull(ref);
-  const fresh = await docker.inspectImage(ref);
+  // The platform the container runs, so one emulated on this host is not moved to the native one.
+  const platform = platformOf(oldImage);
+  try {
+    await docker.pull(ref, platform);
+  } catch (e) {
+    // Built (docker compose build) or loaded on this host: a login hint would only mislead.
+    if (!(oldImage.RepoDigests || []).length && /pull access denied|repository does not exist|not found|manifest unknown|unauthorized|denied/i.test((e as Error).message)) {
+      throw new v.ValidationError(`${ref} was built or loaded on this host, and its registry does not have it, so there is nothing to update to; rebuild it (docker compose build) and recreate the container`);
+    }
+    throw e;
+  }
+  const fresh = await (how === 'clone' ? docker.inspectImageFull(ref) : docker.inspectImage(ref));
   if (fresh.Id === c.Image) return { changed: false, message: `${name} already runs the newest ${ref}.`, oldImage: c.Image, newImage: fresh.Id, id: c.Id };
   if (opts.expectDigest && !(fresh.RepoDigests || []).some((d: string) => d.endsWith('@' + opts.expectDigest))) {
+    await tagBack(docker, ref, c.Image, fresh.Id);
     return { changed: false, message: `${name} was not updated: ${ref} has moved on to an image newer than the one that waited out the delay, and that one waits its own delay.`, oldImage: c.Image, newImage: fresh.Id, id: c.Id };
   }
   if (opts.skipImage && fresh.Id === opts.skipImage) {
+    await tagBack(docker, ref, c.Image, fresh.Id);
     return { changed: false, held: true, message: `${name} was not updated: this image of ${ref} failed before.`, oldImage: c.Image, newImage: fresh.Id, id: c.Id };
   }
 
+  // kontainers never sets the user of a container it creates: that one is always the image's.
+  const doubts = imageDoubts(c, oldImage, fresh);
+  if (how === 'spec') doubts.refuse = doubts.refuse.filter(d => !d.startsWith('the user'));
+  if (doubts.refuse.length) {
+    await tagBack(docker, ref, c.Image, fresh.Id);
+    throw new UpdateFailed(`${name} was not updated: the new image changes ${doubts.refuse.join(' and ')}, and the container has the old image's value, which may have been set on purpose (in a compose file, say). kontainers cannot tell, so it does not guess: update it with docker compose pull && docker compose up -d, or recreate it with the value it should have`, fresh.Id, true);
+  }
   try {
+    const taken = doubts.taken;
+    const composeImage = composeImageLabel(String(c.Config?.Labels?.['com.docker.compose.image'] ?? ''), oldImage, fresh);
     const r = how === 'spec'
       ? await replaceContainer(docker, c, recreateSpec(c, oldImage), { ...opts, keepBindMounts: true }, 'update')
-      : await replaceContainer(docker, c, { name, image: ref }, { ...opts, clone: { body: cloneBody(c, oldImage, fresh.Id), oldImage, newImage: fresh } }, 'update');
-    return { changed: true, message: `Updated ${name} to the newest ${ref}${r.running ? '' : '; it was stopped and is left stopped'}${r.note ? `; ${r.note}` : ''}.`, oldImage: c.Image, newImage: fresh.Id, id: r.id, note: r.note, running: r.running };
+      : await replaceContainer(docker, c, { name, image: ref }, { ...opts, clone: { body: cloneBody(c, oldImage, composeImage), oldImage, newImage: fresh, platform } }, 'update');
+    const extra = [r.note, taken.length ? `it now has the new image's value of ${taken.join(', ')}, which the old one had from its image (or set to the same value)` : null].filter(Boolean).join('; ');
+    return { changed: true, message: `Updated ${name} to the newest ${ref}${r.running ? '' : '; it was stopped and is left stopped'}${extra ? `; ${extra}` : ''}.`, oldImage: c.Image, newImage: fresh.Id, id: r.id, note: extra || null, running: r.running };
   } catch (e) {
-    throw new UpdateFailed((e as Error).message, fresh.Id, (e as { stage?: string }).stage === 'settle');
+    await tagBack(docker, ref, c.Image, fresh.Id);
+    const stage = (e as { stage?: string }).stage;
+    // A copy that could not be made faithfully is held back like an image that failed: trying it
+    // again at every check would only say the same.
+    throw new UpdateFailed((e as Error).message, fresh.Id, stage === 'settle' || stage === 'verify');
   }
 }
 
@@ -240,14 +283,19 @@ export interface Replaced { id: string; note: string | null; running: boolean }
 
 // The aliases and fixed addresses a container has on a network, as connect takes them. Docker adds
 // the short container ID (and on newer versions the name) as aliases itself; those are left out.
-export function endpointOf(c: any, ep: any): { Aliases?: string[]; IPAMConfig?: Record<string, string> } {
+export interface Endpoint { Aliases?: string[]; IPAMConfig?: Record<string, unknown>; Links?: string[]; DriverOpts?: Record<string, string> }
+export function endpointOf(c: any, ep: any): Endpoint {
   const own = new Set([String(c.Id || '').slice(0, 12), String(c.Name || '').replace(/^\//, ''), String(c.Config?.Hostname || '')]);
-  const out: { Aliases?: string[]; IPAMConfig?: Record<string, string> } = {};
+  const out: Endpoint = {};
   const aliases = (ep?.Aliases || []).filter((a: string) => a && !own.has(a));
   if (aliases.length) out.Aliases = aliases;
-  const ipam: Record<string, string> = {};
+  const ipam: Record<string, unknown> = {};
   for (const k of ['IPv4Address', 'IPv6Address']) if (ep?.IPAMConfig?.[k]) ipam[k] = ep.IPAMConfig[k];
+  if (ep?.IPAMConfig?.LinkLocalIPs?.length) ipam.LinkLocalIPs = ep.IPAMConfig.LinkLocalIPs;
   if (Object.keys(ipam).length) out.IPAMConfig = ipam;
+  // Links on a user network (compose links:, docker run --link with --network) and driver options.
+  if (ep?.Links?.length) out.Links = ep.Links;
+  if (ep?.DriverOpts && Object.keys(ep.DriverOpts).length) out.DriverOpts = ep.DriverOpts;
   return out;
 }
 
@@ -257,14 +305,14 @@ export function endpointOf(c: any, ep: any): { Aliases?: string[]; IPAMConfig?: 
 // disconnect: a network to leave after creating it, for a container that had been disconnected from
 // every network: it is made on its own network mode and taken off it, so it can be connected later
 // (a container made with --network none can never be).
-export function networkPlan(c: any): { network?: { mode: string; endpoint?: ReturnType<typeof endpointOf> }; connect: [string, ReturnType<typeof endpointOf>][]; disconnect?: string } {
+export function networkPlan(c: any): { network?: { mode: string; endpoint?: Endpoint }; connect: [string, Endpoint][]; disconnect?: string } {
   const mode = String(c.HostConfig?.NetworkMode || 'default');
   if (mode === 'host' || mode.startsWith('container:')) throw new v.ValidationError(`it uses ${mode === 'host' ? "the host's network" : "another container's network"}, which kontainers does not set up; recreate it with docker`);
   const nets = Object.entries(c.NetworkSettings?.Networks || {}) as [string, any][];
   if (mode === 'none') return { network: { mode: 'none' }, connect: [] };
   if (!nets.length) return mode === 'default' || mode === 'bridge' ? { connect: [], disconnect: 'bridge' } : { network: { mode }, connect: [], disconnect: mode };
   const onBridge = nets.some(([n]) => n === 'bridge');
-  const rest = nets.filter(([n]) => n !== 'bridge').map(([n, ep]) => [n, endpointOf(c, ep)] as [string, ReturnType<typeof endpointOf>]);
+  const rest = nets.filter(([n]) => n !== 'bridge').map(([n, ep]) => [n, endpointOf(c, ep)] as [string, Endpoint]);
   if (onBridge) return { connect: rest };
   // Docker lists networks by name, not in the order they were joined: the one the container was
   // made on is its network mode, when it is still on it.
@@ -274,7 +322,7 @@ export function networkPlan(c: any): { network?: { mode: string; endpoint?: Retu
 
 // clone: a copy of a container kontainers did not create (clone.ts): its create body, and the old
 // and new images, to compare the copy with the old container before it starts.
-export interface CloneJob { body: Record<string, any>; oldImage: any; newImage: any }
+export interface CloneJob { body: Record<string, any>; oldImage: any; newImage: any; platform?: string | null }
 
 export async function replaceContainer(docker: Docker, c: any, spec: CreateSpec, opts: UpdateOptions & { keepBindMounts?: boolean; allowedBinds?: { source: string; readOnly: boolean }[]; clone?: CloneJob }, what: string): Promise<Replaced> {
   const name = String(c.Name).replace(/^\//, '');
@@ -293,7 +341,7 @@ export async function replaceContainer(docker: Docker, c: any, spec: CreateSpec,
     if (!sharedNet) {
       cloneBodyNet.HostConfig.NetworkMode = plan.network?.mode ?? plan.disconnect ?? (mode === 'default' ? 'default' : 'bridge');
       const ep = plan.network?.endpoint;
-      if (plan.network && plan.network.mode !== 'none' && ep && (ep.Aliases?.length || ep.IPAMConfig)) cloneBodyNet.NetworkingConfig = { EndpointsConfig: { [plan.network.mode]: ep } };
+      if (plan.network && plan.network.mode !== 'none' && ep && Object.keys(ep).length) cloneBodyNet.NetworkingConfig = { EndpointsConfig: { [plan.network.mode]: ep } };
     }
   } else {
     // Bad input fails here, before the old container is touched: the settings, and an image that is
@@ -318,39 +366,48 @@ export async function replaceContainer(docker: Docker, c: any, spec: CreateSpec,
     throw new v.ValidationError(`an earlier update or edit of ${name} was interrupted and its old container (${String(open.old_id).slice(0, 12)}) is not tidied up yet; kontainers tries again shortly, or remove it by hand`);
   }
 
-  opts.journal?.begin(name, c.Id, wasRunning);
-  if (wasRunning) {
-    try { await docker.stop(c.Id); } catch (e) { opts.journal?.end(name); throw e; }
+  // A copy is made and checked while the old container still runs (it is only renamed), and is
+  // found again after a crash only through the journal: without the record it does not go ahead.
+  const written = opts.journal ? opts.journal.begin(name, c.Id, wasRunning) : true;
+  if (opts.clone && written === false) throw new v.ValidationError(`${what} of ${name} did not go ahead: kontainers could not write down what it is replacing (is the data volume full?), and without that a crash in the middle could leave it down. Nothing was changed`);
+  // The container's own stop timeout (stop_grace_period), as docker compose would use it.
+  const stopOld = () => docker.stop(c.Id, c.Config?.StopTimeout ?? null);
+  let oldStopped = false;
+  if (wasRunning && !opts.clone) {
+    try { await stopOld(); oldStopped = true; } catch (e) { opts.journal?.end(name); throw e; }
   }
   // Stopping can take the container's whole stop timeout; kontainers may have been told to stop
   // meanwhile.
   if (opts.signal?.aborted) {
-    if (wasRunning) await docker.start(c.Id).catch(() => {});
+    if (oldStopped) await docker.start(c.Id).catch(() => {});
     opts.journal?.end(name);
     throw shutting();
   }
   try {
     await docker.rename(c.Id, aside);
   } catch (e) {
-    if (wasRunning) await docker.start(c.Id).catch(() => {});
+    if (oldStopped) await docker.start(c.Id).catch(() => {});
     opts.journal?.end(name);
     throw new v.ValidationError(`${what} failed before anything changed (could not rename the old container to ${aside}): ${(e as Error).message}`);
   }
   let newId: string | null = null;
   // Where it failed: only a container that started and then stopped, restarted or turned unhealthy
-  // says something about the image ("settle"); the rest can be the host (a port in use, say).
+  // says something about the image ("settle"), or a copy that was not faithful ("verify"); the
+  // rest can be the host (a port in use, say).
   let stage = 'create';
   let note: string | null = null;
   const check = () => { if (opts.signal?.aborted) throw new Interrupted('kontainers was stopped during the replacement'); };
   try {
     check();
-    newId = (cloneBodyNet ? await docker.createCopy(name, cloneBodyNet) : await docker.create({ ...spec, name }, createOpts)).Id;
+    newId = (cloneBodyNet ? await docker.createCopy(name, cloneBodyNet, opts.clone?.platform) : await docker.create({ ...spec, name }, createOpts)).Id;
     for (const [n, ep] of plan.connect) await docker.connect(n, newId, ep);
     if (plan.disconnect) await docker.disconnect(plan.disconnect, newId);
     if (opts.clone) {
-      // The copy must have every setting the old container had, before it runs.
-      const diff = cloneDiff(c, opts.clone.oldImage, await docker.inspect(newId), opts.clone.newImage);
-      if (diff.length) throw new v.ValidationError(`the new container's settings would differ from the old one's (${diff.join('; ')}); kontainers cannot copy this container faithfully, so recreate it with docker compose or docker`);
+      // The copy must have every setting the old container had, before the old one stops.
+      const diff = cloneDiff(c, opts.clone.oldImage, await docker.inspectFull(newId));
+      if (diff.length) { stage = 'verify'; throw new v.ValidationError(`the new container's settings would differ from the old one's (${diff.join('; ')}); kontainers cannot copy this container faithfully, so recreate it with docker compose or docker`); }
+      if (wasRunning) { check(); stage = 'stop'; await stopOld(); oldStopped = true; }
+      check();
     }
     if (wasRunning) {
       check();
@@ -378,10 +435,13 @@ export async function replaceContainer(docker: Docker, c: any, spec: CreateSpec,
     const msg = e instanceof DockerError || e instanceof v.ValidationError ? e.message : 'internal error';
     throw Object.assign(new v.ValidationError(wrong.length
       ? `${what} failed (${msg}), and putting the old container back went wrong: ${wrong.join('; ')}`
+      : !oldStopped && wasRunning ? `${what} did not go ahead, and the old container kept running: ${msg}`
       : `${what} failed, so the old container was put back: ${msg}`), { stage });
   }
-  await docker.remove(c.Id, false).catch(err => console.error(`kontainers: could not remove ${aside}: ${(err as Error).message}`));
-  opts.journal?.end(name);
+  const removedOld = await docker.remove(c.Id, false).then(() => true, err => { console.error(`kontainers: could not remove ${aside}: ${(err as Error).message}`); return false; });
+  // A copy's old container left over is known only by the journal entry: it stays until the next
+  // start's tidy-up removes it (or someone does), so it is not taken for a container of its own.
+  if (removedOld || !opts.clone) opts.journal?.end(name);
   return { id: newId, note, running: wasRunning };
 }
 
@@ -503,12 +563,16 @@ export async function recoverInterrupted(docker: Docker, kept: (name: string, id
         const fresh = Date.now() - row.at < (more.windowMs ?? 10 * 60_000) + 10 * 60_000;
         // A rollback that did not get to start it is finished however long kontainers was down;
         // otherwise only while the entry is fresh (an entry left for a look by hand can be days old).
-        if (now && String(now.Id) === row.old_id && wasRunning && now.State !== 'running' && !replacementElsewhere && (row.rollback || fresh)) {
+        // Still running, maybe only for now: a stop kontainers began before it was killed.
+        const stopped = now && String(now.Id) === row.old_id && now.State === 'running' && wasRunning ? await stoppingSince(docker, now.Id, row.at, more.signal) : false;
+        if (now && String(now.Id) === row.old_id && wasRunning && (now.State !== 'running' || stopped) && !replacementElsewhere && (row.rollback || fresh || stopped)) {
           // Stopped for the replacement and then nothing more, or put back by a rollback that did
           // not get to start it: started again, only while the entry is fresh. One stopped since,
           // by someone, stays stopped.
-          const finished = Date.parse((await docker.inspect(now.Id))?.State?.FinishedAt || '') || 0;
-          if (row.rollback || (finished >= row.at - 5000 && finished <= row.at + 120_000)) {
+          const info = await docker.inspect(now.Id);
+          const finished = Date.parse(info?.State?.FinishedAt || '') || 0;
+          // Within the container's own stop timeout of the entry (and two minutes more).
+          if (row.rollback || stopped || (finished >= row.at - 5000 && finished <= row.at + ((info?.Config?.StopTimeout ?? 10) + 120) * 1000)) {
             try {
               await docker.start(now.Id);
               push({ name: base, trouble: false, text: `started ${base} again: kontainers stopped while ${base} was stopped for an update or edit` });
@@ -528,7 +592,8 @@ export async function recoverInterrupted(docker: Docker, kept: (name: string, id
       if (name.length >= 128 && !row) { push({ name, trouble: true, text: `${name} looks set aside by an interrupted update, but its name was shortened; check it by hand` }); return; }
       if (!now) {
         await docker.rename(c.Id, base);
-        if (wasRunning && c.State !== 'running') await docker.start(c.Id);
+        const stoppedNow = c.State === 'running' && row ? await stoppingSince(docker, c.Id, row.at, more.signal) : false;
+        if (wasRunning && (c.State !== 'running' || stoppedNow)) await docker.start(c.Id);
         kept(base, c.Id);
         push({ name: base, trouble: false, text: `put ${base} back: an update or edit was interrupted, and no container had its name` });
         if (row) endRow(base);
@@ -606,7 +671,9 @@ export async function recoverInterrupted(docker: Docker, kept: (name: string, id
       if (runs(now.State)) await docker.stop(now.Id);
       await docker.remove(now.Id, now.State === 'dead');
       await docker.rename(c.Id, base);
-      if (wasRunning && c.State !== 'running') await docker.start(c.Id);
+      // A copy is made while the old container still runs: a stop of it may still be under way.
+      const stoppedNow = c.State === 'running' ? await stoppingSince(docker, c.Id, row.at, more.signal) : false;
+      if (wasRunning && (c.State !== 'running' || stoppedNow)) await docker.start(c.Id);
       kept(base, c.Id);
       // Held only for a container that is updated automatically; otherwise its tag now points at
       // the image that failed, and Update image would try it again.
@@ -623,6 +690,22 @@ export async function recoverInterrupted(docker: Docker, kept: (name: string, id
   }));
   for (const r of settledAll) if (r.status === 'rejected') console.error(`kontainers: tidy-up failed: ${(r.reason as Error)?.message ?? r.reason}`);
   return out;
+}
+
+// A container that still runs, but that kontainers (or anyone) began to stop since `sinceMs`: killed
+// in the middle of an update while it stopped the old container, the daemon finishes that stop on
+// its own. Waits for it (its own stop timeout and a margin) and says whether it stopped; false at
+// once when no stop began.
+async function stoppingSince(docker: Docker, id: string, sinceMs: number, signal?: AbortSignal): Promise<boolean> {
+  const evs = await docker.pastEvents({ container: [id], event: ['kill', 'stop'] }, sinceMs / 1000 - 5, Date.now() / 1000 + 1).catch(() => []);
+  if (!evs.length) return false;
+  const limit = ((await docker.inspect(id).catch(() => null))?.Config?.StopTimeout ?? 10) + 20;
+  for (let i = 0; i < limit && !signal?.aborted; i++) {
+    const x = await docker.inspect(id).catch(() => null);
+    if (!x?.State?.Running) return true;
+    await Bun.sleep(1000);
+  }
+  return false;
 }
 
 // A stop or kill of this container (with a signal that ends a process) since `sinceMs`, as far as

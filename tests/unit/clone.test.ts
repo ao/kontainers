@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { cloneBody, cloneDiff, cloneRefusal, ownSettings } from '../../src/clone';
+import { cloneBody, cloneDiff, cloneRefusal, composeImageLabel, imageDoubts, ownSettings } from '../../src/clone';
 import { editable, recreatedBy, updatable } from '../../src/update';
 
 const ID = 'a1b2c3d4e5f6' + '0'.repeat(52);
@@ -148,6 +148,65 @@ describe('what cannot be copied', () => {
   });
 });
 
+describe('round 10 review', () => {
+  test('a --rm container, and one whose volumes another mounts by ID, are refused', () => {
+    const c = composeContainer();
+    expect(cloneRefusal({ ...c, HostConfig: { ...c.HostConfig, AutoRemove: true } }, [])).toContain('--rm');
+    const byId = { Id: 'b'.repeat(64), Name: '/backup', HostConfig: { VolumesFrom: [`${ID.slice(0, 12)}:ro`] } };
+    const byName = { Id: 'c'.repeat(64), Name: '/backup2', HostConfig: { VolumesFrom: ['shop-web-1'] } };
+    expect(cloneRefusal(c, [byId])).toContain('backup mounts its volumes by its ID');
+    expect(cloneRefusal(c, [byName])).toBeNull();
+  });
+  test('a healthcheck that only changes the interval keeps the new image its test', () => {
+    const img = { ...image, Config: { ...image.Config, Healthcheck: { Test: ['CMD', 'old-check'], Interval: 30e9 } } };
+    const c = composeContainer();
+    c.Config.Healthcheck = { Test: ['CMD', 'old-check'], Interval: 5e9 } as any;
+    expect(cloneBody(c, img, 'sha256:new').Healthcheck).toEqual({ Interval: 5e9 });
+    c.Config.Healthcheck = { Test: ['CMD', 'old-check'], Interval: 30e9 } as any;
+    expect(cloneBody(c, img, 'sha256:new').Healthcheck).toBeUndefined();
+  });
+  test("Docker's masked paths are left to the daemon", () => {
+    const c = composeContainer();
+    (c.HostConfig as any).MaskedPaths = ['/proc/kcore'];
+    (c.HostConfig as any).ReadonlyPaths = ['/proc/sys'];
+    const b = cloneBody(c, image, 'sha256:new');
+    expect(b.HostConfig.MaskedPaths).toBeUndefined();
+    expect(b.HostConfig.ReadonlyPaths).toBeUndefined();
+  });
+});
+
+describe('round 10 QA', () => {
+  test('a cleared entrypoint stays cleared, and a copy that gets the image one back is caught', () => {
+    const c = composeContainer();
+    c.Config.Entrypoint = null as any;
+    const b = cloneBody(c, image, 'sha256:new');
+    expect(b.Entrypoint).toEqual(['']);
+    expect(ownSettings(c, image).Entrypoint).toEqual(['(none)']);
+    const copy = { ...c, Id: '9'.repeat(64), Config: { ...c.Config, Entrypoint: ['/docker-entrypoint.sh'] } };
+    expect(cloneDiff(c, image, copy)).toContain('Entrypoint');
+    expect(cloneDiff(c, image, { ...copy, Config: { ...copy.Config, Entrypoint: null } })).not.toContain('Entrypoint');
+  });
+
+  test('a user and a data directory the new image changes are refused; other changes are named', () => {
+    const was = { Config: { User: '1000', WorkingDir: '/w1', Env: ['PATH=/a', 'NGINX_VERSION=1.27.0', 'PGDATA=/var/lib/postgresql/data', 'JAVA_HOME=/opt/j17', 'MODE=x'] } };
+    const now = { Config: { User: '', WorkingDir: '/w2', Env: ['PATH=/b', 'NGINX_VERSION=1.27.1', 'PGDATA=/var/lib/postgresql/18/docker', 'JAVA_HOME=/opt/j21', 'MODE=x'] } };
+    const c = { Config: { User: '1000', WorkingDir: '/w1', Env: was.Config.Env }, Mounts: [{ Type: 'volume', Name: 'pg', Destination: '/var/lib/postgresql/data' }] };
+    const d = imageDoubts(c, was, now);
+    expect(d.refuse).toEqual(['the user it runs as (1000 in the old image, root in the new one)', 'PGDATA (/var/lib/postgresql/data in the old image, which is in one of its volumes; /var/lib/postgresql/18/docker in the new one)']);
+    expect(d.taken).toEqual(['JAVA_HOME (/opt/j17 -> /opt/j21)', 'the working directory (/w1 -> /w2)']);
+    // A user of its own (not the old image's) is kept as it is: nothing to doubt.
+    expect(imageDoubts({ ...c, Config: { ...c.Config, User: '2000' } }, was, now).refuse).not.toContain('the user it runs as (1000 in the old image, root in the new one)');
+  });
+
+  test("compose's record of the image: the image ID, or the platform manifest's digest with the containerd store", () => {
+    const old = { Id: 'sha256:idx-old', ImageManifestDescriptor: { digest: 'sha256:man-old' } };
+    const fresh = { Id: 'sha256:idx-new', ImageManifestDescriptor: { digest: 'sha256:man-new' } };
+    expect(composeImageLabel('sha256:man-old', old, fresh)).toBe('sha256:man-new');
+    expect(composeImageLabel('sha256:idx-old', old, fresh)).toBe('sha256:idx-new');
+    expect(composeImageLabel('sha256:old', { Id: 'sha256:old' }, { Id: 'sha256:new' })).toBe('sha256:new');
+  });
+});
+
 describe('checking the copy before it starts', () => {
   // What the daemon shows for the copy: the body's settings merged with the new image's defaults.
   function asCreated(body: Record<string, any>, img: any, over: Record<string, any> = {}) {
@@ -169,26 +228,35 @@ describe('checking the copy before it starts', () => {
   test('a faithful copy shows no difference, even when the new image changes its own defaults', () => {
     const old = composeContainer();
     const body = cloneBody(old, image, newImage.Id);
-    expect(cloneDiff(old, image, asCreated(body, newImage), newImage)).toEqual([]);
+    expect(cloneDiff(old, image, asCreated(body, newImage))).toEqual([]);
   });
   test('a lost setting or mount is named', () => {
     const old = composeContainer();
     const body = cloneBody(old, image, newImage.Id);
     const copy = asCreated({ ...body, HostConfig: { ...body.HostConfig, CapAdd: null, Binds: [] }, Env: [] }, newImage);
-    const diff = cloneDiff(old, image, copy, newImage);
+    const diff = cloneDiff(old, image, copy);
     expect(diff).toContain('Env');
     expect(diff).toContain('CapAdd');
     expect(diff.some(d => d.startsWith('mounts (volume shop_static -> /srv/static (read-only))'))).toBe(true);
     // A network the copy did not join, or an alias it lost.
-    expect(cloneDiff(old, image, asCreated(body, newImage, { NetworkSettings: { Networks: { shop_default: { Aliases: ['shop-web-1'] } } } }), newImage)).toEqual(['Networks']);
-    expect(cloneDiff(old, image, asCreated(body, newImage, { NetworkSettings: { Networks: {} } }), newImage)).toEqual(['Networks']);
+    expect(cloneDiff(old, image, asCreated(body, newImage, { NetworkSettings: { Networks: { shop_default: { Aliases: ['shop-web-1'] } } } }))).toEqual(['Networks']);
+    expect(cloneDiff(old, image, asCreated(body, newImage, { NetworkSettings: { Networks: {} } }))).toEqual(['Networks']);
   });
+  test('a value the owner set that the new image happens to share is not reported as lost', () => {
+    const old = composeContainer();
+    old.Config.StopSignal = 'SIGTERM'; // the old image's is SIGQUIT
+    const img2 = { ...newImage, Config: { ...newImage.Config, StopSignal: 'SIGTERM' } };
+    const body = cloneBody(old, image, img2.Id);
+    expect(body.StopSignal).toBe('SIGTERM');
+    expect(cloneDiff(old, image, asCreated(body, img2))).toEqual([]);
+  });
+
   test('a volume the new image adds is not a difference', () => {
     const old = composeContainer();
     const body = cloneBody(old, image, newImage.Id);
     const copy = asCreated(body, newImage);
     copy.Mounts.push({ Type: 'volume', Name: 'e'.repeat(64), Destination: '/new', RW: true });
-    expect(cloneDiff(old, image, copy, newImage)).toEqual([]);
+    expect(cloneDiff(old, image, copy)).toEqual([]);
   });
   test('own settings leave out what kontainers itself writes', () => {
     const s = ownSettings(asCreated(cloneBody(composeContainer(), image, newImage.Id), newImage), newImage);

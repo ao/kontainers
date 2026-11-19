@@ -70,7 +70,8 @@ export function acmeEmail(v: string | undefined): string | null {
 
 function optionalInt(name: string, v: string | undefined, min: number, max: number): number | null {
   if (v === undefined || v === '') return null;
-  const n = Number(v);
+  // Decimal digits only: Number() would also take 0x7, 1e2 and padding.
+  const n = /^-?\d+$/.test(v) ? Number(v) : NaN;
   if (!Number.isInteger(n) || n < min || n > max) throw new Error(`${name} must be a whole number from ${min} to ${max}, got "${v}"`);
   return n;
 }

@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import { mkdirSync, chmodSync, unlinkSync } from 'node:fs';
+import { mkdirSync, chmodSync, readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 
 // Ordered schema migrations. Never edit a released entry; append a new one.
@@ -123,9 +123,15 @@ export function openDb(dataDir: string): Database & { degraded?: string } {
         const dest = join(dataDir, 'backups', beforeMigrationName(to));
         try { backupDir(dataDir); snapshot(db, dest); } catch (e) {
           try { unlinkSync(dest); } catch { /* not written */ }
-          throw new Error(`could not copy the database to ${dest} before migrating it from schema ${from} to ${to} (${(e as Error).message}); free space on the data volume and start again`);
+          throw new Error(`could not copy the database to ${dest} before migrating it from schema ${from} to ${to}: ${(e as Error).message}`);
         }
         console.log(`kontainers: copied the database to ${dest} before migrating it from schema ${from} to ${to}; an older kontainers can be started on that copy`);
+        // The newest 3 such copies are kept, also when a migration fails at every start.
+        try {
+          const old = readdirSync(join(dataDir, 'backups')).filter(n => /^before-schema-\d+-\d{8}-\d{6}\.db$/.test(n))
+            .sort((a, b) => (a.replace(/^before-schema-\d+-/, '') < b.replace(/^before-schema-\d+-/, '') ? 1 : -1)).slice(3);
+          for (const n of old) unlinkSync(join(dataDir, 'backups', n));
+        } catch { /* kept until the next prune */ }
       });
       // SQLite can fall back to a read-only shared-memory file it could not open for writing; then
       // every write fails later. Taking the write lock once finds that out now.

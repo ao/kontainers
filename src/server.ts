@@ -6,6 +6,7 @@ import { readFileSync, unlinkSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
+import dns from 'node:dns/promises';
 import type { Config } from './config';
 import { isLoopback } from './config';
 import { Auth, RateLimiter, safeEqual, type Session } from './auth';
@@ -326,7 +327,11 @@ export function createHandler(d: Deps): Handler {
     }
     return selfCache ?? null;
   }
-  if (d.autoUpdates) d.autoUpdates.protect = async (c: any) => views.isSelf(c, await self());
+  // Never recreated by kontainers: itself, the container serving its Docker API, and anything else in
+  // its own compose project (the socket proxy may be reached by an alias kontainers cannot match).
+  const ownProject = (c: any, me: views.SelfInfo | null) => !!me?.project && (c?.Config?.Labels ?? c?.Labels)?.['com.docker.compose.project'] === me.project;
+  const untouchable = async (c: any) => { const me = await self(); return views.isSelf(c, me) || ownProject(c, me); };
+  if (d.autoUpdates) d.autoUpdates.protect = untouchable;
 
   // The container that serves kontainers' Docker API, when DOCKER_HOST names one (tcp://docker-proxy:2375
   // in compose.yaml): by container name, by compose service in kontainers' own project, or by address.
@@ -334,17 +339,21 @@ export function createHandler(d: Deps): Handler {
   async function apiContainerId(project: string | null): Promise<string | null> {
     const api = dockerApiHost(cfg.dockerHost);
     if (!api) return null;
+    // A name that is a network alias matches none of the containers' names: what it resolves to does.
+    const addrs = new Set<string>([api]);
+    if (!/^[\d.]+$|:/.test(api)) { try { for (const a of await dns.lookup(api, { all: true })) addrs.add(a.address); } catch { /* not resolvable here */ } }
     for (const c of await docker.listContainers()) {
       const labels = c.Labels || {};
       if ((c.Names || []).some((n: string) => n.replace(/^\//, '') === api)
         || (!!project && labels['com.docker.compose.project'] === project && labels['com.docker.compose.service'] === api)
-        || Object.values(c.NetworkSettings?.Networks || {}).some((n: any) => n?.IPAddress === api)) return c.Id;
+        || Object.values(c.NetworkSettings?.Networks || {}).some((n: any) => !!n?.IPAddress && addrs.has(n.IPAddress))) return c.Id;
     }
     return null;
   }
   const updateView = (): views.UpdateView | null => d.updates
     ? { get: (ref: string) => d.updates!.get(ref), lastRun: d.updates.lastRun, scheduled: cfg.updateCheckHours > 0 ? cfg.updateCheckHours : null,
-        held: (name: string, id: string) => (d.autoUpdates?.isOn(name, id) ? d.autoUpdates.heldImage(name) : null) }
+        held: (name: string, id: string) => (d.autoUpdates?.isOn(name, id) ? d.autoUpdates.heldImage(name) : null),
+        heldDigests: (imageId: string) => d.autoUpdates?.heldDigests(imageId) }
     : null;
 
   // A password asked again from a logged-in session (turning off two-factor, replacing its key,
@@ -653,10 +662,11 @@ export function createHandler(d: Deps): Handler {
       }
       if (p === '/settings') return page(views.settingsPage(ctx(s), auth.listUsers(), s.user.id, d.notifier ? d.notifier.list() : null, d.events ? { connected: d.events.connected, error: d.events.lastError } : null, d.registries ? d.registries.list() : null, d.schedule ? d.schedule.get() : null,
         d.twoFactor ? { mine: d.twoFactor.enabled(s.user.id), left: d.twoFactor.recoveryLeft(s.user.id), users: new Set(auth.listUsers().filter(u => d.twoFactor!.enabled(u.id)).map(u => u.id)) } : null,
-        d.backups ? { keep: d.backups.keep, files: d.backups.list() } : null));
+        d.backups ? { keep: d.backups.keep, files: d.backups.list(), dir: join(cfg.dataDir, 'backups') } : null));
       if (p === '/api/backup') { safeAudit(s, 'backup', null, ip); return backup(); }
       if ((r = /^\/settings\/backups\/([^/]+)$/.exec(p)) && d.backups) {
-        const name = decodeURIComponent(r[1]);
+        let name = '';
+        try { name = decodeURIComponent(r[1]); } catch { /* a malformed escape: no such backup */ }
         const file = d.backups.path(name);
         safeAudit(s, 'backup', name, ip);
         return new Response(Bun.file(file), { headers: { 'content-type': 'application/vnd.sqlite3', 'content-disposition': `attachment; filename="${name}"` } });
@@ -723,7 +733,7 @@ export function createHandler(d: Deps): Handler {
             ...(c.HostConfig?.Mounts || []).filter((m: any) => m.Type === 'bind').map((m: any) => ({ source: String(m.Source), readOnly: !!m.ReadOnly })),
           ];
           rep = await replaceContainer(docker, c, spec, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, allowedBinds: binds, ...replaceOpts() }, 'saving the settings');
-          d.autoUpdates?.recreated(name, rep.id);
+          d.autoUpdates?.recreated(name, rep.id, c.Id);
           back = `/containers/${encodeURIComponent(name)}`;
         } finally { release(); }
         // After the lock is released: a crash of the new container from now on is reported as one.
@@ -737,6 +747,7 @@ export function createHandler(d: Deps): Handler {
       return act(s, ip, '/containers', 'container-update', id, async () => {
         await refuseSelf(id);
         const c = await docker.inspect(id);
+        if (await untouchable(c)) throw new v.ValidationError(`${String(c.Name || '').replace(/^\//, '')} is in kontainers' own compose project; update it with docker compose pull && docker compose up -d`);
         const name = String(c.Name || '').replace(/^\//, '');
         refuseSetAside(name);
         const release = locks.take(name);
@@ -745,7 +756,7 @@ export function createHandler(d: Deps): Handler {
         try {
           // Watched for a few seconds, so an image that crashes at once is caught and rolled back.
           r = await updateContainerDetailed(docker, id, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, healthTimeoutMs: 0, ...replaceOpts() });
-          if (r.changed) d.autoUpdates?.recreated(name, r.id);
+          if (r.changed) d.autoUpdates?.recreated(name, r.id, c.Id);
         } finally { release(); }
         if (c.Config?.Image && d.updates) await d.updates.check(c.Config.Image).catch(() => {});
         return r.message;
@@ -762,7 +773,8 @@ export function createHandler(d: Deps): Handler {
         const n = await running;
         const newer = n === 0 ? [] : (await docker.listContainersWithRefs()).filter(c => containerStatus(d.updates!.get(c.Ref), c.ImageID)?.status === 'available');
         const uv = updateView();
-        const opted = newer.filter(c => { const nm = String(c.Names?.[0] || '').replace(/^\//, ''); return d.autoUpdates?.isOn(nm, c.Id, c.Labels) && !views.heldBack(uv, nm, c.Id, c.Ref); });
+        const me = await self();
+        const opted = newer.filter(c => { const nm = String(c.Names?.[0] || '').replace(/^\//, ''); return !views.isSelf(c, me) && !ownProject(c, me) && d.autoUpdates?.isOn(nm, c.Id, c.Labels) && !views.heldBack(uv, nm, c.Id, c.Ref); });
         const waits = opted.filter(c => d.autoUpdates?.waitFor(c.Ref, d.updates!.get(c.Ref))).length;
         const auto = opted.length - waits;
         const available = newer.length;
@@ -796,6 +808,7 @@ export function createHandler(d: Deps): Handler {
       return act(s, ip, `/containers/${encodeURIComponent(id)}`, f.on ? 'autoupdate-on' : 'autoupdate-off', id, async () => {
         if (!d.autoUpdates) throw new v.ValidationError('automatic updates are not available');
         await refuseSelf(id);
+        if (f.on && await untouchable(await docker.inspect(id))) throw new v.ValidationError("this container is in kontainers' own compose project, which kontainers does not update; use docker compose pull && docker compose up -d");
         return d.autoUpdates.set(id, !!f.on);
       });
     }

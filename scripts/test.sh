@@ -10,6 +10,9 @@
 #   scripts/test.sh proxy      proxy rules and certificates against Pebble, all inside dind
 #   scripts/test.sh renewal    Pebble issues 90-second certificates; Caddy must renew them on its own
 #   scripts/test.sh compose    the README compose instructions, verbatim, inside dind
+#   scripts/test.sh copies     the API tests of updates of compose and docker run containers, on
+#                              Docker 29 with its containerd image store (api runs Docker 28's
+#                              classic store)
 #   scripts/test.sh screenshots  not a test: regenerates docs/screenshots/ and prints measured
 #                              image size, startup time and idle memory (not part of "all")
 #
@@ -27,6 +30,8 @@ IMG=${TEST_IMAGE:-kontainers:test}
 ID=$$
 NET=kontainers-test-$ID
 DIND=kontainers-dind-$ID
+# Docker 29 starts with the containerd image store; 28 with the classic one.
+if [ "$SUITE" = copies ]; then DIND_IMAGE=${DIND_IMAGE:-docker:29-dind}; else DIND_IMAGE=${DIND_IMAGE:-docker:28-dind}; fi
 
 APP=kontainers-app-$ID
 SOCKPROXY=kontainers-sockproxy-$ID
@@ -42,7 +47,7 @@ cleanup() {
 start_dind() {
   # TLS off is safe here: the daemon is reachable only on this private network and publishes no port.
   docker run -d --privileged --name "$DIND" --network "$NET" --network-alias dind \
-    -v "$SOCKVOL":/var/run -e DOCKER_TLS_CERTDIR= docker:28-dind ${DIND_MIRROR:+--registry-mirror=$DIND_MIRROR} \
+    -v "$SOCKVOL":/var/run -e DOCKER_TLS_CERTDIR= "$DIND_IMAGE" ${DIND_MIRROR:+--registry-mirror=$DIND_MIRROR} \
     --host=tcp://0.0.0.0:2375 --host=unix:///var/run/docker.sock >/dev/null
   i=0
   until docker exec "$DIND" docker version >/dev/null 2>&1; do
@@ -71,6 +76,10 @@ fi
 
 if [ "$SUITE" = all ] || [ "$SUITE" = api ]; then
   bun_run -e KONTAINERS_TEST_DOCKER_HOST=tcp://dind:2375 "$BUN_IMAGE" bun test --timeout 120000 ${API_FILES:-tests/api}
+fi
+if [ "$SUITE" = copies ]; then
+  docker exec "$DIND" docker info --format '{{.DriverStatus}}' | grep -q containerd || { echo 'copies: the test daemon does not use the containerd image store'; exit 1; }
+  bun_run -e KONTAINERS_TEST_DOCKER_HOST=tcp://dind:2375 "$BUN_IMAGE" bun test --timeout 120000 tests/api/copy.test.ts
 fi
 
 # A fresh app container from the image, Docker API through the socket proxy as in compose.yaml.

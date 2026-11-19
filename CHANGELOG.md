@@ -3,11 +3,22 @@
 ## Unreleased
 
 - Update image and automatic updates work for containers kontainers did not create: compose and
-  `docker run` ones. They are copied whole from `docker inspect` (privileges, limits, labels,
-  healthchecks and anonymous volumes included), with the old image's defaults left to the new image,
-  and the copy is compared with the old container before it starts. Compose's record of the image
-  is set to the new one, so `docker compose up -d` afterwards does not recreate the container.
-  Digest-pinned references, swarm tasks and containers whose namespaces others share are refused.
+  `docker run` ones. They are copied whole from `docker inspect` at the daemon's own API version
+  (privileges, limits, labels, healthchecks, per-network aliases, links and addresses, and
+  anonymous volumes included), with the old image's defaults left to the new image. The copy is
+  created and compared with the old container before the old one stops, so a copy that would lose
+  something changes nothing. Compose's record of the image is set to what compose would record
+  (the image ID, or the platform manifest digest with Docker 29's containerd image store), so
+  `docker compose up -d` afterwards does not recreate the container. When the new image changes
+  the user or a data directory in a volume that the container shares with the old image, the
+  update is refused rather than guessed. Refused too: `--rm` containers, digest-pinned
+  references, swarm tasks, containers whose namespaces or volumes others use, and kontainers' own
+  compose project.
+- Every Update image stops the old container with its own stop timeout (compose's
+  `stop_grace_period`), not 10 seconds. An update that fails or is held back points the tag back
+  at the image the container runs, so `docker compose up -d` does not install the failed one.
+- After a restart in the middle of an update, a stop kontainers had begun is waited for, and the
+  old container is started again.
 - The label `kontainers.autoupdate=true` opts a container into automatic updates from its own
   configuration (a compose file), and keeps it opted in when compose recreates it.
 - Before a migration the database is copied to `/data/backups/before-schema-N-...db`; without the

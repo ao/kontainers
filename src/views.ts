@@ -179,6 +179,8 @@ export interface UpdateView {
   get: (ref: string) => UpdateState | null;
   // The image an automatic update held back for an opted-in container (by name and ID), if any.
   held?: (name: string, id: string) => string | null;
+  // The registry digests of a held image, when known.
+  heldDigests?: (imageId: string) => string[] | undefined;
   lastRun: number | null;
   scheduled: number | null; // hours between scheduled checks, or null when off
 }
@@ -196,7 +198,12 @@ const hasNewer = (u: UpdateView | null, ref: string, imageId: string | undefined
 export function heldBack(u: UpdateView | null, name: string, id: string, ref: string): string | null {
   const held = u?.held?.(name, id);
   const st = u?.get(ref);
-  return held && st && st.imageId === held && st.status !== 'available' ? held : null;
+  if (!held || !st) return null;
+  if (st.imageId === held && st.status !== 'available') return held;
+  // After a failed update the tag points back at the running image; the registry still serves the
+  // held one.
+  const ds = u?.heldDigests?.(held);
+  return ds && st.remoteDigest && ds.some(d => d.endsWith('@' + st.remoteDigest)) ? held : null;
 }
 
 const updateBadge = (u: UpdateView | null, ref: string, imageId: string | undefined, name = '', id = '') =>
@@ -553,7 +560,7 @@ export function editRulePage(ctx: PageCtx, r: Rule): string {
 </form>`, 'Proxy');
 }
 
-export function settingsPage(ctx: PageCtx, users: { id: number; username: string }[], selfId: number, targets: Target[] | null = null, watch: { connected: boolean; error: string | null } | null = null, logins: RegistryLogin[] | null = null, schedule: Schedule | null = null, tf: { mine: boolean; left: number; users: Set<number> } | null = null, backups: { keep: number; files: BackupFile[] } | null = null): string {
+export function settingsPage(ctx: PageCtx, users: { id: number; username: string }[], selfId: number, targets: Target[] | null = null, watch: { connected: boolean; error: string | null } | null = null, logins: RegistryLogin[] | null = null, schedule: Schedule | null = null, tf: { mine: boolean; left: number; users: Set<number> } | null = null, backups: { keep: number; files: BackupFile[]; dir: string } | null = null): string {
   const rows = users.map(u => html`<tr><td>${u.username}${tf?.users.has(u.id) ? html` <small class="muted">two-factor</small>` : ''}</td>
 <td class="actions">${u.id === selfId ? html`<em>you</em>` : html`${post(ctx, `/settings/users/${u.id}/remove`, 'Remove', { confirm: `Remove user ${u.username}?`, cls: 'danger' })}${tf?.users.has(u.id) ? html` ${post(ctx, `/settings/users/${u.id}/2fa-reset`, 'Turn off two-factor', { confirm: `Turn off two-factor login for ${u.username}? They log in with the password alone until they set it up again.` })}` : ''}`}</td></tr>`);
   const twoFactor = !tf ? '' : tf.mine
@@ -586,11 +593,11 @@ ${logins ? registrySection(ctx, logins) : ''}
 ${backups ? backupSection(backups) : ''}`);
 }
 
-function backupSection(b: { keep: number; files: BackupFile[] }): Html {
+function backupSection(b: { keep: number; files: BackupFile[]; dir: string }): Html {
   const when = (t: number) => new Date(t).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
   const rows = b.files.map(f => html`<tr><td><a href="/settings/backups/${encodeURIComponent(f.name)}">${f.name}</a></td><td>${f.kind === 'daily' ? 'daily' : 'before an upgrade'}</td><td>${when(f.at)}</td><td>${fmtSize(f.size)}</td></tr>`);
-  return html`<p>${b.keep > 0 ? `kontainers keeps a copy of its database from each day, the newest ${b.keep}, in /data/backups (KONTAINERS_BACKUP_KEEP).` : 'Daily copies are off (KONTAINERS_BACKUP_KEEP=0).'} Before an upgrade changes the database, a copy is taken there too, so the older version can be started again on it. They are in the same volume as the database: copy them elsewhere to survive losing it.</p>
-${rows.length ? html`<div class="scroll"><table><thead><tr><th scope="col">Copy</th><th scope="col">Taken</th><th scope="col">At</th><th scope="col">Size</th></tr></thead><tbody>${rows}</tbody></table></div>` : html`<p class="muted">No copies yet; the first daily one is taken a minute after kontainers starts.</p>`}`;
+  return html`<p>${b.keep > 0 ? `kontainers keeps a copy of its database from each day, the newest ${b.keep}, in ${b.dir} (KONTAINERS_BACKUP_KEEP).` : `Daily copies are off (KONTAINERS_BACKUP_KEEP=0).`} Before an upgrade changes the database, a copy is taken in ${b.dir} too, so the older version can be started again on it. They are in the same volume as the database: copy them elsewhere to survive losing it.</p>
+${rows.length ? html`<div class="scroll"><table><thead><tr><th scope="col">Copy</th><th scope="col">Taken</th><th scope="col">At</th><th scope="col">Size</th></tr></thead><tbody>${rows}</tbody></table></div>` : html`<p class="muted">No copies yet${b.keep > 0 ? '; the first daily one is taken a minute after kontainers starts' : ''}.</p>`}`;
 }
 
 function scheduleSection(ctx: PageCtx, s: Schedule): Html {

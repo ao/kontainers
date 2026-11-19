@@ -78,9 +78,12 @@ export class AutoUpdates {
   forget(name: string): void { this.db.query('DELETE FROM auto_update WHERE container = ?').run(name); this.unsaved.delete(name); this.waiting.delete(name); }
 
   // Update image, Edit settings or an automatic update recreated the container under a new ID: it
-  // stays opted in. Never throws: an update that worked must not be reported as failed.
-  recreated(name: string, newId: string): void {
+  // stays opted in. from: the container it replaced; only when that one was opted in (not one put
+  // under the name outside kontainers, or one whose label was taken away). Never throws: an update
+  // that worked must not be reported as failed.
+  recreated(name: string, newId: string, from?: string): void {
     this.waiting.delete(name);
+    if (from !== undefined) { const row = this.get(name); if (!row || this.idOf(row) !== from) return; }
     try {
       this.db.query('UPDATE auto_update SET container_id = ? WHERE container = ?').run(newId, name);
       this.unsaved.delete(name);
@@ -109,6 +112,24 @@ export class AutoUpdates {
 
   // The image an automatic update held back for this container, if any.
   heldImage(name: string): string | null { return this.get(name)?.held_image ?? null; }
+
+  // The registry digests of held images. After a failed update the tag points back at the image
+  // the container runs (update.ts), so a held image is told apart by the digest the registry
+  // still serves for the tag.
+  private digests = new Map<string, string[]>();
+  heldDigests(imageId: string): string[] | undefined { return this.digests.get(imageId); }
+  private async noteDigests(imageId: string | null): Promise<void> {
+    if (!imageId || this.digests.has(imageId)) return;
+    const img = await this.docker.inspectImage(imageId).catch(() => null);
+    if (img) this.digests.set(imageId, img.RepoDigests || []);
+    if (this.digests.size > 500) this.digests.delete(this.digests.keys().next().value!);
+  }
+  // Whether the image held back for this container is still what the registry serves for its tag.
+  private heldIsNewest(held: string | null, st: { remoteDigest?: string; imageId?: string; status?: string } | null): boolean {
+    if (!held || !st) return false;
+    if (st.imageId === held && st.status !== 'available') return true;
+    return !!st.remoteDigest && (this.digests.get(held) || []).some(d => d.endsWith('@' + st.remoteDigest));
+  }
 
   // Containers with a newer image that wait for the update window or the delay: until when, and why.
   private waiting = new Map<string, { until: number; why: 'window' | 'delay' }>();
@@ -194,8 +215,10 @@ export class AutoUpdates {
         const recreatable = !madeHere || (mode !== 'host' && !mode.startsWith('container:'));
         const st = this.checker.get(c.Ref);
         if (containerStatus(st, c.ImageID)?.status !== 'available') continue;
-        // The label opts this container in, whichever container had the name before.
-        if (labelledOn(c.Labels) && !this.busy.has(name) && !(await this.protect(c))) {
+        // The label opts this container in, whichever container had the name before; not one that
+        // Update image refuses at a glance (a digest, an image ID, a swarm task).
+        const refusedAtAGlance = String(c.Ref || '').includes('@') || /^(sha256:)?[0-9a-f]{12,64}$/.test(String(c.Ref || '')) || !!c.Labels?.['com.docker.swarm.task.id'];
+        if (labelledOn(c.Labels) && !refusedAtAGlance && !this.busy.has(name) && !(await this.protect(c))) {
           const had = this.get(name);
           if (!had) this.db.query('INSERT INTO auto_update (container, container_id, created_at) VALUES (?, ?, ?) ON CONFLICT (container) DO NOTHING').run(name, c.Id, this.now());
           else if (this.idOf(had) !== c.Id && !list.some(x => String(x.Id) === this.idOf(had))) this.recreated(name, c.Id);
@@ -219,8 +242,9 @@ export class AutoUpdates {
           this.recreated(name, c.Id);
           continue;
         }
-        // The image that failed is what the tag points at here, and the registry has nothing newer.
-        if (row.held_image && st?.imageId === row.held_image && st.status !== 'available') continue;
+        // The image that failed is still the newest for the tag.
+        await this.noteDigests(row.held_image);
+        if (this.heldIsNewest(row.held_image, st)) continue;
         // Outside the update window, or the newer image not seen for long enough yet: later. With a
         // delay, the registry is asked again first: the last check may be hours old, and the update
         // must install the image that waited, not one pushed since.
@@ -260,7 +284,7 @@ export class AutoUpdates {
       result = r.message;
       if (r.changed) {
         held = null;
-        this.recreated(name, r.id);
+        this.recreated(name, r.id, id);
         quietly('could not record the automatic update', () => this.audit('auto-update', name));
         const what = r.running === false ? `${name} was recreated from the newest ${ref}; it was stopped before and is left stopped` : `${name} now runs the newest ${ref}`;
         note = { n: { kind: 'autoupdate', title: `Updated ${name}`, message: `${what}${r.note ? `; ${r.note}` : ''}.`, container: name } };
@@ -270,7 +294,7 @@ export class AutoUpdates {
       // Held back only when the new image ran and then failed; a port in use or a failed pull is
       // not the image's fault, and the next check tries again.
       const holds = e instanceof UpdateFailed && e.held && !!e.newImage;
-      if (holds) held = (e as UpdateFailed).newImage;
+      if (holds) { held = (e as UpdateFailed).newImage; await this.noteDigests(held); }
       quietly('could not record the failed automatic update', () => this.audit('auto-update', name, `failed: ${result}`.slice(0, 500)));
       const next = holds ? 'That image is held back until a newer one appears.' : 'It will be tried again at the next check.';
       // kontainers stopping is not news to anyone; the next start's check tries again.

@@ -2,7 +2,7 @@
 //   bun src/main.ts                 run the server
 //   bun src/main.ts backup FILE     write a consistent snapshot of the database to FILE
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { bindProblem, loadConfig } from './config';
@@ -87,8 +87,13 @@ docker.auth = { header: ref => registries.header(ref), registry: registryOf, sav
 const journal = new ReplaceJournal(db);
 const rules = new RuleStore(db);
 const proxy = new ProxyManager(cfg, rules, docker);
-// In a container the hostname is the container ID, unless --hostname changed it.
-const selfContainer = process.env.KONTAINERS_SELF_CONTAINER || (cfg.inContainer ? hostname() : undefined);
+// In a container: Docker's bind mounts of /etc/hostname and /etc/hosts name the container's ID in
+// /proc/self/mountinfo, which a --hostname does not change; else the hostname, which is the short
+// ID unless --hostname changed it.
+const idFromMounts = (): string | undefined => {
+  try { return /\/containers\/([0-9a-f]{64})\/(?:hostname|hosts|resolv\.conf)\b/.exec(readFileSync('/proc/self/mountinfo', 'utf8'))?.[1]; } catch { return undefined; }
+};
+const selfContainer = process.env.KONTAINERS_SELF_CONTAINER || (cfg.inContainer ? idFromMounts() || hostname() : undefined);
 proxy.selfContainer = selfContainer ?? null;
 const updates = new UpdateChecker(docker, cfg.updateCheckHours * 3600 * 1000);
 const notifier = new Notifier(db, undefined, undefined, [dockerApiAddress(cfg.dockerHost)].filter((h): h is string => !!h));
