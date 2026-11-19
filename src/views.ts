@@ -5,6 +5,7 @@ import { domainToUnicode } from 'node:url';
 import { containerStatus, type UpdateState } from './updates';
 import { EVENTS, EVENT_KINDS, maskUrl, type Target } from './notify';
 import type { RegistryLogin } from './registries';
+import type { BackupFile } from './backups';
 import { DAY_NAMES, describeSchedule, formTime, type Schedule } from './schedule';
 
 export function esc(v: unknown): string {
@@ -62,7 +63,8 @@ function containerActions(ctx: PageCtx, id: string, name: string, state: string,
 }
 
 // apiId: the container that serves kontainers' Docker API (the socket proxy), when there is one.
-export interface SelfInfo { id: string; project: string | null; apiId?: string | null }
+// deps: the compose services kontainers' own service depends on (its socket proxy).
+export interface SelfInfo { id: string; project: string | null; apiId?: string | null; deps?: string[] }
 
 const labelsOf = (c: any): Record<string, string> => c?.Labels || c?.Config?.Labels || {};
 
@@ -72,6 +74,15 @@ const labelsOf = (c: any): Record<string, string> => c?.Labels || c?.Config?.Lab
 export function isSelf(c: any, me: SelfInfo | null): boolean {
   if (!me) return false;
   return c?.Id === me.id || (!!me.apiId && c?.Id === me.apiId);
+}
+
+// Never updated by kontainers: itself, its Docker API container, and the services of its own
+// compose project that it depends on (the socket proxy, reached perhaps by an alias kontainers
+// cannot match).
+export function isProtected(c: any, me: SelfInfo | null): boolean {
+  if (isSelf(c, me)) return true;
+  const l = labelsOf(c);
+  return !!me?.project && l['com.docker.compose.project'] === me.project && (me.deps || []).includes(l['com.docker.compose.service'] || '');
 }
 
 const selfNote = (c: any, me: SelfInfo | null) =>
@@ -178,6 +189,8 @@ export interface UpdateView {
   get: (ref: string) => UpdateState | null;
   // The image an automatic update held back for an opted-in container (by name and ID), if any.
   held?: (name: string, id: string) => string | null;
+  // The registry digests of the image held back for a container (by name), when known.
+  heldDigests?: (name: string) => string[] | undefined;
   lastRun: number | null;
   scheduled: number | null; // hours between scheduled checks, or null when off
 }
@@ -195,7 +208,12 @@ const hasNewer = (u: UpdateView | null, ref: string, imageId: string | undefined
 export function heldBack(u: UpdateView | null, name: string, id: string, ref: string): string | null {
   const held = u?.held?.(name, id);
   const st = u?.get(ref);
-  return held && st && st.imageId === held && st.status !== 'available' ? held : null;
+  if (!held || !st) return null;
+  if (st.imageId === held && st.status !== 'available') return held;
+  // After a failed update the tag points back at the running image; the registry still serves the
+  // held one.
+  const ds = u?.heldDigests?.(name);
+  return ds && st.remoteDigest && ds.some(d => d.endsWith('@' + st.remoteDigest)) ? held : null;
 }
 
 const updateBadge = (u: UpdateView | null, ref: string, imageId: string | undefined, name = '', id = '') =>
@@ -315,7 +333,7 @@ ${filters}
 <p class="muted" id="nomatch"${list.length && !shown ? raw('') : raw(' hidden')}>No container matches. <a href="/containers">Show all ${list.length}</a>.</p>`);
 }
 
-export interface AutoView { on: boolean; row: { last_at: number | null; last_result: string | null; held_image: string | null } | null; waiting?: { until: number; why: 'window' | 'delay' } | null }
+export interface AutoView { on: boolean; label?: boolean; row: { last_at: number | null; last_result: string | null; held_image: string | null } | null; waiting?: { until: number; why: 'window' | 'delay' } | null }
 
 // The automatic-update switch on a container's page, with the last result.
 function autoForm(ctx: PageCtx, id: string, a: AutoView): Html {
@@ -323,6 +341,9 @@ function autoForm(ctx: PageCtx, id: string, a: AutoView): Html {
   const held = a.on && a.row?.held_image ? html`<small class="warn">Image ${shortId(a.row.held_image)} failed when it was tried and is held back; a newer image will be tried.</small>` : '';
   const at = (t: number) => new Date(t).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
   const waiting = a.on && a.waiting ? html`<small class="muted">A newer image is waiting ${a.waiting.why === 'window' ? 'for the update window' : 'out the delay set on the Settings page'}; it is installed from ${at(a.waiting.until)}.${a.waiting.why === 'delay' ? ' The delay counts from when a check first saw this image; if the tag moves on to another one meanwhile, that one waits its own delay.' : ''}</small>` : '';
+  if (a.label) return html`<div class="autoupdate"><p>Updated automatically when a check finds a newer image: the container has the label <code>kontainers.autoupdate=true</code> (remove it to turn this off).</p>
+<small class="muted">The new container is watched while it settles; if it stops, restarts or turns unhealthy, the old one is put back.</small>
+${last}${held}${waiting}</div>`;
   return html`<form method="post" action="/containers/${id}/autoupdate" class="autoupdate">${csrfField(ctx)}
 <label class="check"><input type="checkbox" name="on"${a.on ? raw(' checked') : raw('')}> Update automatically when a check finds a newer image</label>
 <button>Save</button>
@@ -342,6 +363,8 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
   const env = (c.Config?.Env || []).map((e: string) => html`<li><code>${e.replace(/=[\s\S]*/, '=…')}</code></li>`);
   const mounts = (c.Mounts || []).map((m: any) => html`<li><code>${m.Type} ${m.Name || m.Source} → ${m.Destination}${m.RW ? '' : ' (ro)'}</code></li>`);
   const nets = Object.keys(c.NetworkSettings?.Networks || {}).map(n => html`<li>${n}</li>`);
+  const project = c.Config?.Labels?.['com.docker.compose.project'] || '';
+  const madeHere = c.Config?.Labels?.['kontainers.managed'] === 'true' && !project;
   return layout(name, ctx, html`
 <p><a href="/containers">All containers</a></p>
 <dl class="facts">
@@ -356,10 +379,10 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
   ${inspectPorts(c) ? html`<dt>Ports</dt><dd><span class="ref">${inspectPorts(c)}</span></dd>` : ''}
 </dl>
 <div class="actions">${isSelf(c, me) ? selfNote(c, me) : ctx.busy?.(name) ? html`<p class="muted">${ctx.busy(name)}; reload in a moment.</p>` : containerActions(ctx, urlId(c), name, c.State?.Status || '', true)}
-${isSelf(c, me) || ctx.busy?.(name) ? '' : c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project']
-    ? html`${post(ctx, `/containers/${urlId(c)}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' && !held ? 'primary' : '' })} <a class="button" href="/containers/${urlId(c)}/edit">Edit settings</a>`
-    : c.Config?.Labels?.['com.docker.compose.project'] ? html`<small class="muted">Part of compose project ${c.Config.Labels['com.docker.compose.project']}: update it with <code>docker compose pull &amp;&amp; docker compose up -d</code>.</small>` : ''}</div>
-${auto && !isSelf(c, me) && !ctx.busy?.(name) && c.Config?.Labels?.['kontainers.managed'] === 'true' && !c.Config?.Labels?.['com.docker.compose.project'] ? autoForm(ctx, urlId(c), auto) : ''}
+${isProtected(c, me) || ctx.busy?.(name) ? '' : html`${post(ctx, `/containers/${urlId(c)}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' && !held ? 'primary' : '' })}${madeHere
+    ? html` <a class="button" href="/containers/${urlId(c)}/edit">Edit settings</a>`
+    : html` <small class="muted">${project ? html`Part of compose project ${project}. Update image copies its settings and compose labels to the new container, so <code>docker compose up -d</code> leaves it as it is; change its settings in the compose file.` : 'Created outside kontainers: Update image copies all of its settings to the new container. Edit settings is only for containers created here.'}</small>`}`}</div>
+${auto && !isProtected(c, me) && !ctx.busy?.(name) ? autoForm(ctx, urlId(c), auto) : ''}
 ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
 <dl class="facts" id="stats" data-stats="/api/containers/${urlId(c)}/stats">
   <dt>CPU</dt><dd data-k="cpu">…</dd><dt>Memory</dt><dd data-k="mem">…</dd>
@@ -547,7 +570,7 @@ export function editRulePage(ctx: PageCtx, r: Rule): string {
 </form>`, 'Proxy');
 }
 
-export function settingsPage(ctx: PageCtx, users: { id: number; username: string }[], selfId: number, targets: Target[] | null = null, watch: { connected: boolean; error: string | null } | null = null, logins: RegistryLogin[] | null = null, schedule: Schedule | null = null, tf: { mine: boolean; left: number; users: Set<number> } | null = null): string {
+export function settingsPage(ctx: PageCtx, users: { id: number; username: string }[], selfId: number, targets: Target[] | null = null, watch: { connected: boolean; error: string | null } | null = null, logins: RegistryLogin[] | null = null, schedule: Schedule | null = null, tf: { mine: boolean; left: number; users: Set<number> } | null = null, backups: { keep: number; files: BackupFile[]; dir: string } | null = null): string {
   const rows = users.map(u => html`<tr><td>${u.username}${tf?.users.has(u.id) ? html` <small class="muted">two-factor</small>` : ''}</td>
 <td class="actions">${u.id === selfId ? html`<em>you</em>` : html`${post(ctx, `/settings/users/${u.id}/remove`, 'Remove', { confirm: `Remove user ${u.username}?`, cls: 'danger' })}${tf?.users.has(u.id) ? html` ${post(ctx, `/settings/users/${u.id}/2fa-reset`, 'Turn off two-factor', { confirm: `Turn off two-factor login for ${u.username}? They log in with the password alone until they set it up again.` })}` : ''}`}</td></tr>`);
   const twoFactor = !tf ? '' : tf.mine
@@ -576,7 +599,15 @@ ${schedule ? scheduleSection(ctx, schedule) : ''}
 ${targets ? notifySection(ctx, targets, watch) : ''}
 ${logins ? registrySection(ctx, logins) : ''}
 <h2>Backup</h2>
-<p><a href="/api/backup">Download a database snapshot</a>. Certificates are in the data volume; see the README for a full backup.${logins?.length ? ' The snapshot holds registry passwords encrypted; the key, registry.key, stays in the data volume, so after restoring on another host enter them again.' : ''}</p>`);
+<p><a href="/api/backup">Download a database snapshot</a>. Certificates are in the data volume; see the README for a full backup.${logins?.length ? ' The snapshot holds registry passwords encrypted; the key, registry.key, stays in the data volume, so after restoring on another host enter them again.' : ''}</p>
+${backups ? backupSection(backups) : ''}`);
+}
+
+function backupSection(b: { keep: number; files: BackupFile[]; dir: string }): Html {
+  const when = (t: number) => new Date(t).toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+  const rows = b.files.map(f => html`<tr><td><a href="/settings/backups/${encodeURIComponent(f.name)}">${f.name}</a></td><td>${f.kind === 'daily' ? 'daily' : 'before an upgrade'}</td><td>${when(f.at)}</td><td>${fmtSize(f.size)}</td></tr>`);
+  return html`<p>${b.keep > 0 ? `kontainers keeps a copy of its database from each day, the newest ${b.keep}, in ${b.dir} (KONTAINERS_BACKUP_KEEP).` : `Daily copies are off (KONTAINERS_BACKUP_KEEP=0).`} Before an upgrade changes the database, a copy is taken in ${b.dir} too, so the older version can be started again on it. They are in the same volume as the database: copy them elsewhere to survive losing it.</p>
+${rows.length ? html`<div class="scroll"><table><thead><tr><th scope="col">Copy</th><th scope="col">Taken</th><th scope="col">At</th><th scope="col">Size</th></tr></thead><tbody>${rows}</tbody></table></div>` : html`<p class="muted">No copies yet${b.keep > 0 ? '; the first daily one is taken a minute after kontainers starts' : ''}.</p>`}`;
 }
 
 function scheduleSection(ctx: PageCtx, s: Schedule): Html {

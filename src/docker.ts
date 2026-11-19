@@ -6,6 +6,12 @@ import { loginHint } from './registries';
 
 const API = '/v1.41';
 
+// "repo:tag" (a port in the host part is not a tag); "latest" when there is none.
+export function splitRef(ref: string): { repo: string; tag: string } {
+  const colon = ref.lastIndexOf(':');
+  return colon > ref.lastIndexOf('/') ? { repo: ref.slice(0, colon), tag: ref.slice(colon + 1) } : { repo: ref, tag: 'latest' };
+}
+
 // fromDaemon: the message is the daemon's own (its JSON body), not a proxy's page in front of it.
 export class DockerError extends Error {
   constructor(message: string, public status: number, public fromDaemon = false) {
@@ -38,7 +44,7 @@ export interface CreateOptions {
   keepBindMounts?: boolean;
   allowedBinds?: { source: string; readOnly: boolean }[];
   replaces?: string;
-  network?: { mode: string; endpoint?: { Aliases?: string[]; IPAMConfig?: Record<string, string> } };
+  network?: { mode: string; endpoint?: { Aliases?: string[]; IPAMConfig?: Record<string, unknown>; Links?: string[]; DriverOpts?: Record<string, string>; GwPriority?: number } };
 }
 
 export interface DockerOptions {
@@ -72,7 +78,7 @@ export class Docker {
     return sent ? 'sent' : this.auth?.saved?.(registry) ? 'unreadable' : 'none';
   }
 
-  private async req(method: string, path: string, body?: unknown, timeoutMs = 30000, extra: Record<string, string> = {}): Promise<Response> {
+  private async req(method: string, path: string, body?: unknown, timeoutMs = 30000, extra: Record<string, string> = {}, prefix = API): Promise<Response> {
     const init: RequestInit & { unix?: string } = {
       method,
       headers: { ...(body === undefined ? {} : { 'content-type': 'application/json' }), ...extra },
@@ -82,7 +88,7 @@ export class Docker {
     if (this.unix) init.unix = this.unix;
     let res: Response;
     try {
-      res = await fetch(this.base + API + path, init);
+      res = await fetch(this.base + prefix + path, init);
     } catch (e) {
       throw new DockerError(`Docker daemon unreachable: ${unreachable(e as Error)}`, 502);
     }
@@ -99,8 +105,8 @@ export class Docker {
     return res;
   }
 
-  private async json<T>(method: string, path: string, body?: unknown, timeoutMs?: number): Promise<T> {
-    const res = await this.req(method, path, body, timeoutMs);
+  private async json<T>(method: string, path: string, body?: unknown, timeoutMs?: number, prefix = API): Promise<T> {
+    const res = await this.req(method, path, body, timeoutMs, {}, prefix);
     const text = await res.text();
     return (text ? JSON.parse(text) : null) as T;
   }
@@ -128,9 +134,19 @@ export class Docker {
   inspect(id: string) { return this.json<any>('GET', `/containers/${encodeURIComponent(v.ref(id))}/json`); }
   // false: it was already running (start) or already stopped (stop).
   async start(id: string): Promise<boolean> { return (await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/start`)).status !== 304; }
-  async stop(id: string): Promise<boolean> { return (await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/stop?t=10`, undefined, 60000)).status !== 304; }
+  // Docker stops a container with its own stop timeout (compose's stop_grace_period, docker run
+  // --stop-timeout; 10 s by default), as docker stop does; the request waits that long and 50 s
+  // more. ownTimeoutSec: that timeout when the caller has it, else it is looked up.
+  private async stopWait(id: string, ownTimeoutSec?: number | null): Promise<number> {
+    let own = ownTimeoutSec;
+    if (own === undefined) own = (await this.inspect(id).catch(() => null))?.Config?.StopTimeout ?? null;
+    return ((Number.isInteger(own) && (own as number) >= 0 ? (own as number) : 10) + 50) * 1000;
+  }
+  async stop(id: string, ownTimeoutSec?: number | null): Promise<boolean> {
+    return (await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/stop`, undefined, await this.stopWait(id, ownTimeoutSec))).status !== 304;
+  }
   async unpause(id: string) { await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/unpause`); }
-  async restart(id: string) { await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/restart?t=10`, undefined, 60000); }
+  async restart(id: string) { await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/restart`, undefined, await this.stopWait(id)); }
   async remove(id: string, force = false) {
     await this.req('DELETE', `/containers/${encodeURIComponent(v.ref(id))}?force=${force ? 1 : 0}&v=0`);
   }
@@ -200,6 +216,39 @@ export class Docker {
     const body = this.createBody(spec, opts);
     const q = spec.name ? `?name=${encodeURIComponent(v.name(spec.name))}` : '';
     return this.json('POST', `/containers/create${q}`, body);
+  }
+
+  // The daemon's own API version, for copies (clone.ts): at 1.41, settings newer than that (a
+  // healthcheck's start interval, a volume's subpath, annotations) are left out of an inspect and
+  // dropped from a create. Asked once; 1.41 if the daemon does not say.
+  // A failed lookup is kept for five minutes, so the calls of one update all use the same version.
+  private fullApi: Promise<string> | null = null;
+  private latest(): Promise<string> {
+    this.fullApi ??= this.json<any>('GET', '/version').then(
+      r => (/^1\.\d{2}$/.test(String(r?.ApiVersion)) && Number(String(r.ApiVersion).slice(2)) > 41 ? `/v${r.ApiVersion}` : API),
+      () => { setTimeout(() => { this.fullApi = null; }, 5 * 60_000).unref?.(); return API; });
+    return this.fullApi;
+  }
+  // An image as the daemon's own API version shows it (with the containerd image store, the
+  // platform's manifest digest that compose records).
+  async inspectImageFull(ref: string) { return this.json<any>('GET', `/images/${encodeURIComponent(v.imageRef(ref))}/json`, undefined, undefined, await this.latest()); }
+  // docker inspect with everything the daemon knows, for a copy.
+  async inspectFull(id: string) { return this.json<any>('GET', `/containers/${encodeURIComponent(v.ref(id))}/json`, undefined, undefined, await this.latest()); }
+
+  // A copy of an existing container (clone.ts): the body is that container's own configuration with
+  // a newer image, so it is sent as it is, privileged settings included; kontainers never makes up
+  // such settings. Only Update image uses it. platform: the old image's, so an emulated container
+  // stays on its platform.
+  async createCopy(name: string, body: Record<string, unknown>, platform?: string | null): Promise<{ Id: string }> {
+    v.image(String(body.Image || ''));
+    const plat = platform && /^[a-z0-9]+\/[a-z0-9_]+(\/[a-z0-9]+)?$/.test(platform) ? `&platform=${encodeURIComponent(platform)}` : '';
+    return this.json('POST', `/containers/create?name=${encodeURIComponent(v.name(name))}${plat}`, body, undefined, await this.latest());
+  }
+
+  // Points `ref` (repo:tag) at an image that is on this host.
+  async tag(imageId: string, ref: string): Promise<void> {
+    const { repo, tag } = splitRef(ref);
+    await this.req('POST', `/images/${encodeURIComponent(v.ref(imageId.replace(/^sha256:/, '')))}/tag?repo=${encodeURIComponent(repo)}&tag=${encodeURIComponent(tag)}`);
   }
 
   // The request body for create, after every check; throws a ValidationError for bad input. Called
@@ -288,16 +337,16 @@ export class Docker {
   async rename(id: string, name: string) {
     await this.req('POST', `/containers/${encodeURIComponent(v.ref(id))}/rename?name=${encodeURIComponent(v.name(name))}`);
   }
-  async pull(ref: string): Promise<void> {
+  // platform: os/arch[/variant] to pull, for an update of a container on another platform.
+  async pull(ref: string, platform?: string | null): Promise<void> {
     const img = v.image(ref);
-    let [repo, tag] = [img, 'latest'];
     const at = img.indexOf('@');
-    const colon = img.lastIndexOf(':');
-    if (at === -1 && colon > img.lastIndexOf('/')) { repo = img.slice(0, colon); tag = img.slice(colon + 1); }
+    const { repo, tag } = at === -1 ? splitRef(img) : { repo: img, tag: '' };
     const auth = this.auth?.header(img) ?? null;
     const registry = this.auth?.registry(img) ?? '';
+    const plat = platform && /^[a-z0-9]+\/[a-z0-9_]+(\/[a-z0-9]+)?$/.test(platform) ? `&platform=${encodeURIComponent(platform)}` : '';
     try {
-      const res = await this.req('POST', `/images/create?fromImage=${encodeURIComponent(repo)}${at === -1 ? `&tag=${encodeURIComponent(tag)}` : ''}`, undefined, 600000, auth ? { 'X-Registry-Auth': auth } : {});
+      const res = await this.req('POST', `/images/create?fromImage=${encodeURIComponent(repo)}${at === -1 ? `&tag=${encodeURIComponent(tag)}` : ''}${plat}`, undefined, 600000, auth ? { 'X-Registry-Auth': auth } : {});
       // The daemon streams progress and reports failures inside the stream.
       const text = await res.text();
       for (const line of text.split('\n')) {
@@ -325,10 +374,12 @@ export class Docker {
   async removeNetwork(id: string) { await this.req('DELETE', `/networks/${encodeURIComponent(v.ref(id, 'network'))}`); }
   // endpoint: aliases and fixed addresses the container had on this network, carried over when it
   // is recreated.
-  async connect(network: string, container: string, endpoint?: { Aliases?: string[]; IPAMConfig?: Record<string, string> }) {
+  async connect(network: string, container: string, endpoint?: { Aliases?: string[]; IPAMConfig?: Record<string, unknown>; Links?: string[]; DriverOpts?: Record<string, string>; GwPriority?: number }, full = false) {
     const body: Record<string, unknown> = { Container: v.ref(container) };
-    if (endpoint && (endpoint.Aliases?.length || endpoint.IPAMConfig)) body.EndpointConfig = endpoint;
-    await this.req('POST', `/networks/${encodeURIComponent(v.ref(network, 'network'))}/connect`, body);
+    if (endpoint && Object.keys(endpoint).length) body.EndpointConfig = endpoint;
+    // A copy's endpoints at the daemon's own API version, like the copy (newer fields such as
+    // GwPriority would be dropped at 1.41).
+    await this.req('POST', `/networks/${encodeURIComponent(v.ref(network, 'network'))}/connect`, body, undefined, {}, full ? await this.latest() : API);
   }
   async disconnect(network: string, container: string) {
     await this.req('POST', `/networks/${encodeURIComponent(v.ref(network, 'network'))}/disconnect`, { Container: v.ref(container), Force: false });

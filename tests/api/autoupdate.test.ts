@@ -94,8 +94,8 @@ describe.skipIf(!DOCKER)('automatic updates and notifications', () => {
     const on = await c.submit(`/containers/${WEB}/autoupdate`, { on: 'on' });
     expect(on.flash).toContain('will be updated automatically');
     expect(on.body).toMatch(/<input type="checkbox" name="on" checked>/);
-    // Containers kontainers did not create cannot be opted in.
-    expect((await c.submit(`/containers/${OTHER}/autoupdate`, { on: 'on' })).error).toContain('only containers created in kontainers');
+    // One kontainers did not create could be opted in too (copy.test.ts); this one is left out.
+    expect(await c.page(`/containers/${OTHER}`)).toContain(`action="/containers/${OTHER}/autoupdate"`);
 
     const newId = await publish('busybox:1.36', 'LABEL release=2', oldId);
     const checked = await c.submit('/updates/check', {});

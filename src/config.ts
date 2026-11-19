@@ -25,6 +25,7 @@ export interface Config {
   inContainer: boolean;
   allowInsecure: boolean;
   updateCheckHours: number; // 0 turns scheduled update checks off
+  backupKeep: number; // daily database copies kept in <data>/backups; 0 turns them off
   autoUpdateSettle: number; // seconds a new container is watched after an automatic update
   autoUpdateHealthTimeout: number; // seconds to wait for "healthy" after settling, when there is a healthcheck
   autoUpdateSchedule: Schedule; // when automatic updates may run, until one is saved on the Settings page
@@ -69,7 +70,8 @@ export function acmeEmail(v: string | undefined): string | null {
 
 function optionalInt(name: string, v: string | undefined, min: number, max: number): number | null {
   if (v === undefined || v === '') return null;
-  const n = Number(v);
+  // Decimal digits only: Number() would also take 0x7, 1e2 and padding.
+  const n = /^-?\d+$/.test(v) ? Number(v) : NaN;
   if (!Number.isInteger(n) || n < min || n > max) throw new Error(`${name} must be a whole number from ${min} to ${max}, got "${v}"`);
   return n;
 }
@@ -110,6 +112,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     inContainer: bool(env.KONTAINERS_IN_CONTAINER),
     allowInsecure: bool(env.KONTAINERS_ALLOW_INSECURE),
     updateCheckHours: optionalInt("KONTAINERS_UPDATE_CHECK_HOURS", env.KONTAINERS_UPDATE_CHECK_HOURS, 0, 720) ?? 6,
+    backupKeep: optionalInt("KONTAINERS_BACKUP_KEEP", env.KONTAINERS_BACKUP_KEEP, 0, 365) ?? 7,
     autoUpdateSettle: optionalInt("KONTAINERS_AUTOUPDATE_SETTLE", env.KONTAINERS_AUTOUPDATE_SETTLE, 0, 600) ?? 30,
     autoUpdateHealthTimeout: optionalInt("KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT", env.KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT, 0, 3600) ?? 120,
     autoUpdateSchedule: scheduleFromEnv(env.KONTAINERS_AUTOUPDATE_WINDOW, env.KONTAINERS_AUTOUPDATE_DELAY_HOURS),

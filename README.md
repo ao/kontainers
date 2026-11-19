@@ -23,8 +23,9 @@ one container that does the everyday part of both:
   back. (Watchtower, which did this, was archived in December 2025.)
 - Notifications to a webhook or an ntfy topic when a container crashes, runs out of memory,
   turns unhealthy, has a newer image, is updated, or a certificate is about to expire.
-- Update image and Edit settings recreate a container with its settings, volumes and networks.
-  If the new one does not stay up, the old one is put back.
+- Update image recreates a container from the newest image of its tag with its settings, volumes
+  and networks: compose and `docker run` containers too. Edit settings changes the ones made in
+  kontainers. If the new container does not stay up, the old one is put back.
 
 It is also careful about the host, because access to Docker is root on it. It listens on
 127.0.0.1, has no default password, never force-removes a container you made (only a
@@ -36,13 +37,13 @@ replacement it is rolling back), and will not stop or remove itself. The Securit
 
 Memory and start time were measured on the 0.4.0 release candidate, on an EC2 m7g.4xlarge (arm64,
 16 vCPUs, Ubuntu 24.04, Docker 29.9.3), by `scripts/test.sh screenshots` in three runs. The download
-size is the published 0.4.1 image's, and 0.5.0's is the same: 19 MB more than 0.3.0's, because the Bun base image grew by
+size is the published 0.4.1 image's, and 0.5.0's and 0.6.0's are the same: 19 MB more than 0.3.0's, because the Bun base image grew by
 16 MB (oven/bun 1.4.4-slim against 1.3.1-slim) and Caddy and Debian by 4 MB. 0.4.0 also stored
 the Caddy binary twice (16.5 MB more), which 0.4.1 fixed.
 
 | | |
 |---|---|
-| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1 and 0.5.0, compressed layers on Docker Hub |
+| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1 to 0.6.0, compressed layers on Docker Hub |
 | Memory at idle | 30 to 34 MiB, with Caddy serving two HTTPS rules and four other containers on the host (`docker stats` after 30 s, three runs) |
 | Start | 239 to 299 ms from `docker start` to a healthy `/healthz` (fifteen starts over three runs) |
 
@@ -72,12 +73,26 @@ What works, and is covered by the test suites below:
   runs and nothing is expanded. The list has a search, a state filter including "needs
   attention", and grouping by compose project. The detail page shows the command, ports,
   restarts and health, and CPU, memory, network and process counts refreshed every 5 seconds.
-- update image, for containers created in kontainers: pull the image again and, if it changed,
-  recreate the container with the same name, command, environment, ports, restart policy,
-  networks and volumes (anonymous ones included). The old container is stopped and set aside first
-  and is put back if the new one cannot be created or started or stops within 5 seconds. Compose
-  containers are left to `docker compose pull && docker compose up -d`.
-- edit settings, for containers created in kontainers: change the image, command, ports,
+- update image: pull the image again and, if it changed, recreate the container under the same
+  name, on the same networks with the same aliases, with the same volumes (anonymous ones
+  included). One created in kontainers gets the settings it was created with. Any other
+  (compose, `docker run`) is copied whole from `docker inspect`, privileges and limits included,
+  except values equal to the old image's (environment entries, command, working directory,
+  healthcheck fields, labels), which the new image supplies. The copy is created and compared with
+  the old container while the old one still runs; only if nothing is missing is the old one
+  stopped (with its own stop timeout, compose's `stop_grace_period`) and set aside. It is put back
+  if the new one cannot be started or stops within 5 seconds.
+  A value equal to the old image's may have been set on purpose (`user: "1000"` in a compose file
+  when the image says the same). kontainers cannot tell, so when the new image changes the user
+  it runs as, or an environment value that is a path into one of its volumes (`PGDATA`), the
+  update is refused; other such values (a working directory, `JAVA_HOME`) take the new image's,
+  and the update says which. Not handled: `--rm` containers, digest-pinned and image-ID references,
+  swarm tasks, images built on the host, containers whose network, process or IPC namespace
+  another container shares (`network_mode: service:...`) or whose volumes another mounts by ID,
+  and kontainers itself, its socket proxy and the services its own `depends_on` named when it was
+  created (other services in its compose project are updated like any). A copy mounts the old container's anonymous volumes by
+  name, so `docker compose down -v` leaves them; Clean up lists them as unused anonymous volumes.
+- edit settings, for containers created in kontainers (compose ones change in the compose file): change the image, command, ports,
   environment, volumes or restart policy; saving recreates the container the same way, with the
   old one put back if the new one does not stay up. Bad input is refused before anything stops.
 - update checks: every 6 hours, and on "Check for updates", kontainers asks the registry which
@@ -87,12 +102,14 @@ What works, and is covered by the test suites below:
   this needs `DISTRIBUTION=1`, which `compose.yaml` sets. On Docker Hub, checks count toward the
   pull rate limit: from one address without a login, six checks of six images lowered the
   remaining count by three (Docker 29.9, 2026-11-14); Docker Hub reported a limit of 100 an hour.
-- automatic updates, per container, for containers created in kontainers: after each check that
+- automatic updates, per container (any that Update image handles; opted in on its page or with
+  the label `kontainers.autoupdate=true`): after each check that
   finds a newer image, the container is updated as Update image does it, then watched for
   `KONTAINERS_AUTOUPDATE_SETTLE` seconds (30), and with a healthcheck until it reports healthy
   (up to `KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT`, 120). If it stops, restarts or turns unhealthy,
   the old container is put back and that image is held back; a newer image is tried. A container
-  replaced under the same name outside kontainers is not updated automatically.
+  replaced under the same name outside kontainers is not updated automatically, unless it has the
+  label.
 - notifications to webhooks (a JSON POST) and ntfy topics, for: a newer image (once per image),
   an automatic update and its result, a container that stopped on its own (a crash, an error
   exit, out of memory; not a stop someone asked for, and not exit code 0), a container that turned
@@ -187,7 +204,7 @@ With `docker run`, mounting the socket directly:
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.5.0
+      ataiva/kontainers:0.6.0
     docker logs kontainers | grep 'setup token'
 
 The image runs as an unprivileged user, so it needs the socket's group (`--group-add`). On
@@ -201,8 +218,18 @@ which fetches only the manifest. Containers on an older image are
 marked on the list and on their page. A digest the registry never served counts as a local build,
 not as an older image.
 
-Containers created in kontainers can be updated automatically: tick "Update automatically" on the
-container's page, or when creating it. After a check finds a newer image, the container is
+Any container that Update image handles can be updated automatically: tick "Update
+automatically" on its page (or when creating it in kontainers), or give it the label
+`kontainers.autoupdate=true`. The label suits compose, where it survives `docker compose up`
+recreating the container:
+
+    services:
+      app:
+        image: ghcr.io/me/app:1
+        labels:
+          kontainers.autoupdate: "true"
+
+After a check finds a newer image, the container is
 recreated from it with the same settings, volumes and networks, and watched for
 `KONTAINERS_AUTOUPDATE_SETTLE` seconds (30); with a healthcheck, until it is healthy (up to
 `KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT`, 120 s). If it stops, restarts or turns unhealthy, the old
@@ -211,8 +238,15 @@ asks for while it settles (`docker stop`, a backup script) is not a failure: the
 left as they left it. If kontainers itself is stopped meanwhile, it puts the old container back
 before it exits; `compose.yaml` gives it 30 s for that (`stop_grace_period`), and with `docker run`
 add `--stop-timeout 30`. If it is killed first, it finishes the job when it starts again: what it
-was replacing, and whether that was running, is written down before anything is stopped. Compose
-containers are left to `docker compose pull && docker compose up -d`.
+was replacing, and whether that was running, is written down before anything is stopped.
+
+A compose container keeps its compose labels, and compose's record of its image
+(`com.docker.compose.image`) is set to the new image, so a later `docker compose up -d` leaves it
+running instead of recreating it (tested with Docker Compose from `docker:29-cli`, on Docker 28 and on
+Docker 29 with its containerd image store). Its settings
+still change only in the compose file. kontainers itself, the container serving its Docker API
+and the services kontainers depends on (its `depends_on`, as it was when kontainers was created)
+are never updated by it, whatever their labels say.
 
 When automatic updates run is set on the Settings page: an update window (hours in UTC, which may
 cross midnight, and days of the week), and a delay, the hours a newer image waits after a check
@@ -251,7 +285,7 @@ to be public: they serve the sites you route, not the kontainers UI.
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.5.0
+      ataiva/kontainers:0.6.0
 
 Use your own email address: Let's Encrypt rejects reserved domains such as example.com, and
 kontainers refuses to start with one.
@@ -297,6 +331,7 @@ briefly unavailable; Caddy did not renew certificates in a process that started 
 | `KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT` | `120` | Seconds to wait for "healthy" after settling, for images with a healthcheck, 0 to 3600 |
 | `KONTAINERS_AUTOUPDATE_WINDOW` | unset (any time) | When automatic updates may run, in UTC: `02:00-05:00`, optionally followed by days (`02:00-05:00 Sat,Sun`); applies until a window is saved on the Settings page |
 | `KONTAINERS_AUTOUPDATE_DELAY_HOURS` | `0` | Hours a newer image waits after a check first sees it, 0 to 720; as above |
+| `KONTAINERS_BACKUP_KEEP` | `7` | Daily copies of the database kept in `/data/backups`, 0 to 365; `0` turns them off |
 | `KONTAINERS_HTTP_PORT` / `KONTAINERS_HTTPS_PORT` | `80` / `443` | Proxy ports |
 
 `/healthz` returns 200 while the process runs. `/readyz` returns 200 when the database and the
@@ -326,11 +361,25 @@ certificates). Notification URLs and tokens are stored as given, so treat a back
     docker exec kontainers bun src/main.ts backup /data/backup.db
     docker cp kontainers:/data/backup.db .
 
-or download one from Settings. To restore, stop kontainers, replace `kontainers.db` in the volume
-with the backup (and delete any `kontainers.db-wal` and `kontainers.db-shm`), then start it.
+or download one from Settings. kontainers also copies its database once a day to
+`/data/backups/kontainers-YYYY-MM-DD.db` and keeps the newest 7 (`KONTAINERS_BACKUP_KEEP`); Settings
+lists them with download links. They are in the same volume, so they help after a mistake or a bad
+upgrade, not after losing the volume: copy them elsewhere for that. To restore, stop kontainers,
+replace `kontainers.db` in the volume with the backup (and delete any `kontainers.db-wal` and
+`kontainers.db-shm`), then start it. kontainers runs as uid 1000, so the file must belong to it.
+With `compose.yaml` (the volume is `<project>_kontainers-data`; `docker volume ls` shows it):
+
+    docker compose stop kontainers
+    docker run --rm -v kontainers_kontainers-data:/data busybox sh -c \
+      'cp /data/backups/kontainers-2026-11-19.db /data/kontainers.db && rm -f /data/kontainers.db-wal /data/kontainers.db-shm && chown 1000:1000 /data/kontainers.db && chmod 600 /data/kontainers.db'
+    docker compose start kontainers
+
 Certificates that are not restored are obtained again.
 
-Upgrades run database migrations at start. A database written by a newer version is refused
+Upgrades run database migrations at start, after copying the database to
+`/data/backups/before-schema-N-YYYYMMDD-HHMMSS.db` (the newest 3 are kept); if the copy cannot be
+written, kontainers does not migrate and does not start. To go back to the older version, restore
+that copy as above and start the older image. A database written by a newer version is refused
 rather than modified.
 
 ## Development
@@ -340,12 +389,13 @@ the host.
 
     scripts/test.sh            # all suites
     scripts/test.sh unit       # typecheck and unit tests
-    scripts/test.sh api        # the server process against dind
+    scripts/test.sh api        # the server process against dind (Docker 28), with real docker compose
     scripts/test.sh image      # the built image, behind docker-socket-proxy
     scripts/test.sh e2e        # Playwright (Chromium) against the image
     scripts/test.sh proxy      # proxy rules and certificates against Pebble, inside dind
     scripts/test.sh renewal    # Pebble issues 90-second certificates; Caddy must renew them itself
     scripts/test.sh compose    # the README compose instructions, verbatim, inside dind
+    scripts/test.sh copies     # updates of compose and docker run containers on Docker 29 (containerd image store)
 
 The image suite also runs the image with its data volume on a 1 MB tmpfs and fills it; the browser
 suite runs axe-core (WCAG 2 A and AA) on every page at desktop and phone size. Set

@@ -6,16 +6,17 @@ import { readFileSync, unlinkSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
+import dns from 'node:dns/promises';
 import type { Config } from './config';
 import { isLoopback } from './config';
 import { Auth, RateLimiter, safeEqual, type Session } from './auth';
 import { Docker, DockerError, summarizeStats, type CreateSpec } from './docker';
 import type { ProxyManager, RuleStore } from './proxy';
 import { snapshot } from './db';
-import { recreateSpec, replaceContainer, updatable, updateContainerDetailed, type Journal } from './update';
+import { editable, recreateSpec, replaceContainer, updateContainerDetailed, type Journal } from './update';
 import type { Notifier } from './notify';
 import { EVENT_KINDS } from './notify';
-import type { AutoUpdates } from './autoupdate';
+import { labelledOn, type AutoUpdates } from './autoupdate';
 import type { EventWatcher } from './events';
 import { containerStatus, type UpdateChecker } from './updates';
 import { STATIC } from './static';
@@ -27,6 +28,7 @@ import { diskFull, DISK_FULL, storageTrouble, writeFailed } from './storage';
 import { validateRegistry, type Registries } from './registries';
 import { validateSchedule, describeSchedule, DAY_NAMES, type ScheduleStore } from './schedule';
 import { otpauthUri, type TwoFactor } from './totp';
+import type { Backups } from './backups';
 
 export interface Deps {
   cfg: Config;
@@ -48,6 +50,7 @@ export interface Deps {
   journal?: Journal;
   schedule?: ScheduleStore;
   twoFactor?: TwoFactor;
+  backups?: Backups;
 }
 
 export type Handler = (req: Request, socketIp: string) => Promise<Response>;
@@ -316,7 +319,9 @@ export function createHandler(d: Deps): Handler {
     try {
       const c = await docker.inspect(d.selfContainer);
       const project = c.Config?.Labels?.['com.docker.compose.project'] ?? null;
-      selfCache = { id: c.Id, project, apiId: await apiContainerId(project) };
+      // com.docker.compose.depends_on: "docker-proxy:service_started:false,..."
+      const deps = String(c.Config?.Labels?.['com.docker.compose.depends_on'] || '').split(',').map((d: string) => d.split(':')[0]).filter(Boolean);
+      selfCache = { id: c.Id, project, apiId: await apiContainerId(project), deps };
       selfAt = Date.now();
     } catch (e) {
       if (e instanceof DockerError && e.status === 404) selfCache = null; // not a container after all
@@ -324,23 +329,31 @@ export function createHandler(d: Deps): Handler {
     }
     return selfCache ?? null;
   }
+  // Never recreated by kontainers (views.isProtected).
+  const untouchable = async (c: any) => views.isProtected(c, await self());
+  if (d.autoUpdates) d.autoUpdates.protect = untouchable;
+
   // The container that serves kontainers' Docker API, when DOCKER_HOST names one (tcp://docker-proxy:2375
   // in compose.yaml): by container name, by compose service in kontainers' own project, or by address.
   // Looked up again every 30 s, because compose recreates it under a new ID.
   async function apiContainerId(project: string | null): Promise<string | null> {
     const api = dockerApiHost(cfg.dockerHost);
     if (!api) return null;
+    // A name that is a network alias matches none of the containers' names: what it resolves to does.
+    const addrs = new Set<string>([api]);
+    if (!/^[\d.]+$|:/.test(api)) { try { for (const a of await dns.lookup(api, { all: true })) addrs.add(a.address); } catch { /* not resolvable here */ } }
     for (const c of await docker.listContainers()) {
       const labels = c.Labels || {};
       if ((c.Names || []).some((n: string) => n.replace(/^\//, '') === api)
         || (!!project && labels['com.docker.compose.project'] === project && labels['com.docker.compose.service'] === api)
-        || Object.values(c.NetworkSettings?.Networks || {}).some((n: any) => n?.IPAddress === api)) return c.Id;
+        || Object.values(c.NetworkSettings?.Networks || {}).some((n: any) => !!n?.IPAddress && addrs.has(n.IPAddress))) return c.Id;
     }
     return null;
   }
   const updateView = (): views.UpdateView | null => d.updates
     ? { get: (ref: string) => d.updates!.get(ref), lastRun: d.updates.lastRun, scheduled: cfg.updateCheckHours > 0 ? cfg.updateCheckHours : null,
-        held: (name: string, id: string) => (d.autoUpdates?.isOn(name, id) ? d.autoUpdates.heldImage(name) : null) }
+        held: (name: string, id: string) => (d.autoUpdates?.isOn(name, id) ? d.autoUpdates.heldImage(name) : null),
+        heldDigests: (name: string) => d.autoUpdates?.heldDigests(name) }
     : null;
 
   // A password asked again from a logged-in session (turning off two-factor, replacing its key,
@@ -575,8 +588,8 @@ export function createHandler(d: Deps): Handler {
         const c = await docker.inspect(r[1]);
         const me = await self();
         if (me && views.isSelf(c, me)) throw new v.ValidationError("this is kontainers itself or the container that serves its Docker API; change it on the host");
-        const refusal = updatable(c);
-        if (refusal) throw new v.ValidationError(refusal.replace('can be updated here', 'can be edited here').replace('update it with', 'change it in the compose file and run'));
+        const refusal = editable(c);
+        if (refusal) throw new v.ValidationError(refusal);
         const oldImage = await docker.inspectImage(c.Image).catch(() => null);
         const spec = recreateSpec(c, oldImage);
         return page(views.editContainerPage(ctx(s), c, spec, cfg.allowBindMounts, !oldImage));
@@ -585,7 +598,7 @@ export function createHandler(d: Deps): Handler {
         const c = await docker.inspect(r[1]);
         const name = String(c.Name || '').replace(/^\//, '');
         const row = d.autoUpdates?.get(name) ?? null;
-        const auto = d.autoUpdates ? { on: d.autoUpdates.isOn(name, c.Id), row, waiting: d.autoUpdates.waitingFor(name) } : null;
+        const auto = d.autoUpdates ? { on: d.autoUpdates.isOn(name, c.Id, c.Config?.Labels), label: labelledOn(c.Config?.Labels), row, waiting: d.autoUpdates.waitingFor(name) } : null;
         return page(views.containerPage(ctx(s), c, await self(), updateView(), auto));
       }
       if ((r = /^\/api\/containers\/([^/]+)\/stats$/.exec(p))) {
@@ -648,8 +661,16 @@ export function createHandler(d: Deps): Handler {
         return rule ? page(views.editRulePage(ctx(s), rule)) : page(views.layout('Not found', ctx(s), views.html`<p>There is no proxy rule ${r[1]}. <a href="/proxy">Proxy</a></p>`), 404);
       }
       if (p === '/settings') return page(views.settingsPage(ctx(s), auth.listUsers(), s.user.id, d.notifier ? d.notifier.list() : null, d.events ? { connected: d.events.connected, error: d.events.lastError } : null, d.registries ? d.registries.list() : null, d.schedule ? d.schedule.get() : null,
-        d.twoFactor ? { mine: d.twoFactor.enabled(s.user.id), left: d.twoFactor.recoveryLeft(s.user.id), users: new Set(auth.listUsers().filter(u => d.twoFactor!.enabled(u.id)).map(u => u.id)) } : null));
+        d.twoFactor ? { mine: d.twoFactor.enabled(s.user.id), left: d.twoFactor.recoveryLeft(s.user.id), users: new Set(auth.listUsers().filter(u => d.twoFactor!.enabled(u.id)).map(u => u.id)) } : null,
+        d.backups ? { keep: d.backups.keep, files: d.backups.list(), dir: join(cfg.dataDir, 'backups') } : null));
       if (p === '/api/backup') { safeAudit(s, 'backup', null, ip); return backup(); }
+      if ((r = /^\/settings\/backups\/([^/]+)$/.exec(p)) && d.backups) {
+        let name = '';
+        try { name = decodeURIComponent(r[1]); } catch { /* a malformed escape: no such backup */ }
+        const file = d.backups.path(name);
+        safeAudit(s, 'backup', name, ip);
+        return new Response(Bun.file(file), { headers: { 'content-type': 'application/vnd.sqlite3', 'content-disposition': `attachment; filename="${name}"` } });
+      }
       if (p.startsWith('/api/')) return text('not found\n', 404);
       return page(views.layout('Not found', ctx(s), views.html`<p>There is no page at this address. <a href="/containers">Containers</a></p>`), 404);
     }
@@ -694,8 +715,8 @@ export function createHandler(d: Deps): Handler {
       return act(s, ip, () => back, 'container-edit', id, async () => {
         await refuseSelf(id);
         const c = await docker.inspect(id);
-        const refusal = updatable(c);
-        if (refusal) throw new v.ValidationError(refusal.replace('can be updated here', 'can be edited here').replace('update it with', 'change it in the compose file and run'));
+        const refusal = editable(c);
+        if (refusal) throw new v.ValidationError(refusal);
         const name = String(c.Name || '').replace(/^\//, '');
         refuseSetAside(name);
         // Taken straight after the inspect, with nothing awaited in between, and held for the pull too.
@@ -712,7 +733,7 @@ export function createHandler(d: Deps): Handler {
             ...(c.HostConfig?.Mounts || []).filter((m: any) => m.Type === 'bind').map((m: any) => ({ source: String(m.Source), readOnly: !!m.ReadOnly })),
           ];
           rep = await replaceContainer(docker, c, spec, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, allowedBinds: binds, ...replaceOpts() }, 'saving the settings');
-          d.autoUpdates?.recreated(name, rep.id);
+          d.autoUpdates?.recreated(name, rep.id, c.Id);
           back = `/containers/${encodeURIComponent(name)}`;
         } finally { release(); }
         // After the lock is released: a crash of the new container from now on is reported as one.
@@ -726,6 +747,7 @@ export function createHandler(d: Deps): Handler {
       return act(s, ip, '/containers', 'container-update', id, async () => {
         await refuseSelf(id);
         const c = await docker.inspect(id);
+        if (await untouchable(c)) throw new v.ValidationError(`${String(c.Name || '').replace(/^\//, '')} is kontainers itself or a service it depends on; update it with docker compose pull && docker compose up -d`);
         const name = String(c.Name || '').replace(/^\//, '');
         refuseSetAside(name);
         const release = locks.take(name);
@@ -734,7 +756,7 @@ export function createHandler(d: Deps): Handler {
         try {
           // Watched for a few seconds, so an image that crashes at once is caught and rolled back.
           r = await updateContainerDetailed(docker, id, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, healthTimeoutMs: 0, ...replaceOpts() });
-          if (r.changed) d.autoUpdates?.recreated(name, r.id);
+          if (r.changed) d.autoUpdates?.recreated(name, r.id, c.Id);
         } finally { release(); }
         if (c.Config?.Image && d.updates) await d.updates.check(c.Config.Image).catch(() => {});
         return r.message;
@@ -751,7 +773,8 @@ export function createHandler(d: Deps): Handler {
         const n = await running;
         const newer = n === 0 ? [] : (await docker.listContainersWithRefs()).filter(c => containerStatus(d.updates!.get(c.Ref), c.ImageID)?.status === 'available');
         const uv = updateView();
-        const opted = newer.filter(c => { const nm = String(c.Names?.[0] || '').replace(/^\//, ''); return d.autoUpdates?.isOn(nm, c.Id) && !views.heldBack(uv, nm, c.Id, c.Ref); });
+        const me = await self();
+        const opted = newer.filter(c => { const nm = String(c.Names?.[0] || '').replace(/^\//, ''); return !views.isProtected(c, me) && d.autoUpdates?.isOn(nm, c.Id, c.Labels) && !views.heldBack(uv, nm, c.Id, c.Ref); });
         const waits = opted.filter(c => d.autoUpdates?.waitFor(c.Ref, d.updates!.get(c.Ref))).length;
         const auto = opted.length - waits;
         const available = newer.length;
@@ -785,6 +808,7 @@ export function createHandler(d: Deps): Handler {
       return act(s, ip, `/containers/${encodeURIComponent(id)}`, f.on ? 'autoupdate-on' : 'autoupdate-off', id, async () => {
         if (!d.autoUpdates) throw new v.ValidationError('automatic updates are not available');
         await refuseSelf(id);
+        if (f.on && await untouchable(await docker.inspect(id))) throw new v.ValidationError('kontainers does not update itself or a service it depends on; use docker compose pull && docker compose up -d');
         return d.autoUpdates.set(id, !!f.on);
       });
     }

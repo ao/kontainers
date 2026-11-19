@@ -63,7 +63,21 @@ class FakeDocker {
     });
     return { Id: id };
   }
+  // A copy (Update image of a container kontainers did not create): the body as the daemon keeps it.
+  async createCopy(name: string, body: any) {
+    const id = `c${++this.n}`.padEnd(12, '0');
+    const { HostConfig, NetworkingConfig, ...cfg } = body;
+    this.containers.set(id, {
+      Id: id, Name: '/' + name, Image: this.tags.get(body.Image), RestartCount: 0, Config: structuredClone(cfg), HostConfig: structuredClone(HostConfig),
+      NetworkSettings: { Networks: { bridge: {} } }, State: { Running: false, Status: 'created' },
+    });
+    return { Id: id };
+  }
+  async disconnect() {}
   async connect() {}
+  async inspectFull(id: string) { return this.inspect(id); }
+  async inspectImageFull(ref: string) { return this.inspectImage(ref); }
+  async tag(imageId: string, ref: string) { this.tags.set(ref, imageId); }
   // Containers someone stopped on purpose: the events API reports a kill for them. killOnStart:
   // every container started from now on is "stopped by someone" at once.
   killed = new Set<string>();
@@ -238,14 +252,90 @@ describe('AutoUpdates', () => {
     expect(auto.isOn('web', other)).toBe(false);
   });
 
-  test('only containers kontainers created can be opted in; off forgets', async () => {
-    const { d, auto } = setup();
+  test('a container made outside kontainers can be opted in and is updated by copying it; off forgets', async () => {
+    const { d, auto, cycle } = setup();
     const ext = d.run('ext', 'app:1', false);
-    await expect(auto.set(ext, true)).rejects.toThrow('only containers created in kontainers');
+    d.find(ext).Config.Labels = { team: 'web' };
+    d.find(ext).HostConfig.CapAdd = ['NET_ADMIN'];
+    await auto.set(ext, true);
+    d.registry.set('app:1', 'i2');
+    await cycle();
+    const now = running(d, 'ext');
+    expect(now.Image).toBe('i2');
+    expect(now.Config.Labels).toEqual({ team: 'web', 'kontainers.replaces': ext });
+    expect(now.HostConfig.CapAdd).toEqual(['NET_ADMIN']);
+    expect(now.State.Running).toBe(true);
+    expect(d.containers.size).toBe(1);
+    expect(await auto.set(now.Id, false)).toContain('no longer');
+    expect(auto.get('ext')).toBeNull();
+    // A digest always means the same image.
+    const pinned = d.run('pinned', 'app:1', false);
+    d.find(pinned).Config.Image = 'app@sha256:' + 'a'.repeat(64);
+    await expect(auto.set(pinned, true)).rejects.toThrow('digest');
+  });
+
+  test('a failed update points the tag back at the running image; the held image is not pulled again', async () => {
+    const { d, auto, cycle } = setup();
     const id = d.run('web', 'app:1');
     await auto.set(id, true);
-    expect(await auto.set(id, false)).toContain('no longer');
-    expect(auto.get('web')).toBeNull();
+    d.registry.set('app:1', 'i3'); // crashes
+    await cycle();
+    expect(running(d, 'web').Id).toBe(id);
+    expect(d.tags.get('app:1')).toBe('i1');
+    expect(auto.get('web')?.held_image).toBe('i3');
+    d.pulls.length = 0;
+    await cycle();
+    expect(d.pulls).toEqual([]);
+    expect(running(d, 'web').Id).toBe(id);
+    // A newer one is tried.
+    d.registry.set('app:1', 'i4');
+    await cycle();
+    expect(running(d, 'web').Image).toBe('i4');
+  });
+
+  test('the opt-in moves only from the container that had it', async () => {
+    const { d, auto } = setup();
+    const id = d.run('web', 'app:1');
+    await auto.set(id, true);
+    auto.recreated('web', 'other', 'not-it');
+    expect(auto.get('web')?.container_id).toBe(id);
+    auto.recreated('web', 'new', id);
+    expect(auto.get('web')?.container_id).toBe('new');
+  });
+
+  test('the label kontainers.autoupdate=true opts a container in, and keeps it in when compose recreates it', async () => {
+    const { d, auto, cycle } = setup();
+    const id = d.run('shop-web-1', 'app:1', false);
+    d.find(id).Config.Labels = { 'com.docker.compose.project': 'shop', 'kontainers.autoupdate': 'true' };
+    expect(auto.isOn('shop-web-1', id, d.find(id).Config.Labels)).toBe(true);
+    await expect(auto.set(id, false)).rejects.toThrow('remove the label');
+    d.registry.set('app:1', 'i2');
+    await cycle();
+    const after = running(d, 'shop-web-1');
+    expect(after.Image).toBe('i2');
+    expect(after.Config.Labels['kontainers.autoupdate']).toBe('true');
+    // Compose recreates it (an edit of the compose file): a new ID, the label still there.
+    d.containers.delete(after.Id);
+    const again = d.run('shop-web-1', 'app:1', false);
+    d.find(again).Config.Labels = { 'com.docker.compose.project': 'shop', 'kontainers.autoupdate': 'true' };
+    d.find(again).Image = 'i2';
+    d.registry.set('app:1', 'i4');
+    await cycle();
+    expect(running(d, 'shop-web-1').Image).toBe('i4');
+    expect(auto.get('shop-web-1')?.container_id).toBe(running(d, 'shop-web-1').Id);
+  });
+
+  test('kontainers itself and its Docker API container are never updated, whatever their labels say', async () => {
+    const { d, auto, cycle, sent } = setup();
+    const id = d.run('kontainers', 'app:1', false);
+    d.find(id).Config.Labels = { 'kontainers.autoupdate': 'true' };
+    auto.protect = async c => c.Id === id;
+    d.registry.set('app:1', 'i2');
+    await cycle();
+    expect(running(d, 'kontainers').Id).toBe(id);
+    expect(running(d, 'kontainers').Image).toBe('i1');
+    expect(auto.get('kontainers')).toBeNull();
+    expect(sent.map(s => s.kind)).toEqual(['update']);
   });
 
   test('a container being updated by hand is skipped', async () => {
@@ -372,6 +462,20 @@ describe('recoverInterrupted', () => {
   const journalOf = (rows: { name: string; old_id: string; was_running: number; at?: number }[]) => ({ begin() {}, end(n: string) { const i = rows.findIndex(r => r.name === n); if (i >= 0) rows.splice(i, 1); }, all: () => rows.map(r => ({ at: Date.now() - 1000, ...r })) });
   // The replacement kontainers makes carries the ID of the container it replaces.
   const replacing = (d: FakeDocker, id: string, old: string) => { d.find(id).Config.Labels['kontainers.replaces'] = old; return id; };
+  test('killed while it stopped the old container: once that stop finishes, the old one is started again', async () => {
+    const { d } = setup();
+    const id = d.run('web', 'app:1');
+    // kontainers sent the stop (a signal the process takes its time over) and died meanwhile.
+    d.pastEvents = async (f: any) => (f.container.includes(id) ? [{ Action: 'kill', Actor: { ID: id, Attributes: { signal: '28' } } }] : []);
+    setTimeout(() => { d.find(id).State = { Running: false, Status: 'exited', ExitCode: 137 }; }, 1500);
+    const rows = [{ name: 'web', old_id: id, was_running: 1 }];
+    const { recoverInterrupted } = await import('../../src/update');
+    const r = await recoverInterrupted(d as any, () => {}, journalOf(rows));
+    expect(r.map(x => x.text)).toEqual(['started web again: kontainers stopped while web was stopped for an update or edit']);
+    expect(d.find('web').State.Running).toBe(true);
+    expect(rows).toHaveLength(0);
+  }, 15000);
+
   test('with the journal: a new one that never started goes, and the old one is back and running', async () => {
     const { d } = setup();
     const old = aside(d, 'web', false);
@@ -799,7 +903,7 @@ describe('code review of round 5', () => {
     const marks: string[] = [];
     const remove = d.remove.bind(d);
     d.remove = async (i: string, f?: boolean) => { marks.push(`remove ${i === id ? 'old' : 'new'}`); return remove(i); };
-    const journal = { begin: () => marks.push('begin'), rollingBack: () => marks.push('rollback'), end: () => marks.push('end'), all: () => [] };
+    const journal = { begin: () => { marks.push('begin'); }, rollingBack: () => marks.push('rollback'), end: () => marks.push('end'), all: () => [] };
     const { replaceContainer } = await import('../../src/update');
     await expect(replaceContainer(d as any, d.find(id), { name: 'web', image: 'bad:1' }, { journal }, 'update')).rejects.toThrow('put back');
     expect(marks).toEqual(['begin', 'rollback', 'remove new', 'end']);
@@ -813,9 +917,11 @@ describe('ReplaceJournal', () => {
     const j = new ReplaceJournal(db, () => 1000);
     j.begin('web', 'a'.repeat(64), true);
     j.rollingBack('web');
-    expect(j.all()).toEqual([{ name: 'web', old_id: 'a'.repeat(64), was_running: 1, at: 1000, rollback: 1 }]);
+    expect(j.all()).toEqual([{ name: 'web', old_id: 'a'.repeat(64), was_running: 1, at: 1000, rollback: 1, phase: null, stopping_at: null }]);
+    j.phase('web', 'stopping');
+    expect(j.all()[0]).toMatchObject({ phase: 'stopping', stopping_at: 1000 });
     j.begin('web', 'b'.repeat(64), false);
-    expect(j.all()[0]).toMatchObject({ old_id: 'b'.repeat(64), was_running: 0, rollback: 0 });
+    expect(j.all()[0]).toMatchObject({ old_id: 'b'.repeat(64), was_running: 0, rollback: 0, phase: null, stopping_at: null });
     j.end('web');
     expect(j.all()).toEqual([]);
   });

@@ -203,11 +203,15 @@ describe.skipIf(!DOCKER)('docker flows', () => {
       await dockerApi(`/containers/${name}?force=1`, { method: 'DELETE' });
     }, 120000);
 
-    test('containers kontainers did not create are refused', async () => {
+    test('a container made from a digest is refused: nothing to update to', async () => {
       const name = `k-${run}-ext`;
-      const created = await dockerApi(`/containers/create?name=${name}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ Image: IMAGE, Cmd: ['sleep', '300'], Labels: { 'com.docker.compose.project': 'shop' } }) });
+      const digest = ((await (await dockerApi(`/images/${encodeURIComponent(IMAGE)}/json`)).json()) as any).RepoDigests?.[0];
+      expect(digest).toContain('@sha256:');
+      const created = await dockerApi(`/containers/create?name=${name}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ Image: digest, Cmd: ['sleep', '300'], Labels: { 'com.docker.compose.project': 'shop' } }) });
       expect(created.status).toBe(201);
-      expect((await c.submit(`/containers/${name}/update`, {})).error).toContain('docker compose pull');
+      expect((await c.submit(`/containers/${name}/update`, {})).error).toContain('it was created from a digest');
+      // Edit settings stays with the compose file.
+      expect(await c.page(`/containers/${name}/edit`)).toContain('change it in the compose file');
       await dockerApi(`/containers/${name}?force=1`, { method: 'DELETE' });
     });
   });

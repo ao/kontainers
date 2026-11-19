@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.6.0
+
+Updates, manual and automatic, for containers kontainers did not create (compose and
+`docker run`), and backups of the database.
+
+Upgrading from 0.5.x:
+
+- Nothing to do by hand. At the first start 0.6.0 copies the database to
+  `/data/backups/before-schema-8-YYYYMMDD-HHMMSS.db` and then migrates it (schema 7 to 8: how far
+  an update got, and the digests of held images). 0.5.x refuses the migrated database; to go back,
+  restore that copy as the README's "Backup and restore" shows, and start 0.5.x.
+- Each stop now waits for the container's own stop timeout (compose's `stop_grace_period`), also
+  for Stop and Restart on the container pages.
+- Automatic updates can now be switched on for compose and `docker run` containers, or with the
+  label `kontainers.autoupdate=true`. A container that already has that label is updated
+  automatically from the first check after the upgrade; no other is.
+
+- Update image and automatic updates work for containers kontainers did not create: compose and
+  `docker run` ones. They are copied whole from `docker inspect` at the daemon's own API version
+  (privileges, limits, labels, healthchecks, per-network aliases, links and addresses, and
+  anonymous volumes included), with the old image's defaults left to the new image. The copy is
+  created and compared with the old container before the old one stops, so a copy that would lose
+  something changes nothing. Compose's record of the image is set to what compose would record
+  (the image ID, or the platform manifest digest with Docker 29's containerd image store), so
+  `docker compose up -d` afterwards does not recreate the container. When the new image changes
+  the user or a data directory in a volume that the container shares with the old image, the
+  update is refused rather than guessed. Refused too: `--rm` containers, digest-pinned
+  references, swarm tasks, containers whose namespaces or volumes others use, and kontainers
+  itself, its socket proxy and the services it depends on.
+- Every Update image stops the old container with its own stop timeout (compose's
+  `stop_grace_period`), not 10 seconds. An update that fails or is held back points the tag back
+  at the image the container runs, so `docker compose up -d` does not install the failed one.
+- After a restart in the middle of an update, a stop kontainers had begun is waited for, and the
+  old container is started again.
+- The label `kontainers.autoupdate=true` opts a container into automatic updates from its own
+  configuration (a compose file), and keeps it opted in when compose recreates it.
+- Before a migration the database is copied to `/data/backups/before-schema-N-...db`; without the
+  copy there is no migration. Daily copies are kept too (`KONTAINERS_BACKUP_KEEP`, 7; 0 turns them
+  off), listed on the Settings page with download links.
+
 ## 0.5.0
 
 Two-factor login, and an update window and delay for automatic updates.

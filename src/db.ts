@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import { mkdirSync, chmodSync } from 'node:fs';
+import { mkdirSync, chmodSync, readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 
 // Ordered schema migrations. Never edit a released entry; append a new one.
@@ -101,6 +101,12 @@ export const MIGRATIONS: string[] = [
      used_at INTEGER,
      PRIMARY KEY (user_id, code_hash)
    );`,
+  // 8 (0.6): how far a replacement got (verified: the copy was compared and is faithful; stopping:
+  // the old container is being stopped, since stopped_at; started: the new one was started, at
+  // `at`), and the registry digests of an image held back.
+  `ALTER TABLE replacing ADD COLUMN phase TEXT;
+   ALTER TABLE replacing ADD COLUMN stopping_at INTEGER;
+   ALTER TABLE auto_update ADD COLUMN held_digests TEXT;`,
 ];
 
 // degraded: opened without the shared-memory file, because the data volume had no room for it.
@@ -117,7 +123,22 @@ export function openDb(dataDir: string): Database & { degraded?: string } {
       db.exec('PRAGMA busy_timeout = 5000;');
       if (exclusive) db.exec('PRAGMA locking_mode = EXCLUSIVE;');
       db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
-      migrate(db);
+      // A copy first, so an older kontainers can be started again on it: an upgrade that fails, or
+      // one the owner wants to undo. No copy, no migration.
+      migrate(db, (from, to) => {
+        const dest = join(dataDir, 'backups', beforeMigrationName(to));
+        try { backupDir(dataDir); snapshot(db, dest); } catch (e) {
+          try { unlinkSync(dest); } catch { /* not written */ }
+          throw new Error(`could not copy the database to ${dest} before migrating it from schema ${from} to ${to}: ${(e as Error).message}`);
+        }
+        console.log(`kontainers: copied the database to ${dest} before migrating it from schema ${from} to ${to}; an older kontainers can be started on that copy`);
+        // The newest 3 such copies are kept, also when a migration fails at every start.
+        try {
+          const old = readdirSync(join(dataDir, 'backups')).filter(n => /^before-schema-\d+-\d{8}-\d{6}\.db$/.test(n))
+            .sort((a, b) => (a.replace(/^before-schema-\d+-/, '') < b.replace(/^before-schema-\d+-/, '') ? 1 : -1)).slice(3);
+          for (const n of old) unlinkSync(join(dataDir, 'backups', n));
+        } catch { /* kept until the next prune */ }
+      });
       // SQLite can fall back to a read-only shared-memory file it could not open for writing; then
       // every write fails later. Taking the write lock once finds that out now.
       db.exec('BEGIN IMMEDIATE; ROLLBACK;');
@@ -138,11 +159,27 @@ export function schemaVersion(db: Database): number {
   return (db.query('PRAGMA user_version').get() as { user_version: number }).user_version;
 }
 
-export function migrate(db: Database): void {
+// <data>/backups, private to kontainers' user (backups.ts).
+export function backupDir(dataDir: string): string {
+  const dir = join(dataDir, 'backups');
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try { chmodSync(dir, 0o700); } catch { /* odd filesystems */ }
+  return dir;
+}
+
+// The name of the copy taken before migrating to `schema`, at `at`.
+export function beforeMigrationName(schema: number, at = Date.now()): string {
+  const t = new Date(at).toISOString();
+  return `before-schema-${schema}-${t.slice(0, 10).replace(/-/g, '')}-${t.slice(11, 19).replace(/:/g, '')}.db`;
+}
+
+// before(from, to): called once before an existing database (schema `from`, not 0) is migrated.
+export function migrate(db: Database, before?: (from: number, to: number) => void): void {
   const current = schemaVersion(db);
   if (current > MIGRATIONS.length) {
     throw new Error(`database schema ${current} is newer than this kontainers (${MIGRATIONS.length}); refusing to start`);
   }
+  if (before && current > 0 && current < MIGRATIONS.length) before(current, MIGRATIONS.length);
   for (let v = current; v < MIGRATIONS.length; v++) {
     db.transaction(() => {
       db.exec(MIGRATIONS[v]);

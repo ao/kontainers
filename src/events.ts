@@ -14,6 +14,8 @@ const HEALTH_REPEAT_MS = 60 * 60_000;
 
 export interface DockerEvent { Type?: string; Action?: string; status?: string; id?: string; Actor?: { ID?: string; Attributes?: Record<string, string> }; time?: number; timeNano?: number }
 
+const baseName = (name: string) => name.replace(/-old-[0-9a-f]{8}$/, '');
+
 export class EventWatcher {
   private stopped = false;
   private ctrl: AbortController | null = null;
@@ -114,7 +116,8 @@ export class EventWatcher {
       const oomAt = this.oomAt.get(id);
       this.oomAt.delete(id);
       const oom = oomAt !== undefined && at - oomAt <= KILL_WINDOW_MS;
-      if (this.quiet(name) || this.inReplacement(name, at)) return;
+      // The old container of a copy is stopped after it was set aside as <name>-old-<id>.
+      if (this.quiet(name) || this.inReplacement(name, at) || this.quiet(baseName(name)) || this.inReplacement(baseName(name), at)) return;
       const killed = this.killedAt.get(id);
       const code = attrs.exitCode ?? '?';
       if (!oom && killed !== undefined && at - killed <= KILL_WINDOW_MS) return;
@@ -136,7 +139,8 @@ export class EventWatcher {
 
     if (action.startsWith('health_status')) {
       // A container being replaced is judged by the update itself.
-      if (this.quiet(name) || this.inReplacement(name, at)) return;
+      // The old container of a copy is stopped after it was set aside as <name>-old-<id>.
+      if (this.quiet(name) || this.inReplacement(name, at) || this.quiet(baseName(name)) || this.inReplacement(baseName(name), at)) return;
       const status = action.split(':')[1]?.trim();
       if (status === 'unhealthy' && !this.unhealthy.has(id)) {
         this.unhealthy.add(id);

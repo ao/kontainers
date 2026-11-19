@@ -55,6 +55,25 @@ describe('upgrade from the 0.2.0 database', () => {
     expect((await c.get('/proxy')).headers.get('location')).toBe('/login');
   });
 
+  test('a copy of the 0.2.0 database was taken first; Settings lists it and it downloads', async () => {
+    expect(srv.output()).toMatch(/copied the database to \S+\/backups\/before-schema-\d+-\d{8}-\d{6}\.db before migrating it from schema 1/);
+    const c = new Client(srv.base);
+    expect((await c.post('/login', { username: 'admin', password: PW }, { csrf: false })).status).toBe(303);
+    const page = await c.page('/settings');
+    const name = /href="\/settings\/backups\/(before-schema-[^"]+)"/.exec(page)?.[1];
+    expect(name).toBeTruthy();
+    expect(page).toContain('before an upgrade');
+    const res = await c.get(`/settings/backups/${name}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-disposition')).toBe(`attachment; filename="${name}"`);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    expect(new TextDecoder().decode(bytes.slice(0, 15))).toBe('SQLite format 3');
+    // Nothing else in the data directory can be fetched this way.
+    for (const bad of ['..%2Fkontainers.db', '%2E%2E%2Fregistry.key', 'kontainers.db', 'x']) expect((await c.get(`/settings/backups/${bad}`)).status).toBe(404);
+    // Not without a login.
+    expect((await new Client(srv.base).get(`/settings/backups/${name}`)).status).toBe(303);
+  });
+
   test('the schema is at the current version and the rows are all there', async () => {
     await srv.stop();
     const db = new Database(join(dataDir, 'kontainers.db'), { readonly: true, strict: true });

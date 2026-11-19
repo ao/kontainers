@@ -49,10 +49,10 @@ describe('recreateSpec', () => {
 });
 
 describe('updatable', () => {
-  test('only containers kontainers created, never compose ones', () => {
+  test('any container with a tag; ones made elsewhere are copied (clone.test.ts)', () => {
     expect(updatable(container())).toBeNull();
-    expect(updatable(container({ Config: { Labels: {} } }))).toContain('created in kontainers');
-    expect(updatable(container({ Config: { Labels: { 'kontainers.managed': 'true', 'com.docker.compose.project': 'shop' } } }))).toContain('docker compose pull');
+    expect(updatable(container({ Config: { Labels: {}, Image: 'nginx:1.27' } }))).toBeNull();
+    expect(updatable(container({ Config: { Labels: { 'kontainers.managed': 'true', 'com.docker.compose.project': 'shop' }, Image: 'nginx:1.27' } }))).toBeNull();
   });
 });
 

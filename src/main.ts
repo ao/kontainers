@@ -2,7 +2,7 @@
 //   bun src/main.ts                 run the server
 //   bun src/main.ts backup FILE     write a consistent snapshot of the database to FILE
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { bindProblem, loadConfig } from './config';
@@ -21,6 +21,7 @@ import { Notifier } from './notify';
 import { Registries, registryOf } from './registries';
 import { AutoUpdates } from './autoupdate';
 import { EventWatcher, checkCertificates } from './events';
+import { Backups } from './backups';
 
 let cfg: ReturnType<typeof loadConfig>;
 try { cfg = loadConfig(); } catch (e) { console.error(`kontainers: ${(e as Error).message}`); process.exit(1); }
@@ -86,8 +87,13 @@ docker.auth = { header: ref => registries.header(ref), registry: registryOf, sav
 const journal = new ReplaceJournal(db);
 const rules = new RuleStore(db);
 const proxy = new ProxyManager(cfg, rules, docker);
-// In a container the hostname is the container ID, unless --hostname changed it.
-const selfContainer = process.env.KONTAINERS_SELF_CONTAINER || (cfg.inContainer ? hostname() : undefined);
+// In a container: Docker's bind mounts of /etc/hostname and /etc/hosts name the container's ID in
+// /proc/self/mountinfo, which a --hostname does not change; else the hostname, which is the short
+// ID unless --hostname changed it.
+const idFromMounts = (): string | undefined => {
+  try { return /\/containers\/([0-9a-f]{64})\/(?:hostname|hosts|resolv\.conf)\b/.exec(readFileSync('/proc/self/mountinfo', 'utf8'))?.[1]; } catch { return undefined; }
+};
+const selfContainer = process.env.KONTAINERS_SELF_CONTAINER || (cfg.inContainer ? idFromMounts() || hostname() : undefined);
 proxy.selfContainer = selfContainer ?? null;
 const updates = new UpdateChecker(docker, cfg.updateCheckHours * 3600 * 1000);
 const notifier = new Notifier(db, undefined, undefined, [dockerApiAddress(cfg.dockerHost)].filter((h): h is string => !!h));
@@ -96,11 +102,12 @@ const systemAudit = (action: string, target: string, result?: string) =>
 // Aborted at shutdown, so a replacement being watched is undone instead of left half done.
 const stopping = new AbortController();
 const schedule = new ScheduleStore(db, cfg.autoUpdateSchedule);
+const backups = new Backups(db, cfg.dataDir, cfg.backupKeep);
 const autoUpdates: AutoUpdates = new AutoUpdates(db, docker, updates, notifier, { settleMs: cfg.autoUpdateSettle * 1000, healthTimeoutMs: cfg.autoUpdateHealthTimeout * 1000, signal: stopping.signal, journal, wasStopped: (id: string): boolean => events.wasStopped(id), schedule }, systemAudit);
 autoUpdates.start();
 updates.onChecked = () => autoUpdates.afterCheck();
 const events: EventWatcher = new EventWatcher(docker, notifier, Date.now, ms => Bun.sleep(ms), name => autoUpdates.busy.has(name));
-const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal, schedule, twoFactor: new TwoFactor(db) });
+const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal, schedule, twoFactor: new TwoFactor(db), backups });
 updates.start();
 events.replaceWindowMs = (cfg.autoUpdateSettle + cfg.autoUpdateHealthTimeout + 60) * 1000;
 events.start();
@@ -111,6 +118,14 @@ const certTimers = cfg.proxy.enabled ? [setTimeout(certCheck, 5 * 60_000), setIn
 const pruneAudit = () => { try { db.query('DELETE FROM audit_log WHERE at < ?').run(Date.now() - 365 * 86400_000); } catch (e) { console.error(`kontainers: could not prune the activity log: ${(e as Error).message}`); } };
 pruneAudit();
 const auditTimer = setInterval(pruneAudit, 86400_000);
+// A copy of the database a day (backups.ts): looked for a minute after the start, then hourly.
+const dailyBackup = () => {
+  try { const n = backups.daily(); if (n) console.log(`kontainers: daily backup written to ${join(cfg.dataDir, 'backups', n)}`); } catch (e) {
+    console.error(`kontainers: the daily backup failed: ${(e as Error).message}`);
+    try { systemAudit('backup-daily', 'database', `failed: ${(e as Error).message}`.slice(0, 500)); } catch { /* the volume is full, probably */ }
+  }
+};
+const backupTimers = [setTimeout(dailyBackup, 60_000), setInterval(dailyBackup, 3600_000)];
 
 const server = Bun.serve({
   hostname: cfg.host,
@@ -149,7 +164,7 @@ else {
 // Activity page and sent as an automatic-update notification.
 async function tidyUp(attempt: number): Promise<void> {
   if (stopping.signal.aborted) return;
-  const kept = (name: string, id: string) => { if (autoUpdates.get(name)) autoUpdates.recreated(name, id); };
+  const kept = (name: string, id: string, from?: string) => { if (autoUpdates.get(name)) autoUpdates.recreated(name, id, from); };
   let again = false;
   try {
     events.noteSetAside(await docker.listContainers());
@@ -199,6 +214,7 @@ async function shutdown(sig: string) {
   events.stop();
   for (const t of certTimers) clearTimeout(t as any);
   clearInterval(auditTimer);
+  for (const t of backupTimers) clearTimeout(t as any);
   await proxy.stop();
   db.close();
   process.exit(0);
