@@ -39,6 +39,7 @@ export function html(strings: TemplateStringsArray, ...values: unknown[]): Html 
 export interface PageCtx {
   user?: string; csrf?: string; flash?: string; error?: string; proxyEnabled?: boolean;
   readOnly?: boolean; // a read-only account: the pages leave out what it cannot do
+  projectBusy?: (project: string) => boolean; // an Update all of this compose project runs now
   username?: string; token?: string; // re-filled after a failed login or setup (never the password)
   form?: Record<string, string>; // a failed form, to fill in again
   alert?: string | null; // trouble with kontainers itself, shown on every page
@@ -65,7 +66,8 @@ function containerActions(ctx: PageCtx, id: string, name: string, state: string,
 
 // apiId: the container that serves kontainers' Docker API (the socket proxy), when there is one.
 // deps: the compose services kontainers' own service depends on (its socket proxy).
-export interface SelfInfo { id: string; project: string | null; apiId?: string | null; deps?: string[] }
+// unknown: kontainers could not find its own container (id is then empty).
+export interface SelfInfo { id: string; project: string | null; apiId?: string | null; deps?: string[]; unknown?: boolean }
 
 const labelsOf = (c: any): Record<string, string> => c?.Labels || c?.Config?.Labels || {};
 
@@ -208,6 +210,8 @@ export interface UpdateView {
   held?: (name: string, id: string) => string | null;
   // The registry digests of the image held back for a container (by name), when known.
   heldDigests?: (name: string) => string[] | undefined;
+  // The held image failed under Update image or Update all, not an automatic update.
+  heldManually?: (name: string, id: string) => boolean;
   lastRun: number | null;
   scheduled: number | null; // hours between scheduled checks, or null when off
 }
@@ -322,9 +326,10 @@ export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = 
       const visible = members.some(c => matchesFilter(c, f));
       // A compose project's header can start, stop or restart its containers together (kontainers
       // and its Docker API container are skipped).
-      const others = members.filter(c => !isSelf(c, me));
+      // Not the old container of one being updated now (it is set aside until the update finishes).
+      const others = members.filter(c => !isSelf(c, me) && !String(ctx.busy?.(String(c.Names?.[0] || '').replace(/^\//, '')) ?? '').startsWith('old container'));
       const newer = others.filter(c => !isProtected(c, me) && hasNewer(updates, c.Ref, c.ImageID) && !heldBack(updates, String(c.Names?.[0] || '').replace(/^\//, ''), c.Id, c.Ref));
-      const acts = k && others.length ? html`<span class="groupacts">${newer.length ? html`${post(ctx, `/projects/${k}/update`, `Update all (${newer.length})`, { cls: 'primary', confirm: `Update the ${newer.length} container${newer.length === 1 ? '' : 's'} of ${k} that ${newer.length === 1 ? 'has' : 'have'} a newer image, one at a time?` })} ` : ''}${others.some(c => c.State !== 'running') ? post(ctx, `/projects/${k}/start`, 'Start all') : ''} ${others.some(c => c.State === 'running') ? html`${post(ctx, `/projects/${k}/restart`, 'Restart all', { confirm: `Restart every container of ${k}?` })} ${post(ctx, `/projects/${k}/stop`, 'Stop all', { confirm: `Stop every container of ${k}?` })}` : ''}</span>` : '';
+      const acts = k && others.length ? html`<span class="groupacts">${ctx.projectBusy?.(k) ? html`<small class="muted">updating</small> ` : newer.length ? html`${post(ctx, `/projects/${k}/update`, `Update all (${newer.length})`, { cls: 'primary', confirm: `Update the ${newer.length} container${newer.length === 1 ? '' : 's'} of ${k} that ${newer.length === 1 ? 'has' : 'have'} a newer image, one at a time?` })} ` : ''}${others.some(c => c.State !== 'running') ? post(ctx, `/projects/${k}/start`, 'Start all') : ''} ${others.some(c => c.State === 'running') ? html`${post(ctx, `/projects/${k}/restart`, 'Restart all', { confirm: `Restart every container of ${k}?` })} ${post(ctx, `/projects/${k}/stop`, 'Stop all', { confirm: `Stop every container of ${k}?` })}` : ''}</span>` : '';
       return [html`<tr class="group" data-group="${k}"${visible ? raw('') : raw(' hidden')}><th colspan="5" scope="rowgroup">${k ? html`compose project ${brk(k)}` : 'not in a compose project'} <small>${up} of ${members.length} running</small>${acts}</th></tr>`, ...members.map(row)];
     });
   } else rows = sorted.map(row);
@@ -375,7 +380,9 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
   const upd = raw && !ctx.busy?.(String(c.Name || '').replace(/^\//, '')) ? { ...containerStatus(raw, c.Image)!, checkedAt: raw.checkedAt } : null;
   const name = String(c.Name || '').replace(/^\//, '');
   const held = upd?.status === 'available' ? heldBack(updates, name, c.Id, c.Config?.Image) : null;
-  const updText = !upd ? '' : held ? `the newest image for this tag (${shortId(held)}) failed when it was tried automatically and is held back; a newer one will be tried`
+  const updText = !upd ? '' : held ? (updates?.heldManually?.(name, c.Id)
+      ? `the newest image for this tag (${shortId(held)}) failed when Update image or Update all tried it; Update all skips it until a newer one appears, Update image tries it again`
+      : `the newest image for this tag (${shortId(held)}) failed when it was tried automatically and is held back; a newer one will be tried`)
     : upd.status === 'available' ? (raw!.status === 'available' ? 'a newer image is available for this tag' : upd.reason)
     : upd.status === 'current' ? 'the newest image for this tag' : `update status unknown: ${upd.reason || ''}`;
   const env = (c.Config?.Env || []).map((e: string) => html`<li><code>${e.replace(/=[\s\S]*/, '=…')}</code></li>`);

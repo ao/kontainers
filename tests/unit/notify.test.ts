@@ -299,6 +299,13 @@ describe('where notifications may not go', () => {
     expect(() => validateTarget({ ...ok, token: 'tokén' })).toThrow('printable ASCII');
     expect(validateTarget({ ...ok, url: 'http://ntfy.lan:8080/t' }, ['docker-proxy']).url).toBe('http://ntfy.lan:8080/t');
   });
+  test('an error that quotes the address shows it masked', async () => {
+    const n = new Notifier(db(), async u => { throw new Error(`Malformed_HTTP_Response fetching "${u}". For more information, pass \`verbose: true\``); });
+    const t = n.add({ kind: 'webhook', url: 'http://hooks.example.net/secret/path', events: ['exit'] });
+    const r = await n.test(t.id);
+    expect(r).toContain('fetching "http://hooks.example.net/…"');
+    expect(r).not.toContain('secret');
+  });
   test('a redirect is not followed, and says where it pointed', async () => {
     let calls = 0, mode = '';
     const n = new Notifier(db(), async (_u, init) => { calls++; mode = String(init.redirect); return new Response(null, { status: 301, headers: { location: 'https://elsewhere.example.net/x' } }); });

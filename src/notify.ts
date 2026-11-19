@@ -228,7 +228,8 @@ export class Notifier {
         ? `failed: the target redirected (HTTP ${res.status}) to ${maskUrl(String(res.headers.get('location') || '?')).slice(0, 200)} (path not shown); use the address it redirects to`
         : res.ok ? `sent (HTTP ${res.status})` : `failed: HTTP ${res.status}`;
     } catch (e) {
-      result = `failed: ${((e as Error).message || String(e)).slice(0, 200)}`;
+      // Some errors quote the address (Bun's "Malformed_HTTP_Response fetching "http://..."").
+      result = `failed: ${((e as Error).message || String(e)).replace(/https?:\/\/[^\s"'<>]+/g, u => maskUrl(u)).slice(0, 200)}`;
     }
     try { this.db.query('UPDATE notify_targets SET last_at = ?, last_result = ? WHERE id = ?').run(at, result, t.id); } catch (e) { writeFailed(e, 'could not save the result of a notification'); }
     if (result.startsWith('failed')) console.error(`kontainers: notification to ${maskUrl(t.url)} ${result}`);

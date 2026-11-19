@@ -40,6 +40,8 @@ export interface Deps {
   limiter?: RateLimiter;
   // The container kontainers runs in (ID or name), when it runs in one.
   selfContainer?: string;
+  // Other names kontainers' own container may go by (the ID in its mounts, its host name).
+  selfCandidates?: string[];
   updates?: UpdateChecker;
   notifier?: Notifier;
   autoUpdates?: AutoUpdates;
@@ -310,7 +312,7 @@ export function createHandler(d: Deps): Handler {
   function ctx(s: Session): views.PageCtx {
     const f = flashes.get(s.idHash);
     flashes.delete(s.idHash);
-    return { user: s.user.username, readOnly: s.user.role === 'viewer', csrf: s.csrf, flash: f?.flash, error: f?.error, form: f?.form, proxyEnabled: cfg.proxy.enabled, alert: storageTrouble(),
+    return { user: s.user.username, readOnly: s.user.role === 'viewer', projectBusy: (k: string) => projectUpdates.has(k), csrf: s.csrf, flash: f?.flash, error: f?.error, form: f?.form, proxyEnabled: cfg.proxy.enabled, alert: storageTrouble(),
       busy: (name: string) => locks.has(name) ? 'being updated or edited' : setAsideOf(name) ? `old container of ${setAsideOf(name)}, kept until its update or edit finishes` : null };
   }
 
@@ -318,19 +320,30 @@ export function createHandler(d: Deps): Handler {
   // stopping or removing one of them from the UI would cut the UI off from Docker or kill it.
   let selfCache: views.SelfInfo | null | undefined;
   let selfAt = 0;
+  // Looked for by KONTAINERS_SELF_CONTAINER, then by the container ID Docker's mounts name and the
+  // host name (selfCandidates). If none is a container (a wrong KONTAINERS_SELF_CONTAINER), the
+  // container serving the Docker API is still protected, and it is looked for again in 30 s.
+  let warnedSelf = false;
   async function self(): Promise<views.SelfInfo | null> {
     if (selfCache !== undefined && (selfCache === null || Date.now() - selfAt < 30_000)) return selfCache;
     if (!d.selfContainer) return (selfCache = null);
+    const names = [...new Set([d.selfContainer, ...(d.selfCandidates || [])].filter(Boolean))];
     try {
-      const c = await docker.inspect(d.selfContainer);
-      const project = c.Config?.Labels?.['com.docker.compose.project'] ?? null;
-      // com.docker.compose.depends_on: "docker-proxy:service_started:false,..."
-      const deps = String(c.Config?.Labels?.['com.docker.compose.depends_on'] || '').split(',').map((d: string) => d.split(':')[0]).filter(Boolean);
-      selfCache = { id: c.Id, project, apiId: await apiContainerId(project), deps };
+      for (const n of names) {
+        const c = await docker.inspect(n).catch(e => { if (e instanceof DockerError && e.status === 404) return null; throw e; });
+        if (!c) continue;
+        const project = c.Config?.Labels?.['com.docker.compose.project'] ?? null;
+        // com.docker.compose.depends_on: "docker-proxy:service_started:false,..."
+        const deps = String(c.Config?.Labels?.['com.docker.compose.depends_on'] || '').split(',').map((d: string) => d.split(':')[0]).filter(Boolean);
+        selfCache = { id: c.Id, project, apiId: await apiContainerId(project), deps };
+        selfAt = Date.now();
+        return selfCache;
+      }
+      if (!warnedSelf) { warnedSelf = true; console.error(`kontainers: could not find its own container (looked for ${names.join(', ')}); set KONTAINERS_SELF_CONTAINER to its name. Until then it does not know which container is itself`); }
+      selfCache = { id: '', project: null, apiId: await apiContainerId(null), deps: [], unknown: true };
       selfAt = Date.now();
-    } catch (e) {
-      if (e instanceof DockerError && e.status === 404) selfCache = null; // not a container after all
-      else return selfCache ?? null; // daemon unreachable: keep what was known, try again later
+    } catch {
+      return selfCache ?? null; // daemon unreachable: keep what was known, try again later
     }
     return selfCache ?? null;
   }
@@ -367,7 +380,8 @@ export function createHandler(d: Deps): Handler {
   const updateView = (): views.UpdateView | null => d.updates
     ? { get: (ref: string) => d.updates!.get(ref), lastRun: d.updates.lastRun, scheduled: cfg.updateCheckHours > 0 ? cfg.updateCheckHours : null,
         held: (name: string, id: string) => (d.autoUpdates?.isOn(name, id) ? d.autoUpdates.heldImage(name) : manualHeld(name, id)?.image ?? null),
-        heldDigests: (name: string) => d.autoUpdates?.heldDigests(name) ?? failedHere.get(name)?.digests }
+        heldDigests: (name: string) => d.autoUpdates?.heldDigests(name) ?? failedHere.get(name)?.digests,
+        heldManually: (name: string, id: string) => !d.autoUpdates?.isOn(name, id) && !!manualHeld(name, id) }
     : null;
 
   // A password asked again from a logged-in session (turning off two-factor, replacing its key,
@@ -727,9 +741,10 @@ export function createHandler(d: Deps): Handler {
 
     // A read-only account changes nothing but its own password and two-factor login, and sends at
     // most 30 forms a minute (each refused one is a row on Activity; at most one a minute is kept).
-    if (s.user.role === 'viewer') {
+    // Logging out always works.
+    if (s.user.role === 'viewer' && p !== '/logout') {
       const wait = viewerPosts.blocked(s.idHash);
-      if (wait > 0) return text('too many requests\n', 429, { 'retry-after': String(wait) });
+      if (wait > 0) return page(views.layout('Read-only account', ctx(s), views.html`<p class="error">This account is read-only, and has sent many forms in a short time; wait a minute.</p><p><a href="/containers">Containers</a></p>`), 429, { 'retry-after': String(wait) });
       viewerPosts.fail(s.idHash);
     }
     if (s.user.role === 'viewer' && !views.viewerMayPost(p)) {
@@ -847,7 +862,7 @@ export function createHandler(d: Deps): Handler {
         v.name(project, 'compose project');
         if (projectUpdates.has(project)) throw new v.ValidationError(`an Update all of ${project} is running already`);
         const me = await self();
-        if (d.selfContainer && !me) throw new v.ValidationError('kontainers cannot tell its own container from the others right now (the Docker API did not answer); try again in a minute');
+        if (d.selfContainer && (!me || me.unknown)) throw new v.ValidationError(me?.unknown ? 'kontainers cannot find its own container (KONTAINERS_SELF_CONTAINER or its host name names none), so it does not update a whole project; set KONTAINERS_SELF_CONTAINER to the name of its container' : 'kontainers cannot tell its own container from the others right now (the Docker API did not answer); try again in a minute');
         const nameOf = (c: any) => String(c.Names?.[0] || c.Id).replace(/^\//, '');
         const uv = updateView();
         const due = (c: any) => !views.isProtected(c, me) && containerStatus(d.updates?.get(c.Ref) ?? null, c.ImageID)?.status === 'available' && !views.heldBack(uv, nameOf(c), c.Id, c.Ref);
@@ -859,6 +874,8 @@ export function createHandler(d: Deps): Handler {
         if (!todo.length) return `Nothing to update in ${project}: as far as the last check knows, no container that kontainers may update has a newer image${skipped ? ` (${skipped} skipped: current, held back, or kontainers' own)` : ''}.`;
         projectUpdates.add(project);
         const done: string[] = [], same: string[] = [], fails: string[] = [], notes: string[] = [];
+        let background = false;
+        const summary = () => `Updated ${done.length} of ${todo.length} container${todo.length === 1 ? '' : 's'} of ${project}${done.length ? ` (${done.join(', ')})` : ''}${same.length ? `; not changed: ${same.join('; ')}` : ''}${notes.length ? `; ${notes.join('; ')}` : ''}`;
         const work = (async () => {
           try {
             for (const n of todo) {
@@ -881,11 +898,15 @@ export function createHandler(d: Deps): Handler {
               } finally { release(); }
             }
             if (d.updates) for (const c of members) await d.updates.check(String(c.Ref)).catch(() => {});
-          } finally { projectUpdates.delete(project); }
+          } finally {
+            projectUpdates.delete(project);
+            // A run that went on in the background: its outcome as a row of its own.
+            if (background) safeAudit(s, 'project-update', project, ip, (fails.length ? `failed: ${summary()}; ${fails.join('; ')}` : `note: ${summary()}`).slice(0, 500));
+          }
         })();
         const finished = await Promise.race([work.then(() => true), Bun.sleep(20000).then(() => false)]);
-        if (!finished) { work.catch(() => {}); return `Updating ${todo.length} container${todo.length === 1 ? '' : 's'} of ${project}, one at a time; this takes a while. Each update shows on the Activity page; reload the Containers page later.`; }
-        const msg = `Updated ${done.length} of ${todo.length} container${todo.length === 1 ? '' : 's'} of ${project}${done.length ? ` (${done.join(', ')})` : ''}${same.length ? `; not changed: ${same.join('; ')}` : ''}${notes.length ? `; ${notes.join('; ')}` : ''}`;
+        if (!finished) { background = true; work.catch(() => {}); return `Updating ${todo.length} container${todo.length === 1 ? '' : 's'} of ${project}, one at a time; this takes a while. Each update shows on the Activity page; reload the Containers page later.`; }
+        const msg = summary();
         if (fails.length) throw new v.ValidationError(`${msg}; ${fails.join('; ')}`);
         return `${msg}.`;
       });

@@ -115,6 +115,8 @@ const idFromMounts = (): string | undefined => {
   try { return /\/containers\/([0-9a-f]{64})\/(?:hostname|hosts|resolv\.conf)\b/.exec(readFileSync('/proc/self/mountinfo', 'utf8'))?.[1]; } catch { return undefined; }
 };
 const selfContainer = process.env.KONTAINERS_SELF_CONTAINER || (cfg.inContainer ? idFromMounts() || hostname() : undefined);
+// If that names no container (a wrong KONTAINERS_SELF_CONTAINER), these are tried.
+const selfCandidates = cfg.inContainer ? [idFromMounts(), hostname()].filter((x): x is string => !!x) : [];
 proxy.selfContainer = selfContainer ?? null;
 const updates = new UpdateChecker(docker, cfg.updateCheckHours * 3600 * 1000);
 const notifier = new Notifier(db, undefined, undefined, [dockerApiAddress(cfg.dockerHost)].filter((h): h is string => !!h));
@@ -128,7 +130,7 @@ const autoUpdates: AutoUpdates = new AutoUpdates(db, docker, updates, notifier, 
 autoUpdates.start();
 updates.onChecked = () => autoUpdates.afterCheck();
 const events: EventWatcher = new EventWatcher(docker, notifier, Date.now, ms => Bun.sleep(ms), name => autoUpdates.busy.has(name));
-const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal, schedule, twoFactor: new TwoFactor(db), backups });
+const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, selfCandidates, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal, schedule, twoFactor: new TwoFactor(db), backups });
 updates.start();
 events.replaceWindowMs = (cfg.autoUpdateSettle + cfg.autoUpdateHealthTimeout + 60) * 1000;
 events.start();
