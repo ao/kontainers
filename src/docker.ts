@@ -34,6 +34,8 @@ export interface CreateSpec {
   ports?: { container: number; host: number; hostIp?: string; protocol?: 'tcp' | 'udp' }[];
   volumes?: { source: string; target: string; readOnly?: boolean }[];
   restart?: 'no' | 'always' | 'unless-stopped' | 'on-failure';
+  // Labels of the user's own (validate.labels refuses kontainers' and Docker's own names).
+  labels?: Record<string, string>;
   // Limits: memory in bytes, CPUs in Docker's NanoCpus, processes.
   memory?: number;
   nanoCpus?: number;
@@ -260,7 +262,7 @@ export class Docker {
   createBody(spec: CreateSpec, opts: CreateOptions = {}): Record<string, unknown> {
     if (spec.name) v.name(spec.name);
     const image = v.image(spec.image);
-    const labels: Record<string, string> = { 'kontainers.managed': 'true' };
+    const labels: Record<string, string> = { ...v.labels(spec.labels), 'kontainers.managed': 'true' };
     if (opts.replaces) labels['kontainers.replaces'] = v.ref(opts.replaces);
     const body: Record<string, unknown> = { Image: image, Env: (spec.env || []).map(v.envVar), Labels: labels };
     if (spec.cmd && spec.cmd.length) {

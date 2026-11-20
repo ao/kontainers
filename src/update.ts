@@ -41,6 +41,17 @@ export async function inspectOthers(docker: Docker, id: string): Promise<any[]> 
 
 const sameList = (a: unknown, b: unknown) => JSON.stringify(a || []) === JSON.stringify(b || []);
 
+// The labels a container made in kontainers was given: not kontainers' own, Docker's, or the image's.
+export function ownLabels(c: any, image?: any): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, val] of Object.entries(c?.Config?.Labels || {}) as [string, string][]) {
+    if ((/^kontainers\./.test(k) && k !== 'kontainers.autoupdate') || /^(com\.docker\.|io\.docker\.|org\.dockerproject\.)/.test(k)) continue;
+    if (image?.Config?.Labels?.[k] === val) continue;
+    out[k] = val;
+  }
+  return out;
+}
+
 // The settings the user gave, recovered from the container and the image it was created from:
 // image defaults (ENV, CMD) are left out so the new image's own defaults apply.
 export function recreateSpec(c: any, oldImage: any): CreateSpec {
@@ -77,6 +88,7 @@ export function recreateSpec(c: any, oldImage: any): CreateSpec {
     ports,
     volumes,
     restart: ['no', 'always', 'unless-stopped', 'on-failure'].includes(restart) ? restart : 'no',
+    labels: ownLabels(c, oldImage),
     // Limits set in kontainers (Create or Edit settings) stay.
     memory: c.HostConfig?.Memory > 0 ? c.HostConfig.Memory : undefined,
     nanoCpus: c.HostConfig?.NanoCpus > 0 ? c.HostConfig.NanoCpus : undefined,

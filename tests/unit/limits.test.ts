@@ -45,3 +45,18 @@ describe('resource limits', () => {
     expect(limitsText({})).toBe('none');
   });
 });
+
+describe('labels for containers made in kontainers', () => {
+  test('KEY=value lines; kontainers\' and Docker\'s own names are refused', async () => {
+    const { labels } = await import('../../src/validate');
+    expect(labels('traefik.enable=true\nkontainers.autoupdate=true\napp=a=b')).toEqual({ 'traefik.enable': 'true', 'kontainers.autoupdate': 'true', app: 'a=b' });
+    for (const bad of ['kontainers.managed=true', 'kontainers.replaces=x', 'com.docker.compose.project=x', 'noequals', '=x', 'bad name=1']) expect(() => labels(bad)).toThrow();
+    const d = new Docker('tcp://127.0.0.1:1');
+    expect((d.createBody({ image: 'nginx:1', labels: { app: 'web' } }) as any).Labels).toEqual({ app: 'web', 'kontainers.managed': 'true' });
+    expect(() => d.createBody({ image: 'nginx:1', labels: { 'kontainers.managed': 'false' } })).toThrow('sets itself');
+  });
+  test('Update image and Edit keep them, not the image\'s or kontainers\' own', () => {
+    const c = { Name: '/web', Config: { Image: 'nginx:1', Env: [], Labels: { 'kontainers.managed': 'true', 'kontainers.replaces': 'x', app: 'web', maintainer: 'NGINX' } }, HostConfig: { PortBindings: {}, RestartPolicy: { Name: 'no' } }, Mounts: [] };
+    expect(recreateSpec(c, { Config: { Env: [], Labels: { maintainer: 'NGINX' } } }).labels).toEqual({ app: 'web' });
+  });
+});

@@ -8,6 +8,8 @@
   version and above it. It never changes a tag; for a container made in kontainers the page links
   to Edit settings with the new tag filled in. kontainers asks the registries itself, with the
   logins saved on the Settings page; `KONTAINERS_VERSION_CHECK=0` turns it off.
+- Labels in Create and Edit settings (`KEY=value` lines), kept by Update image. Names kontainers
+  and Docker set themselves are refused, except `kontainers.autoupdate`.
 
 ## 0.8.0
 

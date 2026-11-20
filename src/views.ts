@@ -453,6 +453,7 @@ export function newContainerPage(ctx: PageCtx, allowBind: boolean, autoUpdates =
   <label>Ports, one per line: <code>[host-ip:]host:container[/udp]</code>. Without a host IP the port is published on 127.0.0.1.
     <textarea name="ports" rows="3" placeholder="8081:80">${val('ports')}</textarea></label>
   <label>Environment, one <code>KEY=value</code> per line <textarea name="env" rows="3">${val('env')}</textarea></label>
+  <label>Labels, one <code>KEY=value</code> per line (<code>kontainers.autoupdate=true</code> turns on automatic updates) <textarea name="labels" rows="2">${val('labels')}</textarea></label>
   <label>Volumes, one per line: <code>volume-name:/path[:ro]</code>${allowBind ? raw(' or <code>/host/path:/path[:ro]</code>') : raw('. Host paths are disabled.')}
     <textarea name="volumes" rows="2">${val('volumes')}</textarea></label>
   <label>Restart policy <select name="restart">${opt('no')}${opt('unless-stopped')}${opt('always')}${opt('on-failure')}</select></label>
@@ -504,7 +505,7 @@ function limitFields(memory: string, cpus: string, pids: string): Html {
 }
 
 export interface EditSpec {
-  image: string; cmd?: string[]; env?: string[]; restart?: string; memory?: number; nanoCpus?: number; pids?: number;
+  image: string; cmd?: string[]; env?: string[]; restart?: string; memory?: number; nanoCpus?: number; pids?: number; labels?: Record<string, string>;
   ports?: { container: number; host: number; hostIp?: string; protocol?: string }[];
   volumes?: { source: string; target: string; readOnly?: boolean }[];
 }
@@ -530,6 +531,7 @@ ${imageGone ? html`<p class="warn">The image ${name} was created from is no long
   <label>Ports, one per line: <code>[host-ip:]host:container[/udp]</code>. Without a host IP the port is published on 127.0.0.1.
     <textarea name="ports" rows="3">${ports}</textarea></label>
   <label>Environment, one <code>KEY=value</code> per line <textarea name="env" rows="4">${f ? f.env ?? '' : (spec.env || []).join('\n')}</textarea></label>
+  <label>Labels, one <code>KEY=value</code> per line <textarea name="labels" rows="2">${f ? f.labels ?? '' : Object.entries(spec.labels || {}).map(([k, x]) => `${k}=${x}`).join('\n')}</textarea></label>
   <label>Volumes, one per line: <code>volume-name:/path[:ro]</code>${allowBind ? raw(' or <code>/host/path:/path[:ro]</code>') : raw('. Host paths are disabled, except ones the container already has.')}
     <textarea name="volumes" rows="2">${vols}</textarea></label>
   <label>Restart policy <select name="restart">${opt('no')}${opt('unless-stopped')}${opt('always')}${opt('on-failure')}</select></label>

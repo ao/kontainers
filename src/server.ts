@@ -13,7 +13,7 @@ import { Auth, RateLimiter, safeEqual, type Session } from './auth';
 import { Docker, DockerError, summarizeStats, type CreateSpec } from './docker';
 import type { ProxyManager, RuleStore } from './proxy';
 import { snapshot } from './db';
-import { editable, recreateSpec, removeReplacedImage, replaceContainer, updateContainerDetailed, UpdateFailed, type Journal } from './update';
+import { editable, ownLabels, recreateSpec, removeReplacedImage, replaceContainer, updateContainerDetailed, UpdateFailed, type Journal } from './update';
 import type { Notifier } from './notify';
 import { EVENT_KINDS } from './notify';
 import { labelledOn, type AutoUpdates } from './autoupdate';
@@ -244,6 +244,7 @@ export function containerSpec(f: Record<string, string>): CreateSpec {
     ports: lines(f.ports).map(parsePort),
     volumes: lines(f.volumes).map(parseVolume),
     restart: (f.restart as CreateSpec['restart']) || 'no',
+    labels: v.labels(f.labels),
     memory: v.memoryLimit(f.memory),
     nanoCpus: v.cpuLimit(f.cpus),
     pids: v.pidsLimit(f.pids),
@@ -853,6 +854,7 @@ export function createHandler(d: Deps): Handler {
         // Bad input is refused before the lock is taken (a refusal after it would keep it).
         const spec = containerSpec(f);
         // A form without the limit fields (one opened before 0.8, a script) keeps the limits.
+        if (f.labels === undefined) spec.labels = ownLabels(c);
         if (f.memory === undefined && c.HostConfig?.Memory > 0) spec.memory = c.HostConfig.Memory;
         if (f.cpus === undefined && c.HostConfig?.NanoCpus > 0) spec.nanoCpus = c.HostConfig.NanoCpus;
         if (f.pids === undefined && c.HostConfig?.PidsLimit > 0) spec.pids = c.HostConfig.PidsLimit;

@@ -73,9 +73,10 @@ What works, and is covered by the test suites below:
   runs and nothing is expanded. The list has a search, a state filter including "needs
   attention", and grouping by compose project. The detail page shows the command, ports,
   restarts, health and limits, and CPU, memory, network and process counts refreshed every 5
-  seconds. A container created in kontainers can get limits (memory such as `512m`, CPUs such as
-  `1.5`, a process count) and be made on a user network with aliases there, for other
-  containers on it to reach it by.
+  seconds. A container created in kontainers can get labels (`KEY=value`; names kontainers and
+  Docker set themselves are refused, except `kontainers.autoupdate`), limits (memory such as
+  `512m`, CPUs such as `1.5`, a process count), and be made on a user network with aliases there,
+  for other containers on it to reach it by.
 - update image: pull the image again and, if it changed, recreate the container under the same
   name, on the same networks with the same aliases, with the same volumes (anonymous ones
   included). One created in kontainers gets the settings it was created with. Any other
@@ -96,7 +97,7 @@ What works, and is covered by the test suites below:
   created (other services in its compose project are updated like any). A copy mounts the old container's anonymous volumes by
   name, so `docker compose down -v` leaves them; Clean up lists them as unused anonymous volumes.
 - edit settings, for containers created in kontainers (compose ones change in the compose file): change the image, command, ports,
-  environment, volumes, restart policy or limits (networks stay); saving recreates the container the same way, with the
+  environment, volumes, labels, restart policy or limits (networks stay); saving recreates the container the same way, with the
   old one put back if the new one does not stay up. Bad input is refused before anything stops.
 - update checks: every 6 hours, and on "Check for updates", kontainers asks the registry which
   image each container's tag points at now (through the Docker daemon, which downloads only the
@@ -185,8 +186,8 @@ What kontainers does about it:
   higher address limit is because everyone behind one SSH tunnel or proxy shares an address).
   Setup is limited to 5 wrong tokens per address.
   `X-Forwarded-For` is only read from addresses listed in `KONTAINERS_TRUSTED_PROXIES`.
-- Container creation only sends image, name, command, environment, port bindings, named volumes,
-  restart policy, limits (memory, CPUs, processes) and a network with aliases to Docker. Host
+- Container creation only sends image, name, command, environment, labels, port bindings, named
+  volumes, restart policy, limits (memory, CPUs, processes) and a network with aliases to Docker. Host
   paths as volumes are refused unless `KONTAINERS_ALLOW_BIND_MOUNTS=1`. Ports without a host
   address are published on `127.0.0.1`. The network must be a bridge network that kontainers
   itself, its Docker API container and the proxy are not on (a container on the API network could

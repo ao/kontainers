@@ -19,7 +19,7 @@ describe('recreateSpec', () => {
       name: 'web', image: 'nginx:1.27', cmd: undefined, env: ['MODE=prod'],
       ports: [{ container: 80, host: 8080, hostIp: '127.0.0.1', protocol: 'tcp' }, { container: 53, host: 5353, hostIp: '0.0.0.0', protocol: 'udp' }],
       volumes: [{ source: 'data', target: '/data', readOnly: true }, { source: '/srv', target: '/srv', readOnly: false }],
-      restart: 'unless-stopped',
+      restart: 'unless-stopped', labels: {}, memory: undefined, nanoCpus: undefined, pids: undefined,
     });
   });
   test('a command the user gave is kept', () => {

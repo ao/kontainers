@@ -86,3 +86,24 @@ describe.skipIf(!DOCKER)('create with limits and a network', () => {
     expect((await api(`/containers/cr-bad-${run}/json`)).status).toBe(404);
   }, 60000);
 });
+
+describe.skipIf(!DOCKER)('labels on create and edit', () => {
+  let srv: Running, c: Client;
+  const L = `cr-lab-${run}`;
+  beforeAll(async () => { ({ srv, c } = await readyServer({ KONTAINERS_UPDATE_CHECK_HOURS: '0' })); }, 60000);
+  afterAll(async () => { await api(`/containers/${L}?force=1`, { method: 'DELETE' }); await srv?.stop(); });
+  test('set, kept by Edit, changed by Edit; reserved names refused', async () => {
+    await c.page('/containers/new');
+    expect((await c.submit('/containers', { image: 'busybox:1.36', name: L, pull: 'on', cmd: 'sleep 600', start: 'on', labels: 'team=web\nkontainers.autoupdate=true' })).error).toBe('');
+    expect((await inspect(L)).Config.Labels).toMatchObject({ team: 'web', 'kontainers.autoupdate': 'true', 'kontainers.managed': 'true' });
+    expect(await c.page(`/containers/${L}`)).toContain('the container has the label <code>kontainers.autoupdate=true</code>');
+    const edit = await c.page(`/containers/${L}/edit`);
+    expect(edit).toContain('team=web');
+    expect((await c.submit(`/containers/${L}/edit`, { image: 'busybox:1.36', cmd: 'sleep 600', ports: '', env: '', volumes: '', restart: 'no', labels: 'team=api' })).error).toBe('');
+    const now = (await inspect(L)).Config.Labels;
+    expect(now.team).toBe('api');
+    expect(now['kontainers.autoupdate']).toBeUndefined();
+    await c.page('/containers/new');
+    expect((await c.submit('/containers', { image: 'busybox:1.36', name: `cr-lab2-${run}`, cmd: 'true', labels: 'com.docker.compose.project=x' })).error).toContain('sets itself');
+  }, 60000);
+});
