@@ -444,8 +444,11 @@ ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
 <pre id="logs" tabindex="0" role="region" aria-label="Logs of ${name}" data-logs="/api/containers/${urlId(c)}/logs">loading…</pre>`, 'Containers');
 }
 
-// from: the container the form is a duplicate of, or why it cannot be.
-export function newContainerPage(ctx: PageCtx, allowBind: boolean, autoUpdates = false, networks: string[] = [], from: { name: string; problem?: string; network?: string } | null = null): string {
+// The container a New container form is a duplicate of: why it cannot be, the network it is on
+// that is not offered, and whether its tag now names another image than the one it runs.
+export type DuplicateOf = { name: string; problem?: string; network?: string; moved?: boolean };
+
+export function newContainerPage(ctx: PageCtx, allowBind: boolean, autoUpdates = false, networks: string[] = [], from: DuplicateOf | null = null): string {
   // After a failed create, the form comes back as it was sent.
   const f = ctx.form;
   const val = (k: string) => f?.[k] ?? '';
@@ -454,7 +457,8 @@ export function newContainerPage(ctx: PageCtx, allowBind: boolean, autoUpdates =
   return layout('New container', ctx, html`
 ${from?.problem ? html`<p class="warn">${from.name} cannot be duplicated: ${from.problem}.</p>` : from ? html`<p>The settings of ${from.name}, to make another container like it: its image, command, environment, labels, restart policy, network and limits. Its ports, volumes and network aliases are not copied (the ports would clash, and two containers on one volume can damage its data): add the ones the new one needs, and give it a name. Environment values are shown here so they can be edited.</p>
 <p class="warn">Labels or environment that tell a reverse proxy which host name to send to ${from.name} (<code>traefik.*</code>, <code>VIRTUAL_HOST</code>) would send its visitors to the new container too: change them first. It is not started after creating unless you tick the box.</p>${from.network ? html`
-<p class="warn">${from.name} is on the network ${from.network}, which is not offered here (kontainers, its Docker API container or the proxy is on it, or it is not a bridge network): the new container goes on the one chosen below.</p>` : ''}` : ''}
+<p class="warn">${from.network === 'none' ? html`${from.name} has no network (none), which is not offered here` : html`${from.name} is on the network ${from.network}, which is not offered here (kontainers, its Docker API container or the proxy is on it, or it is not a bridge network)`}: the new container goes on the one chosen below.</p>` : ''}${from.moved ? html`
+<p class="warn">The image field names another image than the one ${from.name} runs: the tag has moved since (an update that was put back, or a rebuild), and the new container gets the image the tag names now.</p>` : ''}` : ''}
 <form method="post" action="/containers" class="stack">${csrfField(ctx)}
   <label>Image <input name="image" required placeholder="nginx:1.27-alpine" value="${val('image')}"></label>
   <label class="check"><input type="checkbox" name="pull"${box('pull', true)}> Pull the image first</label>

@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { Client, DOCKER, readyServer, type Running } from './helpers';
 
 const run = Math.random().toString(36).slice(2, 8);
-const NET = `cr-net-${run}`, NAME = `cr-app-${run}`, PEER = `cr-peer-${run}`, DUP = `cr-dup-${run}`, SRC = `cr-src-${run}`;
+const NET = `cr-net-${run}`, NAME = `cr-app-${run}`, PEER = `cr-peer-${run}`, DUP = `cr-dup-${run}`, SRC = `cr-src-${run}`, MV = `cr-mv-${run}`, MOVED = `cr-moved-${run}`;
 const api = (path: string, init: RequestInit = {}) => fetch(`${DOCKER.replace(/^tcp:\/\//, 'http://')}/v1.41${path}`, init);
 const inspect = async (name: string) => (await (await api(`/containers/${name}/json`)).json()) as any;
 // The New container form's fields as a browser would send them (ticked boxes only).
@@ -31,7 +31,8 @@ describe.skipIf(!DOCKER)('create with limits and a network', () => {
   let srv: Running, c: Client;
   beforeAll(async () => { ({ srv, c } = await readyServer({ KONTAINERS_UPDATE_CHECK_HOURS: '0' })); }, 60000);
   afterAll(async () => {
-    for (const n of [NAME, PEER, DUP, SRC]) await api(`/containers/${n}?force=1`, { method: 'DELETE' });
+    for (const n of [NAME, PEER, DUP, SRC, MV]) await api(`/containers/${n}?force=1`, { method: 'DELETE' });
+    await api(`/images/${MOVED}:1?force=1`, { method: 'DELETE' });
     await api(`/networks/${NET}`, { method: 'DELETE' });
     await srv?.stop();
   });
@@ -83,6 +84,20 @@ describe.skipIf(!DOCKER)('create with limits and a network', () => {
     expect(none).toContain('no-such-container cannot be duplicated: there is no such container.');
     expect(formFields(none).image).toBe('');
     expect(await c.page('/containers/new?from=..%2Fx')).toContain('cannot be duplicated: that is not a container name or ID.');
+  }, 60000);
+
+  test('Duplicate says when the tag has moved to another image, and refuses when it names none', async () => {
+    expect((await api(`/images/busybox:1.36/tag?repo=${MOVED}&tag=1`, { method: 'POST' })).status).toBe(201);
+    await c.page('/containers/new');
+    expect((await c.submit('/containers', { image: `${MOVED}:1`, name: MV, cmd: 'sleep 600', start: '' })).error).toBe('');
+    expect(await c.page(`/containers/new?from=${MV}`)).not.toContain('the tag has moved since');
+    // The tag moves to another image (a rebuild): the form says so.
+    expect((await api(`/commit?container=${MV}&repo=${MOVED}&tag=1`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status).toBe(201);
+    expect(await c.page(`/containers/new?from=${MV}`)).toContain('the tag has moved since');
+    // The tag gone, the image here only by ID: no button, and the reason.
+    expect((await api(`/images/${MOVED}:1`, { method: 'DELETE' })).status).toBe(200);
+    expect(await c.page(`/containers/new?from=${MV}`)).toContain(`${MOVED}:1 no longer names an image on this host`);
+    expect(await c.page(`/containers/${MV}`)).not.toContain('>Duplicate</a>');
   }, 60000);
 
   test('the images page says which containers use each image, and lists the unused ones', async () => {

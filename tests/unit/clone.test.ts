@@ -146,6 +146,8 @@ describe('what cannot be copied', () => {
     const here = { Config: { Labels: { 'kontainers.managed': 'true' } }, HostConfig: { NetworkMode: 'bridge' } }, img = { Config: { Labels: {} } };
     expect(duplicable(here, img)).toBeNull();
     expect(duplicable(here, null)).toContain('no longer on this host');
+    expect(duplicable({ ...here, Name: '/web', Config: { ...here.Config, Image: 'app:1' } }, img, null)).toBe('app:1 no longer names an image on this host (the one web runs is here only by its ID); pull it first');
+    expect(duplicable(here, img, img)).toBeNull();
     expect(duplicable(here, { Config: { Labels: { 'kontainers.managed': 'true' } } })).toContain('only containers created in kontainers can be duplicated');
     expect(duplicable({ ...here, HostConfig: { NetworkMode: 'host' } }, img)).toContain("the host's network");
     expect(duplicable(composeContainer(), img)).toContain('add another service to the compose file');

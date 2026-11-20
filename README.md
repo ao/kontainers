@@ -81,8 +81,9 @@ What works, and is covered by the test suites below:
   for other containers on it to reach it by. Duplicate opens the Create form filled in from one
   made in kontainers (image, command, environment, labels, restart policy, network, limits), but
   not its ports, volumes or network aliases, which the new one needs its own of; Pull and Start
-  are not ticked. A network kontainers no longer offers is named on the form, not copied. It needs
-  the image the container was made from to be on the host.
+  are not ticked. A network kontainers no longer offers is named on the form, not copied, and so is
+  a tag that has moved to another image since. It needs the image the container was made from, and
+  its tag, to be on the host.
 - update image: pull the image again and, if it changed, recreate the container under the same
   name, on the same networks with the same aliases, with the same volumes (anonymous ones
   included). One created in kontainers gets the settings it was created with. Any other

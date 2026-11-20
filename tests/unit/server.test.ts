@@ -91,6 +91,9 @@ describe('form parsing', () => {
     expect(q).toBe(`sh -c $'echo one\\necho \\'two\\'\\r\\n\\\\n done' 'x\ty'`);
     expect(splitArgs(q)).toEqual(args);
     expect(splitArgs(`$'a\\qb'`)).toEqual(['a\\qb']);
+    expect(splitArgs(`echo $'say \\"hi\\"'`)).toEqual(['echo', 'say "hi"']);
+    // Only a shell's separators split: a no-break space stays in the argument.
+    expect(splitArgs('echo a\u00a0b c\u3000d')).toEqual(['echo', 'a\u00a0b', 'c\u3000d']);
     expect(() => splitArgs(`$'open`)).toThrow("unterminated $' quote");
   });
   test('containerSpec', () => {

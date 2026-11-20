@@ -21,14 +21,16 @@ export function editable(c: any, image?: any): string | null {
 }
 
 // Why Duplicate cannot fill in the Create form from `c`, or null: like editable, and the image it
-// was made from must still be here (without it, the image's own settings cannot be left out).
-export function duplicable(c: any, image: any): string | null {
+// was made from must still be here (without it, the image's own settings cannot be left out), and
+// so must its reference (tagged: the image it names now, null when none; undefined: not checked).
+export function duplicable(c: any, image: any, tagged?: any): string | null {
   const project = c?.Config?.Labels?.['com.docker.compose.project'];
   if (project) return `it belongs to compose project ${project}; add another service to the compose file instead`;
   if (!madeHere(c, image)) return 'only containers created in kontainers can be duplicated';
   const mode = String(c?.HostConfig?.NetworkMode || '');
   if (mode === 'host' || mode.startsWith('container:')) return `it uses ${mode === 'host' ? "the host's network" : "another container's network"}, which kontainers does not set up`;
   if (!image) return "the image it was created from is no longer on this host, so its own settings cannot be told apart from the image's";
+  if (tagged === null) return `${c?.Config?.Image} no longer names an image on this host (the one ${String(c?.Name || '').replace(/^\//, '')} runs is here only by its ID); pull it first`;
   return null;
 }
 

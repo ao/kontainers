@@ -201,7 +201,7 @@ export function parseVolume(line: string): NonNullable<CreateSpec['volumes']>[nu
 }
 
 // Splits a command line into arguments the way a POSIX shell quotes them: 'single' quotes are
-// literal, "double" quotes allow \" \\ \$ \` escapes, $'…' allows \n \r \t \\ \' (a line break,
+// literal, "double" quotes allow \" \\ \$ \` escapes, $'…' allows \n \r \t \\ \' \" (a line break,
 // which a one-line field cannot hold otherwise), a backslash outside quotes escapes the next
 // character. Nothing is expanded and no shell runs: the result goes to Docker as an argv array.
 export function splitArgs(s: string): string[] {
@@ -217,7 +217,7 @@ export function splitArgs(s: string): string[] {
         if (d === "'") { i++; break; }
         if (d === '\\' && i + 1 < s.length) {
           const e = s[i + 1];
-          cur += e === 'n' ? '\n' : e === 'r' ? '\r' : e === 't' ? '\t' : e === '\\' || e === "'" ? e : '\\' + e;
+          cur += e === 'n' ? '\n' : e === 'r' ? '\r' : e === 't' ? '\t' : e === '\\' || e === "'" || e === '"' ? e : '\\' + e;
           i += 2; continue;
         }
         cur += d; i++;
@@ -238,7 +238,8 @@ export function splitArgs(s: string): string[] {
     } else if (c === '\\') {
       if (i + 1 >= s.length) throw new v.ValidationError('command ends with a backslash');
       cur += s[i + 1]; inArg = true; i += 2;
-    } else if (/\s/.test(c)) {
+    } else if (c === ' ' || c === '\t' || c === '\n' || c === '\r') {
+      // A shell's word separators only: a no-break or other Unicode space stays in the argument.
       if (inArg) { out.push(cur); cur = ''; inArg = false; }
       i++;
     } else {
@@ -503,6 +504,8 @@ export function createHandler(d: Deps): Handler {
   // meanwhile would leave two instances on the same data, or nothing to put back.
   // Also while a replacement a restart interrupted is not tidied up yet (its journal entry is open),
   // and for a name shortened to fit Docker's 128 characters.
+  // An image by reference, as a promise even when the reference is refused (a rejection, not a throw).
+  const imageNamed = (ref: string) => Promise.resolve().then(() => docker.inspectImage(ref));
   const setAsideOf = (name: string) => {
     const m = /^(.+)-old-([0-9a-f]{8})$/.exec(name);
     if (!m) return null;
@@ -692,20 +695,23 @@ export function createHandler(d: Deps): Handler {
         // Duplicate: the form filled in from a container made in kontainers (not its ports or volumes).
         const from = url.searchParams.get('from');
         const pc = ctx(s);
-        let dup: { name: string; problem?: string; network?: string } | null = null;
+        let dup: views.DuplicateOf | null = null;
         if (from && !pc.form) {
           const missing = (e: unknown) => e instanceof DockerError && e.status === 404;
-          let c: any = null, img: any = null, why: string | null = null;
+          let c: any = null, img: any = null, tagged: any, why: string | null = null;
           try {
             c = await docker.inspect(v.ref(from, 'container name or ID'));
             img = await docker.inspectImage(c.Image).catch(e => { if (missing(e)) return null; throw e; });
+            // The image the reference names now, which the new container gets (Pull is not ticked).
+            tagged = img ? await imageNamed(String(c.Config?.Image || '')).catch(e => { if (missing(e) || e instanceof v.ValidationError) return null; throw e; }) : undefined;
           } catch (e) {
             why = e instanceof v.ValidationError ? 'that is not a container name or ID' : missing(e) ? 'there is no such container' : errorMessage(e);
           }
-          const name = c ? String(c.Name || '').replace(/^\//, '') : from.slice(0, 128);
+          const name = c ? String(c.Name || '').replace(/^\//, '') : from.slice(0, 128).replace(/[\x00-\x1f\x7f]/g, '?');
           const me = await self();
           why ??= me && views.isProtected(c, me) ? 'this is kontainers itself or the container that serves its Docker API'
-            : locks.has(name) ? `an update or edit of ${name} is running; try again when it has finished` : duplicable(c, img);
+            : locks.has(name) ? `an update or edit of ${name} is running; try again when it has finished`
+            : setAsideOf(name) ? `it is the old container of ${setAsideOf(name)}, kept until its update or edit finishes` : duplicable(c, img, tagged);
           if (why) dup = { name, problem: why };
           else {
             const sp = recreateSpec(c, img);
@@ -715,7 +721,7 @@ export function createHandler(d: Deps): Handler {
             const auto = !!d.autoUpdates?.isOn(name, c.Id, null);
             // A user network that is not offered any more (the proxy's, kontainers' own) is said, not
             // silently swapped for the default bridge.
-            dup = { name, ...(net && net !== 'bridge' && net !== 'default' && !nets.includes(net) ? { network: net } : {}) };
+            dup = { name, ...(net && net !== 'bridge' && net !== 'default' && !nets.includes(net) ? { network: net } : {}), ...(tagged && tagged.Id !== img.Id ? { moved: true } : {}) };
             // Not pulled (the tag may have moved on to an image held back, or be built here) and not
             // started: it has no volumes yet, and copied routing labels would send it visitors.
             pc.form = {
@@ -753,7 +759,8 @@ export function createHandler(d: Deps): Handler {
         const img = await docker.inspectImage(c.Image).catch(() => null);
         const own = labelledOn(c.Config?.Labels) && !labelledOn(img?.Config?.Labels) ? c.Config?.Labels : null;
         const auto = d.autoUpdates ? { on: d.autoUpdates.isOn(name, c.Id, own), label: labelledOn(own), row, waiting: d.autoUpdates.waitingFor(name) } : null;
-        return page(views.containerPage(ctx(s), c, await self(), updateView(), auto, editable(c, img) === null || (c.Config?.Labels?.['kontainers.managed'] === 'true' && img?.Config?.Labels?.['kontainers.managed'] !== 'true'), duplicable(c, img) === null));
+        const dupOk = duplicable(c, img) === null && duplicable(c, img, await imageNamed(String(c.Config?.Image || '')).catch(() => null)) === null;
+        return page(views.containerPage(ctx(s), c, await self(), updateView(), auto, editable(c, img) === null || (c.Config?.Labels?.['kontainers.managed'] === 'true' && img?.Config?.Labels?.['kontainers.managed'] !== 'true'), dupOk));
       }
       // kontainers' own logs (and its socket proxy's) are for administrators: they can hold what
       // only Settings shows.
