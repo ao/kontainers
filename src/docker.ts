@@ -34,6 +34,10 @@ export interface CreateSpec {
   ports?: { container: number; host: number; hostIp?: string; protocol?: 'tcp' | 'udp' }[];
   volumes?: { source: string; target: string; readOnly?: boolean }[];
   restart?: 'no' | 'always' | 'unless-stopped' | 'on-failure';
+  // Limits: memory in bytes, CPUs in Docker's NanoCpus, processes.
+  memory?: number;
+  nanoCpus?: number;
+  pids?: number;
 }
 
 // keepBindMounts: an update recreating a container that already has them. allowedBinds: an edit,
@@ -291,6 +295,10 @@ export class Docker {
     body.ExposedPorts = exposed;
     // Only these HostConfig fields are ever sent. No Privileged, CapAdd, host network/PID/IPC, devices.
     const host: Record<string, unknown> = { PortBindings: bindings, Mounts: mounts, RestartPolicy: { Name: restart } };
+    // Limits are restrictions: checked again here, whatever called.
+    if (spec.memory !== undefined) host.Memory = v.memoryLimit(String(spec.memory));
+    if (spec.nanoCpus !== undefined) { if (!Number.isInteger(spec.nanoCpus) || spec.nanoCpus < 1e7 || spec.nanoCpus > 1024e9) throw new v.ValidationError('invalid CPU limit'); host.NanoCpus = spec.nanoCpus; }
+    if (spec.pids !== undefined) host.PidsLimit = v.pidsLimit(String(spec.pids));
     // A recreated container keeps the network it was made on: a user network or none, never the
     // host's or another container's.
     if (opts.network) {

@@ -75,6 +75,8 @@ class FakeDocker {
   }
   async disconnect() {}
   async connect() {}
+  removed: string[] = [];
+  async removeImage(id: string) { this.removed.push(id); this.images.delete(id); }
   async inspectFull(id: string) { return this.inspect(id); }
   async inspectImageFull(ref: string) { return this.inspectImage(ref); }
   async tag(imageId: string, ref: string) { this.tags.set(ref, imageId); }
@@ -291,6 +293,29 @@ describe('AutoUpdates', () => {
     d.registry.set('app:1', 'i4');
     await cycle();
     expect(running(d, 'web').Image).toBe('i4');
+  });
+
+  test('with the clean-up on, the image a container ran before goes, unless something still uses it', async () => {
+    const { d, db, checker, cycle } = setup();
+    const { ScheduleStore } = await import('../../src/schedule');
+    const store = new ScheduleStore(db);
+    store.setCleanup(true);
+    const auto = new AutoUpdates(db, d as any, checker, null, { settleMs: 0, healthTimeoutMs: 0, schedule: store });
+    const run = async () => { await checker.checkAll(); await auto.afterCheck(); };
+    const id = d.run('web', 'app:1');
+    const other = d.run('other', 'app:1'); // runs i1 too, not opted in
+    await auto.set(id, true);
+    d.registry.set('app:1', 'i2');
+    await run();
+    expect(running(d, 'web').Image).toBe('i2');
+    expect(d.removed).toEqual([]); // i1: still used by other
+    d.containers.delete(other);
+    d.registry.set('app:1', 'i4');
+    await run();
+    expect(running(d, 'web').Image).toBe('i4');
+    expect(d.removed).toEqual(['i2']);
+    expect(auto.get('web')?.last_result).toContain('removed the image it ran before');
+    void cycle;
   });
 
   test('the opt-in moves only from the container that had it', async () => {

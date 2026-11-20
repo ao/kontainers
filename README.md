@@ -72,7 +72,10 @@ What works, and is covered by the test suites below:
   off, download). Commands are split with shell quoting (`sh -c "echo hi; sleep 60"`) but no shell
   runs and nothing is expanded. The list has a search, a state filter including "needs
   attention", and grouping by compose project. The detail page shows the command, ports,
-  restarts and health, and CPU, memory, network and process counts refreshed every 5 seconds.
+  restarts, health and limits, and CPU, memory, network and process counts refreshed every 5
+  seconds. A container created in kontainers can get limits (memory such as `512m`, CPUs such as
+  `1.5`, a process count) and be made on a user network with aliases there, for other
+  containers on it to reach it by.
 - update image: pull the image again and, if it changed, recreate the container under the same
   name, on the same networks with the same aliases, with the same volumes (anonymous ones
   included). One created in kontainers gets the settings it was created with. Any other
@@ -93,7 +96,7 @@ What works, and is covered by the test suites below:
   created (other services in its compose project are updated like any). A copy mounts the old container's anonymous volumes by
   name, so `docker compose down -v` leaves them; Clean up lists them as unused anonymous volumes.
 - edit settings, for containers created in kontainers (compose ones change in the compose file): change the image, command, ports,
-  environment, volumes or restart policy; saving recreates the container the same way, with the
+  environment, volumes, restart policy or limits (networks stay); saving recreates the container the same way, with the
   old one put back if the new one does not stay up. Bad input is refused before anything stops.
 - update checks: every 6 hours, and on "Check for updates", kontainers asks the registry which
   image each container's tag points at now (through the Docker daemon, which downloads only the
@@ -346,6 +349,7 @@ briefly unavailable; Caddy did not renew certificates in a process that started 
 | `KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT` | `120` | Seconds to wait for "healthy" after settling, for images with a healthcheck, 0 to 3600 |
 | `KONTAINERS_AUTOUPDATE_WINDOW` | unset (any time) | When automatic updates may run, in UTC: `02:00-05:00`, optionally followed by days (`02:00-05:00 Sat,Sun`); applies until a window is saved on the Settings page |
 | `KONTAINERS_AUTOUPDATE_DELAY_HOURS` | `0` | Hours a newer image waits after a check first sees it, 0 to 720; as above |
+| `KONTAINERS_AUTOUPDATE_CLEANUP` | `0` | `1`: after an update that worked, remove the image the container ran before if no container uses it and no tag points at it; applies until the switch on the Settings page is saved |
 | `KONTAINERS_BACKUP_KEEP` | `7` | Daily copies of the database kept in `/data/backups`, 0 to 365; `0` turns them off |
 | `KONTAINERS_HTTP_PORT` / `KONTAINERS_HTTPS_PORT` | `80` / `443` | Proxy ports |
 

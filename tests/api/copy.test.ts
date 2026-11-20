@@ -311,6 +311,25 @@ describe.skipIf(!DOCKER)('updating containers made outside kontainers', () => {
     } finally { await compose('down', yaml, proj2).catch(() => {}); }
   }, 180000);
 
+  test('with the clean-up on, the image a container ran before is removed after its update', async () => {
+    const repo3 = `localhost:5002/kt/cl${run}`, name = `cp-cl-${run}`;
+    const first = await publish('ENV RELEASE=1', repo3, true);
+    expect((await post(`/containers/create?name=${name}`, { Image: `${repo3}:1`, Cmd: ['sleep', '600'] })).status).toBe(201);
+    expect((await post(`/containers/${name}/start`)).status).toBe(204);
+    await c.page('/settings');
+    expect((await c.submit('/settings/autoupdate', { start: '', end: '', delay: '0', cleanup: 'on' })).flash).toContain('the image a container ran before is removed');
+    try {
+      await publish('ENV RELEASE=2', repo3);
+      const r = await c.submit(`/containers/${name}/update`, {});
+      expect(r.flash).toContain('removed the image it ran before');
+      expect((await api(`/images/${first}/json`)).status).toBe(404);
+    } finally {
+      await c.page('/settings');
+      await c.submit('/settings/autoupdate', { start: '', end: '', delay: '0' });
+      await api(`/containers/${name}?force=1`, { method: 'DELETE' });
+    }
+  }, 60000);
+
   test('kontainers killed while the copy settles: the next start keeps the copy and removes the old one', async () => {
     await publish('ENV RELEASE=5');
     const old = await inspect(WEB);

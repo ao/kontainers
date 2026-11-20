@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Optional removal of the image a container ran before, after an update that worked (automatic,
+  Update image or Update all), when no container uses it and no tag points at it (Settings, or
+  `KONTAINERS_AUTOUPDATE_CLEANUP=1`; off by default). It is never forced.
+- Limits when creating a container in kontainers and in Edit settings: memory, CPUs and a process
+  count; every container page shows the limits it runs with.
+- A user network, and aliases on it, when creating a container in kontainers.
+
 ## 0.7.0
 
 Read-only accounts, and Update all for compose projects.

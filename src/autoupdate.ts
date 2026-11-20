@@ -10,7 +10,7 @@ import type { Database } from 'bun:sqlite';
 import type { Docker } from './docker';
 import type { Notifier } from './notify';
 import { containerStatus, type UpdateChecker } from './updates';
-import { inspectOthers, updatable, updateContainerDetailed, UpdateFailed, type Journal } from './update';
+import { inspectOthers, removeReplacedImage, updatable, updateContainerDetailed, UpdateFailed, type Journal } from './update';
 import { cloneRefusal } from './clone';
 import * as v from './validate';
 import { NameLocks } from './locks';
@@ -289,6 +289,9 @@ export class AutoUpdates {
       const r = await updateContainerDetailed(this.docker, id, { settleMs: this.opts.settleMs, healthTimeoutMs: this.opts.healthTimeoutMs, skipImage: held, signal: this.opts.signal, wasStopped: this.opts.wasStopped, journal: this.opts.journal, expectDigest });
       result = r.message;
       if (r.changed) {
+        // The image it ran before, if Settings says so and nothing else uses it.
+        const removed = this.opts.schedule?.cleanup() ? await removeReplacedImage(this.docker, r.oldImage) : null;
+        if (removed) result = `${result.replace(/\.$/, '')}; ${removed}.`;
         held = null;
         heldDigests = null;
         this.recreated(name, r.id, id);

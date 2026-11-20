@@ -124,7 +124,7 @@ const systemAudit = (action: string, target: string, result?: string) =>
   db.query('INSERT INTO audit_log (at, username, action, target, ip, result) VALUES (?, ?, ?, ?, ?, ?)').run(Date.now(), null, action, target, null, result ?? null);
 // Aborted at shutdown, so a replacement being watched is undone instead of left half done.
 const stopping = new AbortController();
-const schedule = new ScheduleStore(db, cfg.autoUpdateSchedule);
+const schedule = new ScheduleStore(db, cfg.autoUpdateSchedule, Date.now, cfg.autoUpdateCleanup);
 const backups = new Backups(db, cfg.dataDir, cfg.backupKeep);
 const autoUpdates: AutoUpdates = new AutoUpdates(db, docker, updates, notifier, { settleMs: cfg.autoUpdateSettle * 1000, healthTimeoutMs: cfg.autoUpdateHealthTimeout * 1000, signal: stopping.signal, journal, wasStopped: (id: string): boolean => events.wasStopped(id), schedule }, systemAudit);
 autoUpdates.start();
