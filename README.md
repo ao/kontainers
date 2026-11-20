@@ -177,10 +177,13 @@ What kontainers does about it:
   higher address limit is because everyone behind one SSH tunnel or proxy shares an address).
   Setup is limited to 5 wrong tokens per address.
   `X-Forwarded-For` is only read from addresses listed in `KONTAINERS_TRUSTED_PROXIES`.
-- Container creation only sends image, name, command, environment, port bindings, named volumes
-  and restart policy to Docker. Host paths as volumes are refused unless
-  `KONTAINERS_ALLOW_BIND_MOUNTS=1`. Ports without a host address are published on `127.0.0.1`.
-  There is no way to set privileged mode, capabilities, devices or host namespaces from the UI.
+- Container creation only sends image, name, command, environment, port bindings, named volumes,
+  restart policy, limits (memory, CPUs, processes) and a network with aliases to Docker. Host
+  paths as volumes are refused unless `KONTAINERS_ALLOW_BIND_MOUNTS=1`. Ports without a host
+  address are published on `127.0.0.1`. The network must be a bridge network that kontainers
+  itself, its Docker API container and the proxy are not on (a container on the API network could
+  reach Docker), and an alias may not take a name already on it. There is no way to set
+  privileged mode, capabilities, devices or host namespaces from the UI.
 - The proxy configuration is generated from validated hostnames, path prefixes, container names
   and ports. Caddy's admin API is a unix socket in the data directory, not a TCP port.
 - With the proxy on, kontainers' container shares a network with the proxy targets so Caddy
@@ -349,7 +352,7 @@ briefly unavailable; Caddy did not renew certificates in a process that started 
 | `KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT` | `120` | Seconds to wait for "healthy" after settling, for images with a healthcheck, 0 to 3600 |
 | `KONTAINERS_AUTOUPDATE_WINDOW` | unset (any time) | When automatic updates may run, in UTC: `02:00-05:00`, optionally followed by days (`02:00-05:00 Sat,Sun`); applies until a window is saved on the Settings page |
 | `KONTAINERS_AUTOUPDATE_DELAY_HOURS` | `0` | Hours a newer image waits after a check first sees it, 0 to 720; as above |
-| `KONTAINERS_AUTOUPDATE_CLEANUP` | `0` | `1`: after an update that worked, remove the image the container ran before if no container uses it and no tag points at it; applies until the switch on the Settings page is saved |
+| `KONTAINERS_AUTOUPDATE_CLEANUP` | `0` | `1` (or `true`): after an update that worked, remove the image the container ran before if no container uses it and no tag points at it; applies until the switch on the Settings page is saved |
 | `KONTAINERS_BACKUP_KEEP` | `7` | Daily copies of the database kept in `/data/backups`, 0 to 365; `0` turns them off |
 | `KONTAINERS_HTTP_PORT` / `KONTAINERS_HTTPS_PORT` | `80` / `443` | Proxy ports |
 

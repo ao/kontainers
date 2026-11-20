@@ -57,6 +57,13 @@ describe.skipIf(!DOCKER)('create with limits and a network', () => {
     await api('/networks/kontainers-proxy', { method: 'DELETE' });
   });
 
+  test('an Edit form without the limit fields keeps the limits', async () => {
+    const before = (await inspect(NAME)).HostConfig.Memory;
+    await c.page(`/containers/${NAME}/edit`);
+    expect((await c.submit(`/containers/${NAME}/edit`, { image: 'busybox:1.36', cmd: 'sleep 600', ports: '', env: '', volumes: '', restart: 'no' })).error).toBe('');
+    expect((await inspect(NAME)).HostConfig.Memory).toBe(before);
+  }, 60000);
+
   test('a bad limit in Edit settings is refused, and the container can be edited again at once', async () => {
     await c.page(`/containers/${NAME}/edit`);
     expect((await c.submit(`/containers/${NAME}/edit`, { image: 'busybox:1.36', cmd: 'sleep 600', ports: '', env: '', volumes: '', restart: 'no', memory: '5m' })).error).toContain('at least 6m');
@@ -69,7 +76,7 @@ describe.skipIf(!DOCKER)('create with limits and a network', () => {
       [{ aliases: 'x' }, 'aliases need a network'], [{ network: 'nope-' + run }, 'there is no network'], [{ network: NET, aliases: 'bad alias!' }, 'not a network alias'],
       [{ network: 'host' }, 'only bridge networks'], [{ network: 'none' }, 'only bridge networks'],
       // Names already on the network: a container's name, and an alias another one has.
-      [{ network: NET, aliases: NAME }, 'already a name'], [{ network: NET, aliases: 'db' }, 'already a name'],
+      [{ network: NET, aliases: NAME }, 'already a name'], [{ network: NET, aliases: 'db' }, 'already a name'], [{ network: NET, aliases: 'DB' }, 'already a name'],
       [{ network: NET, aliases: 'a b c d e f g h i j k' }, 'at most 10 aliases'],
     ] as [Record<string, string>, string][]) {
       await c.page('/containers/new');

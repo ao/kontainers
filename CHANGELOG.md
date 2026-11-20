@@ -7,7 +7,11 @@
   `KONTAINERS_AUTOUPDATE_CLEANUP=1`; off by default). It is never forced.
 - Limits when creating a container in kontainers and in Edit settings: memory, CPUs and a process
   count; every container page shows the limits it runs with.
-- A user network, and aliases on it, when creating a container in kontainers.
+- A user network, and aliases on it, when creating a container in kontainers: bridge networks
+  that kontainers itself, its Docker API container and the proxy are not on; an alias may not take
+  a name already on the network (in any case, of running or stopped containers).
+- A container page says when a process in a running or restarting container was killed for
+  running out of memory.
 
 ## 0.7.0
 

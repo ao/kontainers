@@ -430,7 +430,7 @@ export function createHandler(d: Deps): Handler {
   // default bridge.
   async function createNetwork(netIn: unknown, aliasesIn: unknown): Promise<{ mode: string; endpoint?: { Aliases?: string[] } } | undefined> {
     const net = String(netIn || '').trim();
-    const aliases = String(aliasesIn || '').split(/[\s,]+/).filter(Boolean);
+    const aliases = [...new Set(String(aliasesIn || '').split(/[\s,]+/).filter(Boolean))];
     if (!net || net === 'bridge') {
       if (aliases.length) throw new v.ValidationError('aliases need a network other than the default bridge');
       return undefined;
@@ -441,17 +441,18 @@ export function createHandler(d: Deps): Handler {
     if (!choices) throw new v.ValidationError('kontainers cannot find its own container, so it cannot tell which networks reach its Docker API; set KONTAINERS_SELF_CONTAINER, or use the default bridge');
     if (!choices.some(c => c.id === n.Id)) throw new v.ValidationError(`a container made here cannot go on ${n.Name}: only bridge networks that are not kontainers' own, its Docker API's or the proxy network (${cfg.proxy.network})`);
     if (aliases.length > 10) throw new v.ValidationError('at most 10 aliases');
-    // Names already on that network (another container's name or alias, the Docker API's host).
-    const taken = new Set<string>([dockerApiHost(cfg.dockerHost) || ''].filter(Boolean));
-    for (const id of Object.keys(n.Containers || {}).slice(0, 300)) {
-      const o = await docker.inspect(id).catch(() => null);
-      if (!o) continue;
-      taken.add(String(o.Name || '').replace(/^\//, ''));
-      for (const a of o.NetworkSettings?.Networks?.[n.Name]?.Aliases || []) taken.add(String(a));
+    // Names already on that network, as Docker's DNS matches them (any case): another container's
+    // name or alias, running or stopped, and the Docker API's host.
+    const taken = new Set<string>([dockerApiHost(cfg.dockerHost) || ''].filter(Boolean).map(x => x.toLowerCase()));
+    const onIt = (await docker.listContainers()).filter((c: any) => Object.keys(c.NetworkSettings?.Networks || {}).includes(n.Name)).slice(0, 300);
+    for (const c of onIt) {
+      for (const nm of c.Names || []) taken.add(String(nm).replace(/^\//, '').toLowerCase());
+      const o = await docker.inspect(c.Id).catch(() => null);
+      for (const a of o?.NetworkSettings?.Networks?.[n.Name]?.Aliases || []) taken.add(String(a).toLowerCase());
     }
     for (const a of aliases) {
       if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/.test(a)) throw new v.ValidationError(`"${a.slice(0, 64)}" is not a network alias (letters, digits, dots, dashes, underscores)`);
-      if (taken.has(a)) throw new v.ValidationError(`${a} is already a name on ${n.Name}; pick another alias`);
+      if (taken.has(a.toLowerCase())) throw new v.ValidationError(`${a} is already a name on ${n.Name}; pick another alias`);
     }
     return { mode: String(n.Name), endpoint: aliases.length ? { Aliases: aliases } : undefined };
   }
@@ -845,6 +846,10 @@ export function createHandler(d: Deps): Handler {
         refuseSetAside(name);
         // Bad input is refused before the lock is taken (a refusal after it would keep it).
         const spec = containerSpec(f);
+        // A form without the limit fields (one opened before 0.8, a script) keeps the limits.
+        if (f.memory === undefined && c.HostConfig?.Memory > 0) spec.memory = c.HostConfig.Memory;
+        if (f.cpus === undefined && c.HostConfig?.NanoCpus > 0) spec.nanoCpus = c.HostConfig.NanoCpus;
+        if (f.pids === undefined && c.HostConfig?.PidsLimit > 0) spec.pids = c.HostConfig.PidsLimit;
         // Taken straight after the inspect, with nothing awaited in between, and held for the pull too.
         const release = locks.take(name);
         if (!release) throw new v.ValidationError(`an update or edit of ${name} is already running; try again in a minute`);

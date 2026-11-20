@@ -69,6 +69,14 @@ export function acmeEmail(v: string | undefined): string | null {
   return v;
 }
 
+// A switch: 1/0, true/false, yes/no, on/off; unset is off.
+function onOff(name: string, v: string | undefined): boolean {
+  const s = String(v ?? '').trim().toLowerCase();
+  if (!s || ['0', 'false', 'no', 'off'].includes(s)) return false;
+  if (['1', 'true', 'yes', 'on'].includes(s)) return true;
+  throw new Error(`${name} must be 1 or 0 (or true or false), got "${v}"`);
+}
+
 function optionalInt(name: string, v: string | undefined, min: number, max: number): number | null {
   if (v === undefined || v === '') return null;
   // Decimal digits only: Number() would also take 0x7, 1e2 and padding.
@@ -117,6 +125,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     autoUpdateSettle: optionalInt("KONTAINERS_AUTOUPDATE_SETTLE", env.KONTAINERS_AUTOUPDATE_SETTLE, 0, 600) ?? 30,
     autoUpdateHealthTimeout: optionalInt("KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT", env.KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT, 0, 3600) ?? 120,
     autoUpdateSchedule: scheduleFromEnv(env.KONTAINERS_AUTOUPDATE_WINDOW, env.KONTAINERS_AUTOUPDATE_DELAY_HOURS),
-    autoUpdateCleanup: (optionalInt('KONTAINERS_AUTOUPDATE_CLEANUP', env.KONTAINERS_AUTOUPDATE_CLEANUP, 0, 1) ?? 0) === 1,
+    autoUpdateCleanup: onOff('KONTAINERS_AUTOUPDATE_CLEANUP', env.KONTAINERS_AUTOUPDATE_CLEANUP),
   };
 }

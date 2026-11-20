@@ -400,6 +400,7 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
   <dt>Started</dt><dd>${!c.State?.StartedAt || c.State.StartedAt.startsWith('0001-') ? 'never' : `${c.State.StartedAt.slice(0, 16).replace('T', ' ')} UTC`}</dd>
   ${c.State?.Health ? html`<dt>Health</dt><dd>${c.State.Health.Status}${healthNote(c.State.Health)}</dd>` : ''}
   ${c.State?.Status === 'exited' ? html`<dt>Exit code</dt><dd>${c.State.ExitCode}${c.State.OOMKilled ? ' (out of memory)' : ''}</dd>` : ''}
+  ${c.State?.Status !== 'exited' && c.State?.OOMKilled ? html`<dt>Out of memory</dt><dd><span class="warn">a process in it was killed for running out of memory${c.State?.Status === 'restarting' ? ', and it keeps restarting' : ''}</span></dd>` : ''}
   <dt>Restart policy</dt><dd>${c.HostConfig?.RestartPolicy?.Name}${c.RestartCount ? html`<small class="warn">restarted ${c.RestartCount} time${c.RestartCount === 1 ? '' : 's'}</small>` : ''}</dd>
   ${[...(c.Config?.Entrypoint || []), ...(c.Config?.Cmd || [])].length ? html`<dt>Command</dt><dd><code>${brk(quoteArgs([...(c.Config?.Entrypoint || []), ...(c.Config?.Cmd || [])]))}</code></dd>` : ''}
   ${inspectPorts(c) ? html`<dt>Ports</dt><dd><span class="ref">${inspectPorts(c)}</span></dd>` : ''}
@@ -461,7 +462,7 @@ const cpus = (n: number) => `${n} CPU${n === 1 ? '' : 's'}`;
 // The limits a container runs with, as docker run sets them.
 export function limitsText(h: any): string {
   const parts = [
-    h?.Memory > 0 ? `memory ${formatMemory(h.Memory)}` : '',
+    h?.Memory > 0 ? `memory ${/^\d+$/.test(formatMemory(h.Memory)) ? `${Math.round(h.Memory / 1024 ** 2 * 10) / 10}m` : formatMemory(h.Memory)}` : '',
     h?.NanoCpus > 0 ? cpus(h.NanoCpus / 1e9) : h?.CpuQuota > 0 ? cpus(Math.round((h.CpuQuota / (h.CpuPeriod > 0 ? h.CpuPeriod : 100000)) * 100) / 100) : '',
     h?.CpusetCpus ? `on CPUs ${h.CpusetCpus}` : '',
     h?.PidsLimit > 0 ? `${h.PidsLimit} processes` : '',
