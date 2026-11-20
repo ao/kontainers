@@ -37,13 +37,13 @@ replacement it is rolling back), and will not stop or remove itself. The Securit
 
 Memory and start time were measured on the 0.4.0 release candidate, on an EC2 m7g.4xlarge (arm64,
 16 vCPUs, Ubuntu 24.04, Docker 29.9.3), by `scripts/test.sh screenshots` in three runs. The download
-size is the published 0.4.1 image's, and those of 0.5.0 to 0.8.0 are the same: 19 MB more than 0.3.0's, because the Bun base image grew by
+size is the published 0.4.1 image's, and those of 0.5.0 to 0.9.0 are the same: 19 MB more than 0.3.0's, because the Bun base image grew by
 16 MB (oven/bun 1.4.4-slim against 1.3.1-slim) and Caddy and Debian by 4 MB. 0.4.0 also stored
 the Caddy binary twice (16.5 MB more), which 0.4.1 fixed.
 
 | | |
 |---|---|
-| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1 to 0.8.0, compressed layers on Docker Hub |
+| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1 to 0.9.0, compressed layers on Docker Hub |
 | Memory at idle | 30 to 34 MiB, with Caddy serving two HTTPS rules and four other containers on the host (`docker stats` after 30 s, three runs) |
 | Start | 239 to 299 ms from `docker start` to a healthy `/healthz` (fifteen starts over three runs) |
 
@@ -69,15 +69,21 @@ What works, and is covered by the test suites below:
 
 - containers: list, inspect, create, start, stop, restart, unpause, remove (stopped containers
   only; kontainers never force-removes them), logs (filter, 300 to 5000 lines, timestamps on or
-  off, download). Commands are split with shell quoting (`sh -c "echo hi; sleep 60"`) but no shell
-  runs and nothing is expanded. The list has a search, a state filter including "needs
+  off, download). Commands are split with shell quoting (`sh -c "echo hi; sleep 60"`, and
+  `$'one\ntwo'` for a line break in an argument) but no shell runs and nothing is expanded. The
+  list has a search, a state filter including "needs
   attention", and grouping by compose project. The detail page shows the command, ports,
   restarts, health and limits, and CPU, memory, network and process counts refreshed every 5
   seconds. A container created in kontainers can get labels (`KEY=value`; names kontainers and
   Docker set themselves are refused, except `kontainers.autoupdate` in small letters; a label the
   image carries does not count as the container's own for these), limits (memory such as
   `512m`, CPUs such as `1.5`, a process count), and be made on a user network with aliases there,
-  for other containers on it to reach it by.
+  for other containers on it to reach it by. Duplicate opens the Create form filled in from one
+  made in kontainers (image, command, environment, labels, restart policy, network, limits), but
+  not its ports, volumes or network aliases, which the new one needs its own of; Pull and Start
+  are not ticked. A network kontainers no longer offers is named on the form, not copied, and so is
+  a tag that has moved to another image since. It needs the image the container was made from, and
+  its tag, to be on the host.
 - update image: pull the image again and, if it changed, recreate the container under the same
   name, on the same networks with the same aliases, with the same volumes (anonymous ones
   included). One created in kontainers gets the settings it was created with. Any other
@@ -136,7 +142,7 @@ What works, and is covered by the test suites below:
   is close to expiry. Settings has a test button and shows the last result per target.
 - registry logins for private images (Docker Hub, GHCR, your own registry), used for pulls and
   update checks; passwords stored encrypted
-- images: list, pull, remove, per tag
+- images: list, pull, remove, per tag; which containers use each one, and a filter for the unused
 - networks and volumes: list, create, remove
 - clean up: untagged images, unused tagged images, unused networks and unused anonymous
   volumes, listed with sizes first; anything a container uses, running or stopped, stays, and
@@ -241,7 +247,7 @@ With `docker run`, mounting the socket directly:
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.9.0
+      ataiva/kontainers:0.10.0
     docker logs kontainers | grep 'setup token'
 
 The image runs as an unprivileged user, so it needs the socket's group (`--group-add`). On
@@ -322,7 +328,7 @@ to be public: they serve the sites you route, not the kontainers UI.
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.9.0
+      ataiva/kontainers:0.10.0
 
 Use your own email address: Let's Encrypt rejects reserved domains such as example.com, and
 kontainers refuses to start with one.

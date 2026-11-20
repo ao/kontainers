@@ -84,6 +84,18 @@ describe('form parsing', () => {
     expect(splitArgs(`ab"c d"'e'`)).toEqual(['abc de']);
     for (const bad of [`echo 'x`, 'echo "x', 'echo x\\']) expect(() => splitArgs(bad)).toThrow();
   });
+  test("a line break in an argument goes in $'…' and comes back", () => {
+    const args = ['sh', '-c', "echo one\necho 'two'\r\n\\n done", 'x\ty'];
+    const q = quoteArgs(args);
+    expect(q).not.toMatch(/[\n\r]/);
+    expect(q).toBe(`sh -c $'echo one\\necho \\'two\\'\\r\\n\\\\n done' 'x\ty'`);
+    expect(splitArgs(q)).toEqual(args);
+    expect(splitArgs(`$'a\\qb'`)).toEqual(['a\\qb']);
+    expect(splitArgs(`echo $'say \\"hi\\"'`)).toEqual(['echo', 'say "hi"']);
+    // Only a shell's separators split: a no-break space stays in the argument.
+    expect(splitArgs('echo a\u00a0b c\u3000d')).toEqual(['echo', 'a\u00a0b', 'c\u3000d']);
+    expect(() => splitArgs(`$'open`)).toThrow("unterminated $' quote");
+  });
   test('containerSpec', () => {
     const s = containerSpec({ image: ' nginx ', name: '', cmd: 'sh -c  true', env: 'A=1\r\n\nB=2', ports: '8081:80', volumes: '', restart: 'always' });
     expect(s).toEqual({ image: 'nginx', name: undefined, cmd: ['sh', '-c', 'true'], env: ['A=1', 'B=2'], ports: [{ hostIp: undefined, host: 8081, container: 80, protocol: 'tcp' }], volumes: [], restart: 'always', labels: {}, memory: undefined, nanoCpus: undefined, pids: undefined });
@@ -141,6 +153,18 @@ describe('pages', () => {
     const page = imagesPage(ctx, [{ Id: 'sha256:' + 'c'.repeat(64), RepoTags: ['alpine:3.20', 'me/tool:1.0'], Size: 1e7, Created: 0 }]);
     expect([...page.matchAll(/name="ref" value="([^"]+)"/g)].map(m => m[1])).toEqual(['alpine:3.20', 'me/tool:1.0']);
     expect(page).toContain('Remove the tag me/tool:1.0?');
+  });
+
+  test('images page says which containers use an image, and can list only the unused ones', () => {
+    const a = { Id: 'sha256:' + 'a'.repeat(64), RepoTags: ['app:1'], Size: 1, Created: 0 }, b = { Id: 'sha256:' + 'b'.repeat(64), RepoTags: ['old:1'], Size: 1, Created: 0 };
+    const users = new Map([[a.Id, ['web', 'worker']]]);
+    const page = imagesPage(ctx, [a, b], [], users);
+    expect(page).toContain('1 of 2 images no container uses: <a href="/images?unused=1">show only those</a>.');
+    expect(page).toContain('web');
+    const only = imagesPage(ctx, [a, b], [], users, true);
+    expect(only).toContain('Showing the 1 image no container uses.');
+    expect(only).toContain('old:1');
+    expect(only).not.toContain('app:1');
   });
 
   test('images page lists pulls still running and failed ones', () => {

@@ -13,7 +13,7 @@ import { Auth, RateLimiter, safeEqual, type Session } from './auth';
 import { Docker, DockerError, summarizeStats, type CreateSpec } from './docker';
 import type { ProxyManager, RuleStore } from './proxy';
 import { snapshot } from './db';
-import { editable, ownLabels, recreateSpec, removeReplacedImage, replaceContainer, updateContainerDetailed, UpdateFailed, type Journal } from './update';
+import { duplicable, editable, ownLabels, recreateSpec, removeReplacedImage, replaceContainer, updateContainerDetailed, UpdateFailed, type Journal } from './update';
 import type { Notifier } from './notify';
 import { EVENT_KINDS } from './notify';
 import { labelledOn, type AutoUpdates } from './autoupdate';
@@ -201,14 +201,28 @@ export function parseVolume(line: string): NonNullable<CreateSpec['volumes']>[nu
 }
 
 // Splits a command line into arguments the way a POSIX shell quotes them: 'single' quotes are
-// literal, "double" quotes allow \" \\ \$ \` escapes, a backslash outside quotes escapes the next
+// literal, "double" quotes allow \" \\ \$ \` escapes, $'…' allows \n \r \t \\ \' \" (a line break,
+// which a one-line field cannot hold otherwise), a backslash outside quotes escapes the next
 // character. Nothing is expanded and no shell runs: the result goes to Docker as an argv array.
 export function splitArgs(s: string): string[] {
   const out: string[] = [];
   let cur = '', inArg = false, i = 0;
   while (i < s.length) {
     const c = s[i];
-    if (c === "'") {
+    if (c === '$' && s[i + 1] === "'") {
+      i += 2; inArg = true;
+      for (;;) {
+        if (i >= s.length) throw new v.ValidationError("command has an unterminated $' quote");
+        const d = s[i];
+        if (d === "'") { i++; break; }
+        if (d === '\\' && i + 1 < s.length) {
+          const e = s[i + 1];
+          cur += e === 'n' ? '\n' : e === 'r' ? '\r' : e === 't' ? '\t' : e === '\\' || e === "'" || e === '"' ? e : '\\' + e;
+          i += 2; continue;
+        }
+        cur += d; i++;
+      }
+    } else if (c === "'") {
       const end = s.indexOf("'", i + 1);
       if (end === -1) throw new v.ValidationError('command has an unterminated single quote');
       cur += s.slice(i + 1, end); inArg = true; i = end + 1;
@@ -224,7 +238,8 @@ export function splitArgs(s: string): string[] {
     } else if (c === '\\') {
       if (i + 1 >= s.length) throw new v.ValidationError('command ends with a backslash');
       cur += s[i + 1]; inArg = true; i += 2;
-    } else if (/\s/.test(c)) {
+    } else if (c === ' ' || c === '\t' || c === '\n' || c === '\r') {
+      // A shell's word separators only: a no-break or other Unicode space stays in the argument.
       if (inArg) { out.push(cur); cur = ''; inArg = false; }
       i++;
     } else {
@@ -260,6 +275,9 @@ function errorStatus(e: unknown): number {
   const s = (e as { status?: number })?.status;
   return typeof s === 'number' ? s : 500;
 }
+
+// Back to the Images page as it was: all of it, or only the unused images.
+const imagesBack = (f: Record<string, string>) => (f.back === '/images?unused=1' ? f.back : '/images');
 
 function errorMessage(e: unknown): string {
   if (diskFull(e)) return DISK_FULL;
@@ -486,6 +504,8 @@ export function createHandler(d: Deps): Handler {
   // meanwhile would leave two instances on the same data, or nothing to put back.
   // Also while a replacement a restart interrupted is not tidied up yet (its journal entry is open),
   // and for a name shortened to fit Docker's 128 characters.
+  // An image by reference, as a promise even when the reference is refused (a rejection, not a throw).
+  const imageNamed = (ref: string) => Promise.resolve().then(() => docker.inspectImage(ref));
   const setAsideOf = (name: string) => {
     const m = /^(.+)-old-([0-9a-f]{8})$/.exec(name);
     if (!m) return null;
@@ -672,7 +692,47 @@ export function createHandler(d: Deps): Handler {
       }
       if (p === '/containers/new') {
         const nets = ((await networkChoices()) ?? []).map(n => n.name);
-        return page(views.newContainerPage(ctx(s), cfg.allowBindMounts, !!d.autoUpdates, nets));
+        // Duplicate: the form filled in from a container made in kontainers (not its ports or volumes).
+        const from = url.searchParams.get('from');
+        const pc = ctx(s);
+        let dup: views.DuplicateOf | null = null;
+        if (from && !pc.form) {
+          const missing = (e: unknown) => e instanceof DockerError && e.status === 404;
+          let c: any = null, img: any = null, tagged: any, why: string | null = null;
+          try {
+            c = await docker.inspect(v.ref(from, 'container name or ID'));
+            img = await docker.inspectImage(c.Image).catch(e => { if (missing(e)) return null; throw e; });
+            // The image the reference names now, which the new container gets (Pull is not ticked).
+            tagged = img ? await imageNamed(String(c.Config?.Image || '')).catch(e => { if (missing(e) || e instanceof v.ValidationError) return null; throw e; }) : undefined;
+          } catch (e) {
+            why = e instanceof v.ValidationError ? 'that is not a container name or ID' : missing(e) ? 'there is no such container' : errorMessage(e);
+          }
+          const name = c ? String(c.Name || '').replace(/^\//, '') : from.slice(0, 128).replace(/[\x00-\x1f\x7f]/g, '?');
+          const me = await self();
+          why ??= me && views.isProtected(c, me) ? 'this is kontainers itself or the container that serves its Docker API'
+            : locks.has(name) ? `an update or edit of ${name} is running; try again when it has finished`
+            : setAsideOf(name) ? `it is the old container of ${setAsideOf(name)}, kept until its update or edit finishes` : duplicable(c, img, tagged);
+          if (why) dup = { name, problem: why };
+          else {
+            const sp = recreateSpec(c, img);
+            const net = String(c.HostConfig?.NetworkMode || '');
+            const labels = sp.labels || {};
+            // Opted in to automatic updates on the Updates page (a label opt-in is copied with the labels).
+            const auto = !!d.autoUpdates?.isOn(name, c.Id, null);
+            // A user network that is not offered any more (the proxy's, kontainers' own) is said, not
+            // silently swapped for the default bridge.
+            dup = { name, ...(net && net !== 'bridge' && net !== 'default' && !nets.includes(net) ? { network: net } : {}), ...(tagged && tagged.Id !== img.Id ? { moved: true } : {}) };
+            // Not pulled (the tag may have moved on to an image held back, or be built here) and not
+            // started: it has no volumes yet, and copied routing labels would send it visitors.
+            pc.form = {
+              image: sp.image, name: '', pull: '', start: '', cmd: sp.cmd ? views.quoteArgs(sp.cmd) : '', env: (sp.env || []).join('\n'),
+              labels: Object.entries(labels).map(([k, x]) => `${k}=${x}`).join('\n'), restart: sp.restart || 'no', network: nets.includes(net) ? net : '',
+              memory: sp.memory ? v.formatMemory(sp.memory) : '', cpus: sp.nanoCpus ? String(sp.nanoCpus / 1e9) : '', pids: sp.pids ? String(sp.pids) : '',
+              ...(auto ? { autoupdate: 'on' } : {}),
+            };
+          }
+        }
+        return page(views.newContainerPage(pc, cfg.allowBindMounts, !!d.autoUpdates, nets, dup));
       }
       if ((r = /^\/containers\/([^/]+)\/edit$/.exec(p))) {
         const c = await docker.inspect(r[1]);
@@ -699,7 +759,8 @@ export function createHandler(d: Deps): Handler {
         const img = await docker.inspectImage(c.Image).catch(() => null);
         const own = labelledOn(c.Config?.Labels) && !labelledOn(img?.Config?.Labels) ? c.Config?.Labels : null;
         const auto = d.autoUpdates ? { on: d.autoUpdates.isOn(name, c.Id, own), label: labelledOn(own), row, waiting: d.autoUpdates.waitingFor(name) } : null;
-        return page(views.containerPage(ctx(s), c, await self(), updateView(), auto, editable(c, img) === null || (c.Config?.Labels?.['kontainers.managed'] === 'true' && img?.Config?.Labels?.['kontainers.managed'] !== 'true')));
+        const dupOk = duplicable(c, img) === null && duplicable(c, img, await imageNamed(String(c.Config?.Image || '')).catch(() => null)) === null;
+        return page(views.containerPage(ctx(s), c, await self(), updateView(), auto, editable(c, img) === null || (c.Config?.Labels?.['kontainers.managed'] === 'true' && img?.Config?.Labels?.['kontainers.managed'] !== 'true'), dupOk));
       }
       // kontainers' own logs (and its socket proxy's) are for administrators: they can hold what
       // only Settings shows.
@@ -725,14 +786,18 @@ export function createHandler(d: Deps): Handler {
       }
       if (p === '/images') {
         for (const [k, j] of pulls) if (j.state === 'failed' && Date.now() - j.at > 30 * 60 * 1000) pulls.delete(k);
-        return page(views.imagesPage(ctx(s), await docker.listImages(), [...pulls].map(([ref, j]) => ({ ref, ...j }))));
+        const users = new Map<string, string[]>();
+        const [list, images] = await Promise.all([docker.listContainers(), docker.listImages()]);
+        for (const c of list) (users.get(c.ImageID) || users.set(c.ImageID, []).get(c.ImageID)!).push(views.listName(c));
+        for (const names of users.values()) names.sort();
+        return page(views.imagesPage(ctx(s), images, [...pulls].map(([ref, j]) => ({ ref, ...j })), users, url.searchParams.get('unused') === '1'));
       }
       if (p === '/networks' || p === '/volumes') {
         // Who uses what, from the container list (names, which the pages link to).
         const users = new Map<string, string[]>();
         const add = (k: string, n: string) => (users.get(k) || users.set(k, []).get(k)!).push(n);
         for (const c of await docker.listContainers()) {
-          const n = String(c.Names?.[0] || '').replace(/^\//, '');
+          const n = views.listName(c);
           if (p === '/networks') for (const net of Object.keys(c.NetworkSettings?.Networks || {})) add(net, n);
           else for (const m of c.Mounts || []) if (m.Type === 'volume' && m.Name) add(m.Name, n);
         }
@@ -1181,7 +1246,7 @@ export function createHandler(d: Deps): Handler {
     }
 
     if (p === '/images/pull') {
-      return act(s, ip, '/images', 'image-pull', f.ref ?? null, async () => {
+      return act(s, ip, imagesBack(f), 'image-pull', f.ref ?? null, async () => {
         const ref = v.image(String(f.ref ?? '').trim());
         if (pulls.get(ref)?.state === 'pulling') return `${ref} is already being pulled.`;
         pulls.delete(ref);
@@ -1226,7 +1291,7 @@ export function createHandler(d: Deps): Handler {
         return said(await cleanup.removeAll(chosen, vol => docker.removeVolume(vol.name), vol => vol.name.slice(0, 12)), 'anonymous volume');
       });
     }
-    if (p === '/images/remove') return act(s, ip, '/images', 'image-remove', f.ref ?? null, async () => { await docker.removeImage(f.ref); return `Removed ${f.ref}.`; });
+    if (p === '/images/remove') return act(s, ip, imagesBack(f), 'image-remove', f.ref ?? null, async () => { await docker.removeImage(f.ref); return `Removed ${f.ref}.`; });
 
     if (p === '/networks') return act(s, ip, '/networks', 'network-create', f.name ?? null, async () => { await docker.createNetwork(f.name); return `Created network ${f.name}.`; });
     if ((r = /^\/networks\/([^/]+)\/remove$/.exec(p))) { const id = r[1]; return act(s, ip, '/networks', 'network-remove', id, () => docker.removeNetwork(id)); }

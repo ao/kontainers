@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.10.0
+
+Duplicate, and which containers use each image.
+
+Upgrading from 0.9.x: nothing to do; there is no database migration. A command typed as
+`$'…'` now reads `\n`, `\r`, `\t`, `\\`, `\'` and `\"` as a shell does (other escapes keep their
+backslash); before, the `$` was kept as a character. A no-break or other Unicode space in a
+command no longer splits it into arguments.
+
+- Duplicate, on the page of a container made in kontainers: the Create form filled in from it
+  (image, command, environment, labels, restart policy, network, limits, and the automatic-update
+  tick). Ports, volumes and network aliases are left out: the ports would clash, and two
+  containers writing to one volume can damage its data. Pull and Start are not ticked, so the copy
+  gets the image the tag names on the host and starts only when asked; the form says when that tag
+  has moved to another image than the original runs, and that labels routing a host name to the
+  original would route it to the copy too. It needs the image the container was made from, and
+  its tag, to be on the host.
+- A line break in a command argument is shown as `$'…\n…'` in Edit settings and Duplicate, and
+  read back: before, the one-line field dropped it, and saving Edit settings unchanged joined the
+  lines. `$'…'` can be typed in Create as well.
+- The Images page says which containers use each image, and how many no container uses, with a
+  link to list only those (Remove and Pull stay on that list).
+
 ## 0.9.0
 
 Newer version tags, and labels for containers made in kontainers.
