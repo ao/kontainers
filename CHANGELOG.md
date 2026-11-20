@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.9.0
+
+Newer version tags, and labels for containers made in kontainers.
+
+Upgrading from 0.8.x: nothing to do; there is no database migration. kontainers now makes HTTPS
+requests to the registries of the images containers use, to list their tags (with the logins saved
+on the Settings page); `KONTAINERS_VERSION_CHECK=0` turns that off. Existing notification targets
+do not get the new "newer version" notes until that event is ticked for them.
 
 - Newer version tags: after each update check, kontainers lists the tags of the repositories that
   containers use with a version tag, and says (on the Containers page, the container's page and in
@@ -11,6 +18,8 @@
   logins saved on the Settings page; `KONTAINERS_VERSION_CHECK=0` turns it off.
 - Labels in Create and Edit settings (`KEY=value` lines), kept by Update image. Names kontainers
   and Docker set themselves are refused, except `kontainers.autoupdate`.
+- A label an image carries (`kontainers.managed`, `kontainers.autoupdate`) no longer makes a
+  container made from it look made in kontainers, or opts it into automatic updates.
 
 ## 0.8.0
 
