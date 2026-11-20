@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.10.0
+
+Duplicate, and which containers use each image.
+
+Upgrading from 0.9.x: nothing to do; there is no database migration.
+
+- Duplicate, on the page of a container made in kontainers: the Create form filled in from it
+  (image, command, environment, labels, restart policy, network, limits, and the automatic-update
+  tick). Ports and volumes are left out: the ports would clash, and two containers writing to
+  one volume can damage its data.
+- The Images page says which containers use each image, and how many no container uses, with a
+  link to list only those.
+
 ## 0.9.0
 
 Newer version tags, and labels for containers made in kontainers.

@@ -37,13 +37,13 @@ replacement it is rolling back), and will not stop or remove itself. The Securit
 
 Memory and start time were measured on the 0.4.0 release candidate, on an EC2 m7g.4xlarge (arm64,
 16 vCPUs, Ubuntu 24.04, Docker 29.9.3), by `scripts/test.sh screenshots` in three runs. The download
-size is the published 0.4.1 image's, and those of 0.5.0 to 0.8.0 are the same: 19 MB more than 0.3.0's, because the Bun base image grew by
+size is the published 0.4.1 image's, and those of 0.5.0 to 0.9.0 are the same: 19 MB more than 0.3.0's, because the Bun base image grew by
 16 MB (oven/bun 1.4.4-slim against 1.3.1-slim) and Caddy and Debian by 4 MB. 0.4.0 also stored
 the Caddy binary twice (16.5 MB more), which 0.4.1 fixed.
 
 | | |
 |---|---|
-| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1 to 0.8.0, compressed layers on Docker Hub |
+| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1 to 0.9.0, compressed layers on Docker Hub |
 | Memory at idle | 30 to 34 MiB, with Caddy serving two HTTPS rules and four other containers on the host (`docker stats` after 30 s, three runs) |
 | Start | 239 to 299 ms from `docker start` to a healthy `/healthz` (fifteen starts over three runs) |
 
@@ -77,7 +77,9 @@ What works, and is covered by the test suites below:
   Docker set themselves are refused, except `kontainers.autoupdate` in small letters; a label the
   image carries does not count as the container's own for these), limits (memory such as
   `512m`, CPUs such as `1.5`, a process count), and be made on a user network with aliases there,
-  for other containers on it to reach it by.
+  for other containers on it to reach it by. Duplicate opens the Create form filled in from one
+  made in kontainers (image, command, environment, labels, restart policy, network, limits), but
+  not its ports or volumes, which the new one needs its own of.
 - update image: pull the image again and, if it changed, recreate the container under the same
   name, on the same networks with the same aliases, with the same volumes (anonymous ones
   included). One created in kontainers gets the settings it was created with. Any other
@@ -136,7 +138,7 @@ What works, and is covered by the test suites below:
   is close to expiry. Settings has a test button and shows the last result per target.
 - registry logins for private images (Docker Hub, GHCR, your own registry), used for pulls and
   update checks; passwords stored encrypted
-- images: list, pull, remove, per tag
+- images: list, pull, remove, per tag; which containers use each one, and a filter for the unused
 - networks and volumes: list, create, remove
 - clean up: untagged images, unused tagged images, unused networks and unused anonymous
   volumes, listed with sizes first; anything a container uses, running or stopped, stays, and

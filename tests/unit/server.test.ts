@@ -143,6 +143,18 @@ describe('pages', () => {
     expect(page).toContain('Remove the tag me/tool:1.0?');
   });
 
+  test('images page says which containers use an image, and can list only the unused ones', () => {
+    const a = { Id: 'sha256:' + 'a'.repeat(64), RepoTags: ['app:1'], Size: 1, Created: 0 }, b = { Id: 'sha256:' + 'b'.repeat(64), RepoTags: ['old:1'], Size: 1, Created: 0 };
+    const users = new Map([[a.Id, ['web', 'worker']]]);
+    const page = imagesPage(ctx, [a, b], [], users);
+    expect(page).toContain('1 of 2 images no container uses: <a href="/images?unused=1">show only those</a>.');
+    expect(page).toContain('web');
+    const only = imagesPage(ctx, [a, b], [], users, true);
+    expect(only).toContain('Showing the 1 image no container uses.');
+    expect(only).toContain('old:1');
+    expect(only).not.toContain('app:1');
+  });
+
   test('images page lists pulls still running and failed ones', () => {
     const page = imagesPage(ctx, [], [{ ref: 'postgres:17', state: 'pulling' }, { ref: 'x:1', state: 'failed', error: 'denied' }]);
     expect(page).toContain('postgres:17: pulling');

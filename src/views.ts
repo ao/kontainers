@@ -416,7 +416,7 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
 </dl>
 <div class="actions">${isSelf(c, me) ? selfNote(c, me) : ctx.busy?.(name) ? html`<p class="muted">${ctx.busy(name)}; reload in a moment.</p>` : containerActions(ctx, urlId(c), name, c.State?.Status || '', true)}
 ${isProtected(c, me) || ctx.busy?.(name) ? '' : html`${post(ctx, `/containers/${urlId(c)}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' && !held ? 'primary' : '' })}${madeHere
-    ? html` <a class="button" href="/containers/${urlId(c)}/edit">Edit settings</a>`
+    ? html` <a class="button" href="/containers/${urlId(c)}/edit">Edit settings</a>${ctx.readOnly ? '' : html` <a class="button" href="/containers/new?from=${urlId(c)}">Duplicate</a>`}`
     : html` <small class="muted">${project ? html`Part of compose project ${project}. Update image copies its settings and compose labels to the new container, so <code>docker compose up -d</code> leaves it as it is; change its settings in the compose file.` : 'Created outside kontainers: Update image copies all of its settings to the new container. Edit settings is only for containers created here.'}</small>`}`}</div>
 ${auto && !isProtected(c, me) && !ctx.busy?.(name) ? autoForm(ctx, urlId(c), auto) : ''}
 ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
@@ -439,13 +439,15 @@ ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
 <pre id="logs" tabindex="0" role="region" aria-label="Logs of ${name}" data-logs="/api/containers/${urlId(c)}/logs">loading…</pre>`, 'Containers');
 }
 
-export function newContainerPage(ctx: PageCtx, allowBind: boolean, autoUpdates = false, networks: string[] = []): string {
+// from: the container the form is a duplicate of, or why it cannot be.
+export function newContainerPage(ctx: PageCtx, allowBind: boolean, autoUpdates = false, networks: string[] = [], from: { name: string; problem?: string } | null = null): string {
   // After a failed create, the form comes back as it was sent.
   const f = ctx.form;
   const val = (k: string) => f?.[k] ?? '';
   const box = (k: string, dflt: boolean) => ((f ? !!f[k] : dflt) ? raw(' checked') : raw(''));
   const opt = (v: string) => html`<option${v === (f?.restart || 'no') ? raw(' selected') : raw('')}>${v}</option>`;
   return layout('New container', ctx, html`
+${from?.problem ? html`<p class="warn">${from.name} cannot be duplicated: ${from.problem}.</p>` : from ? html`<p>The settings of ${from.name}, to make another container like it. Its ports and volumes are not copied (the ports would clash, and two containers on one volume can damage its data): add the ones the new one needs, and give it a name.</p>` : ''}
 <form method="post" action="/containers" class="stack">${csrfField(ctx)}
   <label>Image <input name="image" required placeholder="nginx:1.27-alpine" value="${val('image')}"></label>
   <label class="check"><input type="checkbox" name="pull"${box('pull', true)}> Pull the image first</label>
@@ -544,7 +546,10 @@ ${limitFields(f ? f.memory ?? '' : spec.memory ? formatMemory(spec.memory) : '',
   <button class="primary">Save and recreate</button>
 </form>`, 'Containers');
 }
-export function imagesPage(ctx: PageCtx, list: any[], pulls: { ref: string; state: string; error?: string }[] = []): string {
+// users: container names per image ID. unusedOnly: the list filtered to images no container uses.
+export function imagesPage(ctx: PageCtx, list: any[], pulls: { ref: string; state: string; error?: string }[] = [], users: Map<string, string[]> = new Map(), unusedOnly = false): string {
+  const unused = list.filter(i => !users.get(i.Id)?.length);
+  if (unusedOnly) list = unused;
   const cleanup = html`<p><a href="/cleanup">Clean up</a> images, networks and volumes no container uses.</p>`;
   // One Remove per tag: removing a tag leaves the image while other tags point at it.
   const remove = (ref: string, label: string, what: string) => post(ctx, '/images/remove', label, { confirm: `Remove ${what}?`, cls: 'danger', fields: { ref } });
@@ -554,14 +559,15 @@ export function imagesPage(ctx: PageCtx, list: any[], pulls: { ref: string; stat
       ? tags.map(t => html`<div>${brk(t)} ${remove(t, 'Remove', tags.length > 1 ? `the tag ${t}` : `image ${t}`)}</div>`)
       : html`<em>untagged</em> ${remove(i.Id, 'Remove', `untagged image ${shortId(i.Id)}`)}`;
     return html`<tr><td>${tagCells}</td><td><code class="id">${shortId(i.Id)}</code></td>
-<td>${fmtSize(i.Size)}</td><td class="wide">${fmtTime(i.Created)}</td></tr>`;
+<td>${usedBy(users.get(i.Id))}</td><td>${fmtSize(i.Size)}</td><td class="wide">${fmtTime(i.Created)}</td></tr>`;
   });
   const pending = pulls.map(p => html`<li>${p.ref}: ${p.state === 'pulling' ? 'pulling…' : html`<span class="error">failed: ${p.error}</span>`}</li>`);
   return layout('Images', ctx, html`
 <form method="post" action="/images/pull" class="row">${csrfField(ctx)}<input name="ref" required placeholder="alpine:3.20" aria-label="Image to pull"><button>Pull</button></form>
 <p class="muted">For a private image, add a registry login on the <a href="/settings">Settings</a> page first.</p>
 ${pending.length ? html`<ul class="pulls">${pending}</ul>` : ''}
-<div class="scroll"><table><thead><tr><th>Tags</th><th>ID</th><th>Size</th><th class="wide">Created (UTC)</th></tr></thead><tbody>${rows}</tbody></table></div>
+<p>${unusedOnly ? html`Showing the ${unused.length} image${unused.length === 1 ? '' : 's'} no container uses. <a href="/images">Show all</a>` : html`${unused.length} of ${list.length} image${list.length === 1 ? '' : 's'} no container uses${unused.length ? html`: <a href="/images?unused=1">show only those</a>` : ''}.`}</p>
+<div class="scroll"><table><thead><tr><th>Tags</th><th>ID</th><th>Used by</th><th>Size</th><th class="wide">Created (UTC)</th></tr></thead><tbody>${rows}</tbody></table></div>
 ${cleanup}`);
 }
 

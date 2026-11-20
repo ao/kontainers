@@ -672,7 +672,32 @@ export function createHandler(d: Deps): Handler {
       }
       if (p === '/containers/new') {
         const nets = ((await networkChoices()) ?? []).map(n => n.name);
-        return page(views.newContainerPage(ctx(s), cfg.allowBindMounts, !!d.autoUpdates, nets));
+        // Duplicate: the form filled in from a container made in kontainers (not its ports or volumes).
+        const from = url.searchParams.get('from');
+        const pc = ctx(s);
+        let dup: { name: string; problem?: string } | null = null;
+        if (from && !pc.form) {
+          const c = await docker.inspect(from).catch(() => null);
+          const img = c ? await docker.inspectImage(c.Image).catch(() => null) : null;
+          const name = c ? String(c.Name || '').replace(/^\//, '') : from.slice(0, 128);
+          const why = !c ? 'there is no such container' : editable(c, img) ?? (img ? null : 'the image it was created from is no longer on this host, so its own settings cannot be told apart from the image\'s');
+          if (why) dup = { name, problem: why.replace(/^only containers created in kontainers can be edited here$/, 'only containers created in kontainers can be duplicated') };
+          else {
+            const sp = recreateSpec(c, img);
+            const net = String(c.HostConfig?.NetworkMode || '');
+            const labels = sp.labels || {};
+            // Opted in to automatic updates on the Updates page (a label opt-in is copied with the labels).
+            const auto = !!d.autoUpdates?.isOn(name, c.Id, null);
+            dup = { name };
+            pc.form = {
+              image: sp.image, name: '', pull: 'on', start: 'on', cmd: sp.cmd ? views.quoteArgs(sp.cmd) : '', env: (sp.env || []).join('\n'),
+              labels: Object.entries(labels).map(([k, x]) => `${k}=${x}`).join('\n'), restart: sp.restart || 'no', network: nets.includes(net) ? net : '',
+              memory: sp.memory ? v.formatMemory(sp.memory) : '', cpus: sp.nanoCpus ? String(sp.nanoCpus / 1e9) : '', pids: sp.pids ? String(sp.pids) : '',
+              ...(auto ? { autoupdate: 'on' } : {}),
+            };
+          }
+        }
+        return page(views.newContainerPage(pc, cfg.allowBindMounts, !!d.autoUpdates, nets, dup));
       }
       if ((r = /^\/containers\/([^/]+)\/edit$/.exec(p))) {
         const c = await docker.inspect(r[1]);
@@ -725,7 +750,9 @@ export function createHandler(d: Deps): Handler {
       }
       if (p === '/images') {
         for (const [k, j] of pulls) if (j.state === 'failed' && Date.now() - j.at > 30 * 60 * 1000) pulls.delete(k);
-        return page(views.imagesPage(ctx(s), await docker.listImages(), [...pulls].map(([ref, j]) => ({ ref, ...j }))));
+        const users = new Map<string, string[]>();
+        for (const c of await docker.listContainers()) { const n = String(c.Names?.[0] || '').replace(/^\//, ''); users.set(c.ImageID, [...(users.get(c.ImageID) || []), n]); }
+        return page(views.imagesPage(ctx(s), await docker.listImages(), [...pulls].map(([ref, j]) => ({ ref, ...j })), users, url.searchParams.get('unused') === '1'));
       }
       if (p === '/networks' || p === '/volumes') {
         // Who uses what, from the container list (names, which the pages link to).
