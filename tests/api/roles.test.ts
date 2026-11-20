@@ -55,6 +55,7 @@ describe.skipIf(!DOCKER)('read-only accounts', () => {
     expect((await reader.get('/api/backup')).status).toBe(403);
     expect((await reader.get('/containers/new')).status).toBe(403);
     expect((await reader.get(`/containers/${NAME}/edit`)).status).toBe(403);
+    for (const p of ['compose', 'compose.yaml']) expect((await reader.get(`/containers/${NAME}/${p}`)).status).toBe(403);
     expect(await admin.page('/activity?q=read-only')).toContain('was refused, as a read-only account,');
     // Its own Activity: what was done to containers, by "an account", with no addresses, and none
     // of the account or login rows; a search does not look at user names.

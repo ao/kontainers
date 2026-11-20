@@ -121,7 +121,7 @@ export function viewerMayPost(path: string): boolean {
 export function readOnlyView(h: string): string {
   return h
     .replace(/<form method="post" action="([^"]*)"[\s\S]*?<\/form>/g, (m, action: string) => (viewerMayPost(action) ? m : ''))
-    .replace(/ ?<a class="button[^"]*" href="\/containers\/(new|[^"/]+\/edit)(\?[^"]*)?">[^<]*<\/a>/g, '')
+    .replace(/ ?<a class="button[^"]*" href="\/containers\/(new|[^"/]+\/(edit|compose))(\?[^"]*)?">[^<]*<\/a>/g, '')
     .replace(/ ?<a class="button" href="\/proxy\/\d+\/edit">Edit<\/a>/g, '')
     .replace(/<a href="\/containers\/new">Create one<\/a>, or start/g, 'Start')
     .replace(/<p><a href="\/cleanup">Clean up<\/a>[^<]*<\/p>/g, '');
@@ -421,7 +421,7 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
 </dl>
 <div class="actions">${isSelf(c, me) ? selfNote(c, me) : ctx.busy?.(name) ? html`<p class="muted">${ctx.busy(name)}; reload in a moment.</p>` : containerActions(ctx, urlId(c), name, c.State?.Status || '', true)}
 ${isProtected(c, me) || ctx.busy?.(name) ? '' : html`${post(ctx, `/containers/${urlId(c)}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' && !held ? 'primary' : '' })}${madeHere
-    ? html` <a class="button" href="/containers/${urlId(c)}/edit">Edit settings</a>${ctx.readOnly || !canDuplicate ? '' : html` <a class="button" href="/containers/new?from=${urlId(c)}">Duplicate</a>`}`
+    ? html` <a class="button" href="/containers/${urlId(c)}/edit">Edit settings</a>${ctx.readOnly || !canDuplicate ? '' : html` <a class="button" href="/containers/new?from=${urlId(c)}">Duplicate</a> <a class="button" href="/containers/${urlId(c)}/compose">Compose file</a>`}`
     : html` <small class="muted">${project ? html`Part of compose project ${project}. Update image copies its settings and compose labels to the new container, so <code>docker compose up -d</code> leaves it as it is; change its settings in the compose file.` : 'Created outside kontainers: Update image copies all of its settings to the new container. Edit settings is only for containers created here.'}</small>`}`}</div>
 ${auto && !isProtected(c, me) && !ctx.busy?.(name) ? autoForm(ctx, urlId(c), auto) : ''}
 ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
@@ -442,6 +442,17 @@ ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
   <span class="muted" id="logcount" aria-live="polite"></span>
 </div>
 <pre id="logs" tabindex="0" role="region" aria-label="Logs of ${name}" data-logs="/api/containers/${urlId(c)}/logs">loading…</pre>`, 'Containers');
+}
+
+// A compose file for a container made in kontainers, and how to move the container into compose.
+export function composePage(ctx: PageCtx, c: any, yaml: string): string {
+  const name = String(c.Name || '').replace(/^\//, '');
+  return layout(`Compose file for ${name}`, ctx, html`
+<p><a href="/containers/${urlId(c)}">Back to ${name}</a></p>
+<p>The settings kontainers made ${name} with, as a compose file. Its named volumes and its network are declared <code>external</code>, so the ones it has now are used, with their data. Environment values are in the file.</p>
+<p>To move ${name} into compose: save this as <code>compose.yaml</code> in a directory of its own, stop and remove ${name} here (its named volumes stay), and run <code>docker compose up -d</code> in that directory. kontainers then shows it as part of that compose project: Update image copies it, and its settings change in the file.</p>
+<p><a class="button" href="/containers/${urlId(c)}/compose.yaml">Download compose.yaml</a></p>
+<pre class="logs"><code>${yaml}</code></pre>`, 'Containers');
 }
 
 // The container a New container form is a duplicate of: why it cannot be, the network it is on

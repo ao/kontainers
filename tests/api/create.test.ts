@@ -110,6 +110,19 @@ describe.skipIf(!DOCKER)('create with limits and a network', () => {
     expect(unused).not.toContain('busybox:1.36');
   });
 
+  test('a compose file for a container made here: its settings, network and aliases', async () => {
+    expect(await c.page(`/containers/${NAME}`)).toContain(`href="/containers/${NAME}/compose">Compose file</a>`);
+    expect(await c.page(`/containers/${NAME}/compose`)).toContain(`Compose file for ${NAME}`);
+    const res = await c.get(`/containers/${NAME}/compose.yaml`);
+    expect(res.headers.get('content-disposition')).toBe('attachment; filename="compose.yaml"');
+    const doc = Bun.YAML.parse(await res.text()) as any;
+    expect(doc.services[NAME]).toMatchObject({ image: 'busybox:1.36', container_name: NAME, command: ['sleep', '600'], mem_limit: 64 * 1024 ** 2, cpus: 0.5, pids_limit: 50 });
+    expect(doc.services[NAME].networks[NET].aliases).toEqual(expect.arrayContaining(['db', 'primary']));
+    expect(doc.networks[NET]).toEqual({ external: true });
+    // Not for a container made elsewhere.
+    expect((await c.get(`/containers/${PEER}-nope/compose`)).status).toBe(404);
+  });
+
   test('Edit settings keeps the limits and changes them', async () => {
     const edit = await c.page(`/containers/${NAME}/edit`);
     expect(edit).toContain('name="memory" value="64m"');

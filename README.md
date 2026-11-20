@@ -83,7 +83,11 @@ What works, and is covered by the test suites below:
   not its ports, volumes or network aliases, which the new one needs its own of; Pull and Start
   are not ticked. A network kontainers no longer offers is named on the form, not copied, and so is
   a tag that has moved to another image since. It needs the image the container was made from, and
-  its tag, to be on the host.
+  its tag, to be on the host. Compose file shows (and downloads) a `compose.yaml` with the same
+  settings, its named volumes and network declared `external`, for moving the container into
+  compose: remove it in kontainers and run `docker compose up -d` with the file. Values are
+  quoted, with `$` doubled so compose does not expand it. Both are for administrators only, as
+  they show environment values.
 - update image: pull the image again and, if it changed, recreate the container under the same
   name, on the same networks with the same aliases, with the same volumes (anonymous ones
   included). One created in kontainers gets the settings it was created with. Any other

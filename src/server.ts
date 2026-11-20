@@ -13,6 +13,7 @@ import { Auth, RateLimiter, safeEqual, type Session } from './auth';
 import { Docker, DockerError, summarizeStats, type CreateSpec } from './docker';
 import type { ProxyManager, RuleStore } from './proxy';
 import { snapshot } from './db';
+import { composeFile } from './compose';
 import { duplicable, editable, ownLabels, recreateSpec, removeReplacedImage, replaceContainer, updateContainerDetailed, UpdateFailed, type Journal } from './update';
 import type { Notifier } from './notify';
 import { EVENT_KINDS } from './notify';
@@ -687,7 +688,7 @@ export function createHandler(d: Deps): Handler {
       if (p === '/') return redirect('/containers');
       if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainersWithRefs(), await self(), updateView(), views.parseFilter(url.searchParams)));
       // What only an administrator may open: forms that change things, and copies of the database.
-      if (s.user.role === 'viewer' && (p === '/containers/new' || /^\/containers\/[^/]+\/edit$/.test(p) || /^\/proxy\/\d+\/edit$/.test(p) || p === '/api/backup' || p.startsWith('/settings/backups/'))) {
+      if (s.user.role === 'viewer' && (p === '/containers/new' || /^\/containers\/[^/]+\/(edit|compose|compose\.yaml)$/.test(p) || /^\/proxy\/\d+\/edit$/.test(p) || p === '/api/backup' || p.startsWith('/settings/backups/'))) {
         return p.startsWith('/api/') ? text('a read-only account cannot do this\n', 403) : page(views.layout('Read-only account', ctx(s), views.html`<p class="error">This account is read-only.</p><p><a href="/containers">Containers</a></p>`), 403);
       }
       if (p === '/containers/new') {
@@ -733,6 +734,26 @@ export function createHandler(d: Deps): Handler {
           }
         }
         return page(views.newContainerPage(pc, cfg.allowBindMounts, !!d.autoUpdates, nets, dup));
+      }
+      if ((r = /^\/containers\/([^/]+)\/compose(\.yaml)?$/.exec(p))) {
+        // A compose file for a container made in kontainers (administrators only: it has the
+        // environment values).
+        const c = await docker.inspect(r[1]);
+        const me = await self();
+        if (me && views.isProtected(c, me)) throw new v.ValidationError('this is kontainers itself or the container that serves its Docker API');
+        const img = await imageNamed(String(c.Image)).catch(() => null);
+        const why = duplicable(c, img);
+        if (why) throw new v.ValidationError(why.replace('can be duplicated', 'get a compose file here').replace('add another service to the compose file instead', 'its compose file is the one to use'));
+        const sp = recreateSpec(c, img);
+        const name = String(c.Name || '').replace(/^\//, '');
+        const net = String(c.HostConfig?.NetworkMode || '');
+        const own = new Set([String(c.Id).slice(0, 12), name, String(c.Config?.Hostname || '')]);
+        const aliases = (c.NetworkSettings?.Networks?.[net]?.Aliases || []).filter((a: string) => !own.has(a));
+        // An opt-in to automatic updates made with the switch goes in as the label, which compose keeps.
+        if (d.autoUpdates?.isOn(name, c.Id, null)) sp.labels = { ...sp.labels, 'kontainers.autoupdate': 'true' };
+        const yaml = composeFile({ ...sp, name }, net && net !== 'bridge' && net !== 'default' ? { name: net, aliases } : undefined);
+        if (r[2]) return new Response(yaml, { headers: { 'content-type': 'application/yaml; charset=utf-8', 'content-disposition': 'attachment; filename="compose.yaml"' } });
+        return page(views.composePage(ctx(s), c, yaml));
       }
       if ((r = /^\/containers\/([^/]+)\/edit$/.exec(p))) {
         const c = await docker.inspect(r[1]);

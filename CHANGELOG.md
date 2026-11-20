@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.11.0
+
+A compose file for a container made in kontainers.
+
+Upgrading from 0.10.x: nothing to do; there is no database migration.
+
+- Compose file, on the page of a container made in kontainers: a `compose.yaml` with its image,
+  command, environment, ports, volumes, labels, restart policy, limits and network with aliases,
+  shown and as a download. Its named volumes and its network are declared `external`, so moving
+  the container into compose (remove it here, `docker compose up -d` with the file) keeps their
+  data, and an opt-in to automatic updates becomes the label. Every value is quoted, with `$` doubled so that compose does not expand it.
+  Administrators only, since it has the environment values.
+
 ## 0.10.0
 
 Duplicate, and which containers use each image.
