@@ -121,7 +121,7 @@ export function viewerMayPost(path: string): boolean {
 export function readOnlyView(h: string): string {
   return h
     .replace(/<form method="post" action="([^"]*)"[\s\S]*?<\/form>/g, (m, action: string) => (viewerMayPost(action) ? m : ''))
-    .replace(/ ?<a class="button[^"]*" href="\/containers\/(new|[^"/]+\/edit)">[^<]*<\/a>/g, '')
+    .replace(/ ?<a class="button[^"]*" href="\/containers\/(new|[^"/]+\/edit)(\?[^"]*)?">[^<]*<\/a>/g, '')
     .replace(/ ?<a class="button" href="\/proxy\/\d+\/edit">Edit<\/a>/g, '')
     .replace(/<a href="\/containers\/new">Create one<\/a>, or start/g, 'Start')
     .replace(/<p><a href="\/cleanup">Clean up<\/a>[^<]*<\/p>/g, '');
@@ -276,7 +276,12 @@ export function needsAttention(c: any): boolean {
   return false;
 }
 
-const nameOf = (c: any) => String(c.Names?.[0] || '').replace(/^\//, '');
+// A container's name in a list: its own, not a legacy --link name (/web/db) that may come first.
+export const listName = (c: any): string => {
+  const names: string[] = (c.Names || []).map((n: unknown) => String(n).replace(/^\//, ''));
+  return names.find(n => !n.includes('/')) ?? names[0] ?? '';
+};
+const nameOf = listName;
 // The name in URLs: it survives a recreation (docker compose up, Update image), so a page left open
 // keeps working; the ID only when a name is unusable.
 // By name, so a page survives a recreation; by ID when the name is not one kontainers accepts in a
@@ -382,7 +387,7 @@ ${last}${held}${waiting}</form>`;
 }
 
 // made: whether kontainers made it (the server knows: a label the image carries does not count).
-export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, updates: UpdateView | null = null, auto: AutoView | null = null, made?: boolean): string {
+export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, updates: UpdateView | null = null, auto: AutoView | null = null, made?: boolean, canDuplicate = false): string {
   const raw = updates?.get(c.Config?.Image) ?? null;
   // While it is being replaced, what the last check said is about the container going away.
   const upd = raw && !ctx.busy?.(String(c.Name || '').replace(/^\//, '')) ? { ...containerStatus(raw, c.Image)!, checkedAt: raw.checkedAt } : null;
@@ -416,7 +421,7 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
 </dl>
 <div class="actions">${isSelf(c, me) ? selfNote(c, me) : ctx.busy?.(name) ? html`<p class="muted">${ctx.busy(name)}; reload in a moment.</p>` : containerActions(ctx, urlId(c), name, c.State?.Status || '', true)}
 ${isProtected(c, me) || ctx.busy?.(name) ? '' : html`${post(ctx, `/containers/${urlId(c)}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' && !held ? 'primary' : '' })}${madeHere
-    ? html` <a class="button" href="/containers/${urlId(c)}/edit">Edit settings</a>${ctx.readOnly ? '' : html` <a class="button" href="/containers/new?from=${urlId(c)}">Duplicate</a>`}`
+    ? html` <a class="button" href="/containers/${urlId(c)}/edit">Edit settings</a>${ctx.readOnly || !canDuplicate ? '' : html` <a class="button" href="/containers/new?from=${urlId(c)}">Duplicate</a>`}`
     : html` <small class="muted">${project ? html`Part of compose project ${project}. Update image copies its settings and compose labels to the new container, so <code>docker compose up -d</code> leaves it as it is; change its settings in the compose file.` : 'Created outside kontainers: Update image copies all of its settings to the new container. Edit settings is only for containers created here.'}</small>`}`}</div>
 ${auto && !isProtected(c, me) && !ctx.busy?.(name) ? autoForm(ctx, urlId(c), auto) : ''}
 ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
@@ -440,14 +445,16 @@ ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
 }
 
 // from: the container the form is a duplicate of, or why it cannot be.
-export function newContainerPage(ctx: PageCtx, allowBind: boolean, autoUpdates = false, networks: string[] = [], from: { name: string; problem?: string } | null = null): string {
+export function newContainerPage(ctx: PageCtx, allowBind: boolean, autoUpdates = false, networks: string[] = [], from: { name: string; problem?: string; network?: string } | null = null): string {
   // After a failed create, the form comes back as it was sent.
   const f = ctx.form;
   const val = (k: string) => f?.[k] ?? '';
   const box = (k: string, dflt: boolean) => ((f ? !!f[k] : dflt) ? raw(' checked') : raw(''));
   const opt = (v: string) => html`<option${v === (f?.restart || 'no') ? raw(' selected') : raw('')}>${v}</option>`;
   return layout('New container', ctx, html`
-${from?.problem ? html`<p class="warn">${from.name} cannot be duplicated: ${from.problem}.</p>` : from ? html`<p>The settings of ${from.name}, to make another container like it. Its ports and volumes are not copied (the ports would clash, and two containers on one volume can damage its data): add the ones the new one needs, and give it a name.</p>` : ''}
+${from?.problem ? html`<p class="warn">${from.name} cannot be duplicated: ${from.problem}.</p>` : from ? html`<p>The settings of ${from.name}, to make another container like it: its image, command, environment, labels, restart policy, network and limits. Its ports, volumes and network aliases are not copied (the ports would clash, and two containers on one volume can damage its data): add the ones the new one needs, and give it a name. Environment values are shown here so they can be edited.</p>
+<p class="warn">Labels or environment that tell a reverse proxy which host name to send to ${from.name} (<code>traefik.*</code>, <code>VIRTUAL_HOST</code>) would send its visitors to the new container too: change them first. It is not started after creating unless you tick the box.</p>${from.network ? html`
+<p class="warn">${from.name} is on the network ${from.network}, which is not offered here (kontainers, its Docker API container or the proxy is on it, or it is not a bridge network): the new container goes on the one chosen below.</p>` : ''}` : ''}
 <form method="post" action="/containers" class="stack">${csrfField(ctx)}
   <label>Image <input name="image" required placeholder="nginx:1.27-alpine" value="${val('image')}"></label>
   <label class="check"><input type="checkbox" name="pull"${box('pull', true)}> Pull the image first</label>
@@ -497,8 +504,11 @@ export function limitsText(h: any): string {
 }
 
 // Shell-style quoting that splitArgs in server.ts reads back to the same list.
+// A line break goes in $'…' (\n), since a one-line field drops it; splitArgs reads it back.
 export function quoteArgs(args: string[]): string {
-  return args.map(a => (/^[A-Za-z0-9_\-./:=@%+,]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`)).join(' ');
+  return args.map(a => (/^[A-Za-z0-9_\-./:=@%+,]+$/.test(a) ? a
+    : /[\n\r]/.test(a) ? `$'${a.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`
+    : `'${a.replace(/'/g, `'\\''`)}'`)).join(' ');
 }
 
 // Memory, CPUs and processes, empty for none.
@@ -552,7 +562,8 @@ export function imagesPage(ctx: PageCtx, list: any[], pulls: { ref: string; stat
   if (unusedOnly) list = unused;
   const cleanup = html`<p><a href="/cleanup">Clean up</a> images, networks and volumes no container uses.</p>`;
   // One Remove per tag: removing a tag leaves the image while other tags point at it.
-  const remove = (ref: string, label: string, what: string) => post(ctx, '/images/remove', label, { confirm: `Remove ${what}?`, cls: 'danger', fields: { ref } });
+  const back: Record<string, string> = unusedOnly ? { back: '/images?unused=1' } : {};
+  const remove = (ref: string, label: string, what: string) => post(ctx, '/images/remove', label, { confirm: `Remove ${what}?`, cls: 'danger', fields: { ref, ...back } });
   const rows = list.map(i => {
     const tags: string[] = i.RepoTags?.filter((t: string) => t !== '<none>:<none>') || [];
     const tagCells = tags.length
@@ -563,10 +574,10 @@ export function imagesPage(ctx: PageCtx, list: any[], pulls: { ref: string; stat
   });
   const pending = pulls.map(p => html`<li>${p.ref}: ${p.state === 'pulling' ? 'pulling…' : html`<span class="error">failed: ${p.error}</span>`}</li>`);
   return layout('Images', ctx, html`
-<form method="post" action="/images/pull" class="row">${csrfField(ctx)}<input name="ref" required placeholder="alpine:3.20" aria-label="Image to pull"><button>Pull</button></form>
+<form method="post" action="/images/pull" class="row">${csrfField(ctx)}${unusedOnly ? html`<input type="hidden" name="back" value="/images?unused=1">` : ''}<input name="ref" required placeholder="alpine:3.20" aria-label="Image to pull"><button>Pull</button></form>
 <p class="muted">For a private image, add a registry login on the <a href="/settings">Settings</a> page first.</p>
 ${pending.length ? html`<ul class="pulls">${pending}</ul>` : ''}
-<p>${unusedOnly ? html`Showing the ${unused.length} image${unused.length === 1 ? '' : 's'} no container uses. <a href="/images">Show all</a>` : html`${unused.length} of ${list.length} image${list.length === 1 ? '' : 's'} no container uses${unused.length ? html`: <a href="/images?unused=1">show only those</a>` : ''}.`}</p>
+<p>${unusedOnly ? html`${unused.length ? html`Showing the ${unused.length} image${unused.length === 1 ? '' : 's'} no container uses.` : 'Every image is used by a container.'} <a href="/images">Show all</a>` : html`${unused.length} of ${list.length} image${list.length === 1 ? '' : 's'} no container uses${unused.length ? html`: <a href="/images?unused=1">show only those</a>` : ''}.`}</p>
 <div class="scroll"><table><thead><tr><th>Tags</th><th>ID</th><th>Used by</th><th>Size</th><th class="wide">Created (UTC)</th></tr></thead><tbody>${rows}</tbody></table></div>
 ${cleanup}`);
 }

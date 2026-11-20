@@ -69,8 +69,9 @@ What works, and is covered by the test suites below:
 
 - containers: list, inspect, create, start, stop, restart, unpause, remove (stopped containers
   only; kontainers never force-removes them), logs (filter, 300 to 5000 lines, timestamps on or
-  off, download). Commands are split with shell quoting (`sh -c "echo hi; sleep 60"`) but no shell
-  runs and nothing is expanded. The list has a search, a state filter including "needs
+  off, download). Commands are split with shell quoting (`sh -c "echo hi; sleep 60"`, and
+  `$'one\ntwo'` for a line break in an argument) but no shell runs and nothing is expanded. The
+  list has a search, a state filter including "needs
   attention", and grouping by compose project. The detail page shows the command, ports,
   restarts, health and limits, and CPU, memory, network and process counts refreshed every 5
   seconds. A container created in kontainers can get labels (`KEY=value`; names kontainers and
@@ -79,7 +80,9 @@ What works, and is covered by the test suites below:
   `512m`, CPUs such as `1.5`, a process count), and be made on a user network with aliases there,
   for other containers on it to reach it by. Duplicate opens the Create form filled in from one
   made in kontainers (image, command, environment, labels, restart policy, network, limits), but
-  not its ports or volumes, which the new one needs its own of.
+  not its ports, volumes or network aliases, which the new one needs its own of; Pull and Start
+  are not ticked. A network kontainers no longer offers is named on the form, not copied. It needs
+  the image the container was made from to be on the host.
 - update image: pull the image again and, if it changed, recreate the container under the same
   name, on the same networks with the same aliases, with the same volumes (anonymous ones
   included). One created in kontainers gets the settings it was created with. Any other

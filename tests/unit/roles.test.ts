@@ -21,6 +21,13 @@ describe('what a read-only account is offered', () => {
     expect(admin).toContain('action="/containers/web/stop"');
     expect(admin).toContain('href="/containers/new"');
   });
+  test('no Duplicate or Edit links, with or without a query', () => {
+    expect(views.readOnlyView('<p>x <a class="button" href="/containers/new?from=web">Duplicate</a> <a class="button" href="/containers/web/edit?image=a%3A2">Use</a></p>')).toBe('<p>x</p>');
+    const c = { Id: 'b'.repeat(64), Name: '/web', Config: { Image: 'nginx:1', Labels: { 'kontainers.managed': 'true' } }, HostConfig: {}, State: { Status: 'running' } };
+    expect(views.readOnlyView(views.containerPage(ctx(true), c, null, null, null, true, true))).not.toContain('Duplicate');
+    expect(views.containerPage(ctx(false), c, null, null, null, true, true)).toContain('href="/containers/new?from=web">Duplicate</a>');
+    expect(views.containerPage(ctx(false), c, null, null, null, true, false)).not.toContain('Duplicate');
+  });
   test('settings: its own account only, no users, backups or downloads', () => {
     const page = views.settingsPage(ctx(true), [{ id: 2, username: 'reader', role: 'viewer' }], 2, null, null, null, null, { mine: false, left: 0, users: new Set() }, null);
     expect(page).toContain('action="/settings/password"');

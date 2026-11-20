@@ -84,6 +84,15 @@ describe('form parsing', () => {
     expect(splitArgs(`ab"c d"'e'`)).toEqual(['abc de']);
     for (const bad of [`echo 'x`, 'echo "x', 'echo x\\']) expect(() => splitArgs(bad)).toThrow();
   });
+  test("a line break in an argument goes in $'…' and comes back", () => {
+    const args = ['sh', '-c', "echo one\necho 'two'\r\n\\n done", 'x\ty'];
+    const q = quoteArgs(args);
+    expect(q).not.toMatch(/[\n\r]/);
+    expect(q).toBe(`sh -c $'echo one\\necho \\'two\\'\\r\\n\\\\n done' 'x\ty'`);
+    expect(splitArgs(q)).toEqual(args);
+    expect(splitArgs(`$'a\\qb'`)).toEqual(['a\\qb']);
+    expect(() => splitArgs(`$'open`)).toThrow("unterminated $' quote");
+  });
   test('containerSpec', () => {
     const s = containerSpec({ image: ' nginx ', name: '', cmd: 'sh -c  true', env: 'A=1\r\n\nB=2', ports: '8081:80', volumes: '', restart: 'always' });
     expect(s).toEqual({ image: 'nginx', name: undefined, cmd: ['sh', '-c', 'true'], env: ['A=1', 'B=2'], ports: [{ hostIp: undefined, host: 8081, container: 80, protocol: 'tcp' }], volumes: [], restart: 'always', labels: {}, memory: undefined, nanoCpus: undefined, pids: undefined });

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { cloneBody, cloneDiff, cloneRefusal, composeImageLabel, imageDoubts, ownSettings } from '../../src/clone';
-import { editable, recreatedBy, updatable } from '../../src/update';
+import { duplicable, editable, recreatedBy, updatable } from '../../src/update';
 
 const ID = 'a1b2c3d4e5f6' + '0'.repeat(52);
 const image = {
@@ -142,6 +142,13 @@ describe('what cannot be copied', () => {
     expect(recreatedBy({ Config: { Labels: { 'kontainers.managed': 'true', 'com.docker.compose.project': 'x' } } })).toBe('clone');
     expect(updatable(composeContainer())).toBeNull();
     expect(editable(composeContainer())).toContain('compose file');
+    // Duplicate: the same, and the image must still be here.
+    const here = { Config: { Labels: { 'kontainers.managed': 'true' } }, HostConfig: { NetworkMode: 'bridge' } }, img = { Config: { Labels: {} } };
+    expect(duplicable(here, img)).toBeNull();
+    expect(duplicable(here, null)).toContain('no longer on this host');
+    expect(duplicable(here, { Config: { Labels: { 'kontainers.managed': 'true' } } })).toContain('only containers created in kontainers can be duplicated');
+    expect(duplicable({ ...here, HostConfig: { NetworkMode: 'host' } }, img)).toContain("the host's network");
+    expect(duplicable(composeContainer(), img)).toContain('add another service to the compose file');
     expect(editable({ Config: { Labels: {} } })).toContain('only containers created in kontainers can be edited here');
     expect(updatable({ ...made, HostConfig: { NetworkMode: 'host' } })).toContain("the host's network");
     expect(updatable({ ...composeContainer(), HostConfig: { ...composeContainer().HostConfig, NetworkMode: 'host' } })).toBeNull();

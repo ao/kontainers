@@ -8,10 +8,16 @@ Upgrading from 0.9.x: nothing to do; there is no database migration.
 
 - Duplicate, on the page of a container made in kontainers: the Create form filled in from it
   (image, command, environment, labels, restart policy, network, limits, and the automatic-update
-  tick). Ports and volumes are left out: the ports would clash, and two containers writing to
-  one volume can damage its data.
+  tick). Ports, volumes and network aliases are left out: the ports would clash, and two
+  containers writing to one volume can damage its data. Pull and Start are not ticked, so the copy
+  runs the image the original does and starts only when asked; the form says that labels routing
+  a host name to the original would route it to the copy too. It needs the image the container
+  was made from to be on the host.
+- A line break in a command argument is shown as `$'…\n…'` in Edit settings and Duplicate, and
+  read back: before, the one-line field dropped it, and saving Edit settings unchanged joined the
+  lines. `$'…'` can be typed in Create as well.
 - The Images page says which containers use each image, and how many no container uses, with a
-  link to list only those.
+  link to list only those (Remove and Pull stay on that list).
 
 ## 0.9.0
 

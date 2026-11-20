@@ -5,15 +5,33 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { Client, DOCKER, readyServer, type Running } from './helpers';
 
 const run = Math.random().toString(36).slice(2, 8);
-const NET = `cr-net-${run}`, NAME = `cr-app-${run}`, PEER = `cr-peer-${run}`, DUP = `cr-dup-${run}`;
+const NET = `cr-net-${run}`, NAME = `cr-app-${run}`, PEER = `cr-peer-${run}`, DUP = `cr-dup-${run}`, SRC = `cr-src-${run}`;
 const api = (path: string, init: RequestInit = {}) => fetch(`${DOCKER.replace(/^tcp:\/\//, 'http://')}/v1.41${path}`, init);
 const inspect = async (name: string) => (await (await api(`/containers/${name}/json`)).json()) as any;
+// The New container form's fields as a browser would send them (ticked boxes only).
+const unesc = (x: string) => x.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+function formFields(page: string): Record<string, string> {
+  const form = /<form method="post" action="\/containers" class="stack">([\s\S]*?)<\/form>/.exec(page)![1];
+  const f: Record<string, string> = {};
+  for (const [, a] of form.matchAll(/<input ([^>]*)>/g)) {
+    const name = /name="([^"]+)"/.exec(a)?.[1];
+    if (!name) continue;
+    if (/type="checkbox"/.test(a)) { if (/ checked/.test(a)) f[name] = 'on'; continue; }
+    f[name] = unesc(/ value="([^"]*)"/.exec(a)?.[1] ?? '');
+  }
+  for (const [, name, text] of form.matchAll(/<textarea name="([^"]+)"[^>]*>([\s\S]*?)<\/textarea>/g)) f[name] = unesc(text);
+  for (const [, name, opts] of form.matchAll(/<select name="([^"]+)">([\s\S]*?)<\/select>/g)) {
+    const o = /<option(?: value="([^"]*)")? selected>([^<]*)<\/option>/.exec(opts) ?? /<option(?: value="([^"]*)")?>([^<]*)<\/option>/.exec(opts)!;
+    f[name] = unesc(o[1] ?? o[2]);
+  }
+  return f;
+}
 
 describe.skipIf(!DOCKER)('create with limits and a network', () => {
   let srv: Running, c: Client;
   beforeAll(async () => { ({ srv, c } = await readyServer({ KONTAINERS_UPDATE_CHECK_HOURS: '0' })); }, 60000);
   afterAll(async () => {
-    for (const n of [NAME, PEER, DUP]) await api(`/containers/${n}?force=1`, { method: 'DELETE' });
+    for (const n of [NAME, PEER, DUP, SRC]) await api(`/containers/${n}?force=1`, { method: 'DELETE' });
     await api(`/networks/${NET}`, { method: 'DELETE' });
     await srv?.stop();
   });
@@ -36,23 +54,35 @@ describe.skipIf(!DOCKER)('create with limits and a network', () => {
     expect((await c.submit('/containers', { image: 'busybox:1.36', name: PEER, cmd: 'sh -c "nslookup db > /tmp/r 2>&1; sleep 600"', start: 'on', network: NET })).error).toBe('');
   }, 60000);
 
-  test('Duplicate fills in the form from a container made here, without its ports or volumes', async () => {
+  test('Duplicate fills in the form from a container made here; sent as it is, it makes the same container without ports or volumes', async () => {
     expect(await c.page(`/containers/${NAME}`)).toContain(`href="/containers/new?from=${NAME}">Duplicate</a>`);
-    const form = await c.page(`/containers/new?from=${NAME}`);
-    expect(form).toContain(`The settings of ${NAME}`);
-    expect(form).toContain('name="image" required placeholder="nginx:1.27-alpine" value="busybox:1.36"');
-    expect(form).toContain('name="cmd" placeholder=\'optional, e.g. sh -c "echo hi; sleep 60"\' value="sleep 600"');
-    expect(form).toContain(`<option selected>${NET}</option>`);
-    expect(form).toContain('value="64m"');
-    expect(form).toMatch(/name="name" placeholder="optional" value=""/);
-    expect(form).toMatch(/<textarea name="ports" rows="3" placeholder="8081:80"><\/textarea>/);
-    const r = await c.submit('/containers', { image: 'busybox:1.36', name: DUP, cmd: 'sleep 600', start: 'on', network: NET, memory: '64m', cpus: '0.5', pids: '50' });
+    await c.page('/containers/new');
+    const made = await c.submit('/containers', {
+      image: 'busybox:1.36', name: SRC, cmd: "sh -c $'echo \\'it is\\'\\nsleep 600'", env: 'A=b=c\nQ=<x>&"y"', labels: 'app.role=web', restart: 'unless-stopped',
+      network: NET, aliases: 'srcalias', memory: '64m', cpus: '0.5', pids: '50', ports: '127.0.0.1:18089:80', start: 'on',
+    });
+    expect(made.error).toBe('');
+    const page = await c.page(`/containers/new?from=${SRC}`);
+    expect(page).toContain(`The settings of ${SRC}`);
+    const f = formFields(page);
+    expect(f).toMatchObject({ image: 'busybox:1.36', name: '', ports: '', volumes: '', aliases: '', network: NET, restart: 'unless-stopped', memory: '64m', cpus: '0.5', pids: '50', labels: 'app.role=web' });
+    expect(f.pull).toBeUndefined();
+    expect(f.start).toBeUndefined();
+    const r = await c.submit('/containers', { ...f, name: DUP, start: 'on' });
     expect(r.error).toBe('');
-    expect((await inspect(DUP)).HostConfig).toMatchObject({ Memory: 64 * 1024 ** 2, NanoCpus: 5e8, PidsLimit: 50, NetworkMode: NET });
+    const [src, dup] = [await inspect(SRC), await inspect(DUP)];
+    expect(src.Config.Cmd).toEqual(['sh', '-c', "echo 'it is'\nsleep 600"]);
+    expect(dup.Config.Cmd).toEqual(src.Config.Cmd);
+    expect(dup.Config.Env).toEqual(expect.arrayContaining(['A=b=c', 'Q=<x>&"y"']));
+    expect(dup.Config.Labels['app.role']).toBe('web');
+    expect(dup.HostConfig).toMatchObject({ Memory: 64 * 1024 ** 2, NanoCpus: 5e8, PidsLimit: 50, NetworkMode: NET, RestartPolicy: { Name: 'unless-stopped' } });
+    expect(Object.keys(dup.HostConfig.PortBindings || {})).toEqual([]);
+    expect(dup.NetworkSettings.Networks[NET].Aliases || []).not.toContain('srcalias');
     // Nothing to duplicate: the form says why and is empty.
     const none = await c.page('/containers/new?from=no-such-container');
     expect(none).toContain('no-such-container cannot be duplicated: there is no such container.');
-    expect(none).toContain('value=""');
+    expect(formFields(none).image).toBe('');
+    expect(await c.page('/containers/new?from=..%2Fx')).toContain('cannot be duplicated: that is not a container name or ID.');
   }, 60000);
 
   test('the images page says which containers use each image, and lists the unused ones', async () => {
