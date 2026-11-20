@@ -71,11 +71,31 @@ describe('listing tags from the registry', () => {
   });
   test('a token service on plain HTTP, or on a link-local address, is not used; nor pages elsewhere', async () => {
     await expect(listTags(fakeRegistry({ realm: 'http://evil.example/token' }).f, 'reg.example', 'me/app', { username: 'me', password: 'pw' })).rejects.toThrow('does not use');
-    await expect(listTags(fakeRegistry({ realm: 'https://169.254.169.254/token' }).f, 'reg.example', 'me/app', { username: 'me', password: 'pw' })).rejects.toThrow('does not use');
+    await expect(listTags(fakeRegistry({ realm: 'https://169.254.169.254/token' }).f, 'reg.example', 'me/app', { username: 'me', password: 'pw' })).rejects.toThrow('link-local');
+    await expect(listTags(fakeRegistry({ realm: 'https://[::ffff:169.254.169.254]/token' }).f, 'reg.example', 'me/app', { username: 'me', password: 'pw' })).rejects.toThrow('link-local');
+    await expect(listTags(fakeRegistry({ realm: 'https://[fd00:ec2::254]/token' }).f, 'reg.example', 'me/app', { username: 'me', password: 'pw' })).rejects.toThrow('link-local');
+    // A local registry may name a token service on plain HTTP only on this host or itself.
+    const local = fakeRegistry({ realm: 'http://other.example/token' });
+    await expect(listTags(local.f, 'localhost:5000', 'me/app', { username: 'me', password: 'pw' })).rejects.toThrow('does not use');
+    expect(local.calls.some(x => x.url.startsWith('http://other.example'))).toBe(false);
+    // The check notifications use (the Docker API, a name that resolves to a metadata address).
+    await expect(listTags(fakeRegistry().f, 'reg.example', 'me/app', null, async u => (u.includes('/token') ? 'it reaches the Docker API' : null))).rejects.toThrow('it reaches the Docker API');
     const { f, calls } = fakeRegistry({ nextOrigin: 'https://other.example' });
     expect(await listTags(f, 'reg.example', 'me/app', { username: 'me', password: 'pw' })).toEqual(['1.0', '1.1']);
     expect(calls.some(c => c.url.startsWith('https://other.example'))).toBe(false);
   });
+  test('an answer too large, or a redirect from the token service, is refused', async () => {
+    const big = async () => new Response('{"tags":[' + '"1.0",'.repeat(900_000) + '"1.1"]}', { headers: { 'content-type': 'application/json' } });
+    await expect(listTags(big, 'reg.example', 'me/app', null)).rejects.toThrow('too large');
+    const moved = async (url: string) => (url.includes('/token') ? new Response('', { status: 302, headers: { location: 'http://169.254.169.254/' } })
+      : new Response('', { status: 401, headers: { 'www-authenticate': 'Bearer realm="https://reg.example/token",service="r"' } }));
+    await expect(listTags(moved, 'reg.example', 'me/app', { username: 'me', password: 'pw' })).rejects.toThrow('redirect');
+  });
+  test('a date or build number is not a newer version of a small one; leading zeros are a shape of their own', () => {
+    expect(newerTags('3', ['3', '4', '20250108'])).toEqual({ minor: null, major: '4' });
+    expect(newerTags('1.9', ['01.20', '1.10'])).toEqual({ minor: '1.10', major: null });
+  });
+
   test('the checker looks each repository up once and keeps what it found per reference', async () => {
     const { f, calls } = fakeRegistry({ pages: [['1.0', '1.1', '1.2', '2.0']] });
     const t = new TagChecker(f, () => ({ username: 'me', password: 'pw' }), () => 1000);

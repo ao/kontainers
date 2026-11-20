@@ -381,7 +381,8 @@ ${last}${held}${waiting}</div>`;
 ${last}${held}${waiting}</form>`;
 }
 
-export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, updates: UpdateView | null = null, auto: AutoView | null = null): string {
+// made: whether kontainers made it (the server knows: a label the image carries does not count).
+export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, updates: UpdateView | null = null, auto: AutoView | null = null, made?: boolean): string {
   const raw = updates?.get(c.Config?.Image) ?? null;
   // While it is being replaced, what the last check said is about the container going away.
   const upd = raw && !ctx.busy?.(String(c.Name || '').replace(/^\//, '')) ? { ...containerStatus(raw, c.Image)!, checkedAt: raw.checkedAt } : null;
@@ -396,7 +397,7 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
   const mounts = (c.Mounts || []).map((m: any) => html`<li><code>${m.Type} ${m.Name || m.Source} → ${m.Destination}${m.RW ? '' : ' (ro)'}</code></li>`);
   const nets = Object.keys(c.NetworkSettings?.Networks || {}).map(n => html`<li>${n}</li>`);
   const project = c.Config?.Labels?.['com.docker.compose.project'] || '';
-  const madeHere = c.Config?.Labels?.['kontainers.managed'] === 'true' && !project;
+  const madeHere = (made ?? c.Config?.Labels?.['kontainers.managed'] === 'true') && !project;
   return layout(name, ctx, html`
 <p><a href="/containers">All containers</a></p>
 <dl class="facts">
@@ -411,7 +412,7 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
   ${[...(c.Config?.Entrypoint || []), ...(c.Config?.Cmd || [])].length ? html`<dt>Command</dt><dd><code>${brk(quoteArgs([...(c.Config?.Entrypoint || []), ...(c.Config?.Cmd || [])]))}</code></dd>` : ''}
   ${inspectPorts(c) ? html`<dt>Ports</dt><dd><span class="ref">${inspectPorts(c)}</span></dd>` : ''}
   <dt>Limits</dt><dd>${limitsText(c.HostConfig)}</dd>
-  ${newerVersions(updates, c, madeHere, project)}
+  ${newerVersions(updates, c, madeHere, project, !!ctx.readOnly)}
 </dl>
 <div class="actions">${isSelf(c, me) ? selfNote(c, me) : ctx.busy?.(name) ? html`<p class="muted">${ctx.busy(name)}; reload in a moment.</p>` : containerActions(ctx, urlId(c), name, c.State?.Status || '', true)}
 ${isProtected(c, me) || ctx.busy?.(name) ? '' : html`${post(ctx, `/containers/${urlId(c)}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' && !held ? 'primary' : '' })}${madeHere
@@ -467,15 +468,18 @@ ${autoUpdates ? html`  <label class="check"><input type="checkbox" name="autoupd
 
 
 // "A newer version is tagged": nginx:1.28 (and 2.0, a new major version), with a way to it.
-function newerVersions(u: UpdateView | null, c: any, madeHere: boolean, project: string): Html {
+function newerVersions(u: UpdateView | null, c: any, madeHere: boolean, project: string, readOnly: boolean): Html {
   const ref = String(c.Config?.Image || '');
   const t = u?.tags?.(ref);
-  if (!t || (!t.minor && !t.major)) return html``;
+  if (!t) return html``;
+  const failed = t.error ? html`<small class="muted">could not list its tags: ${t.error}</small>` : '';
+  if (!t.minor && !t.major) return failed ? html`<dt>Newer version</dt><dd>${failed}</dd>` : html``;
+  madeHere = madeHere && !readOnly;
   const base = ref.slice(0, ref.lastIndexOf(':') + 1);
-  const one = (tag: string, what: string) => html`<span class="ref">${base}${tag}</span>${what}${madeHere ? html` <a href="/containers/${urlId(c)}/edit?image=${encodeURIComponent(base + tag)}">use it</a>` : ''}`;
-  const parts = [t.minor ? one(t.minor, '') : '', t.major ? one(t.major, t.minor ? ' (a new major version)' : ' (a new major version)') : ''].filter(x => x !== '');
+  const parts = [t.minor ? html`<span class="ref">${base}${t.minor}</span>` : '', t.major ? html`<span class="ref">${base}${t.major}</span> (a new major version)` : ''].filter(x => x !== '');
+  const links = madeHere ? [t.minor, t.major].filter((x): x is string => !!x).map(x => html` <a href="/containers/${urlId(c)}/edit?image=${encodeURIComponent(base + x)}">Use ${x}</a>`) : [];
   const how = madeHere ? '' : project ? html` <small class="muted">change the tag in the compose file to use it</small>` : html` <small class="muted">recreate the container with that tag to use it</small>`;
-  return html`<dt>Newer version</dt><dd>${parts.map((p, i) => html`${i ? ' and ' : ''}${p}`)} ${parts.length > 1 ? 'are' : 'is'} tagged.${how}</dd>`;
+  return html`<dt>Newer version</dt><dd>${parts.map((p, i) => html`${i ? ' and ' : ''}${p}`)} ${parts.length > 1 ? 'are' : 'is'} tagged.${links}${how}${failed ? html` ${failed}` : ''}</dd>`;
 }
 
 const cpus = (n: number) => `${n} CPU${n === 1 ? '' : 's'}`;
@@ -511,7 +515,7 @@ export interface EditSpec {
 }
 
 // Change the settings of a container kontainers created; saving recreates it.
-export function editContainerPage(ctx: PageCtx, c: any, spec: EditSpec, allowBind: boolean, imageGone = false): string {
+export function editContainerPage(ctx: PageCtx, c: any, spec: EditSpec, allowBind: boolean, imageGone = false, fromTag: string | null = null): string {
   const name = String(c.Name || '').replace(/^\//, '');
   // After a failed save, the form comes back as it was sent (only on this container's page).
   const k = ctx.form?._edit;
@@ -523,10 +527,11 @@ export function editContainerPage(ctx: PageCtx, c: any, spec: EditSpec, allowBin
   return layout(`Edit ${name}`, ctx, html`
 <p><a href="/containers/${urlId(c)}">Back to ${name}</a></p>
 <p>Saving recreates ${name} with these settings: it is stopped, a new container is made and started, and if the new one cannot start or stops within a few seconds, the old one is put back. The name and networks stay. Environment values are shown here so they can be edited.</p>
-${imageGone ? html`<p class="warn">The image ${name} was created from is no longer on this host, so its own environment and command cannot be told apart from the ones set for ${name}: the fields below may include the old image's values (PATH, version variables). Remove the ones that belong to the image before saving.</p>` : ''}
+${imageGone ? html`<p class="warn">The image ${name} was created from is no longer on this host, so its own environment and command cannot be told apart from the ones set for ${name}: the fields below may include the old image's values (PATH, version variables, labels). Remove the ones that belong to the image before saving.</p>` : ''}
 <form method="post" action="/containers/${urlId(c)}/edit" class="stack">${csrfField(ctx)}
   <label>Image <input name="image" required value="${f ? f.image ?? '' : spec.image}"></label>
-  <label class="check"><input type="checkbox" name="pull"${f?.pull ? raw(' checked') : raw('')}> Pull the image first</label>
+  ${fromTag ? html`<p class="warn">The image is changed to ${fromTag}, the newer version tagged for ${c.Config?.Image}; nothing changes until you save.</p>` : ''}
+  <label class="check"><input type="checkbox" name="pull"${f?.pull || fromTag ? raw(' checked') : raw('')}> Pull the image first</label>
   <label>Command <input name="cmd" value="${f ? f.cmd ?? '' : spec.cmd ? quoteArgs(spec.cmd) : ''}" placeholder="empty: the image's own command"></label>
   <label>Ports, one per line: <code>[host-ip:]host:container[/udp]</code>. Without a host IP the port is published on 127.0.0.1.
     <textarea name="ports" rows="3">${ports}</textarea></label>

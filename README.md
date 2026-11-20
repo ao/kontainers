@@ -74,7 +74,8 @@ What works, and is covered by the test suites below:
   attention", and grouping by compose project. The detail page shows the command, ports,
   restarts, health and limits, and CPU, memory, network and process counts refreshed every 5
   seconds. A container created in kontainers can get labels (`KEY=value`; names kontainers and
-  Docker set themselves are refused, except `kontainers.autoupdate`), limits (memory such as
+  Docker set themselves are refused, except `kontainers.autoupdate` in small letters; a label the
+  image carries does not count as the container's own for these), limits (memory such as
   `512m`, CPUs such as `1.5`, a process count), and be made on a user network with aliases there,
   for other containers on it to reach it by.
 - update image: pull the image again and, if it changed, recreate the container under the same
@@ -111,9 +112,14 @@ What works, and is covered by the test suites below:
   newer one of the same shape is tagged, within the major version and above it (`1.29`, and `2.1`
   as a new major version); pre-releases and other variants (`-rc1`, another suffix) do not count.
   It lists them itself, with the registry's API and the login saved on the Settings page, and sends
-  one notification per new version. It never changes a tag: for a container made in kontainers the
-  page links to Edit settings with the new tag filled in; others change in their compose file.
-  The notifications are their own event on the Settings page, off for existing targets.
+  a notification per reference when newer ones appear (again after 60 days while they stay). It
+  never changes a tag: for a container made in kontainers the page links to Edit settings with the
+  new tag filled in (only that tag; a link cannot fill in another image); others change in their
+  compose file. The notifications are their own event on the Settings page, off for existing
+  targets. A lookup that fails says why on the container's page. Answers are capped (4 MB a page,
+  50 000 tags, 90 s a repository), no redirects are followed, a registry's token service must be
+  HTTPS, and link-local addresses and the Docker API are never asked. Registries on the host's
+  loopback address cannot be reached from kontainers' container (its loopback is its own).
   `KONTAINERS_VERSION_CHECK=0` turns this off.
 - automatic updates, per container (any that Update image handles; opted in on its page or with
   the label `kontainers.autoupdate=true`): after each check that

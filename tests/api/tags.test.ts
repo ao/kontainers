@@ -60,9 +60,13 @@ describe.skipIf(!DOCKER)('newer version tags', () => {
 
   test('for a container made here, Edit settings opens with the newer tag filled in', async () => {
     const page = await c.page(`/containers/${MADE}`);
-    const link = /href="(\/containers\/[^"]+\/edit\?image=[^"]+)">use it<\/a>/.exec(page)?.[1];
+    const link = /href="(\/containers\/[^"]+\/edit\?image=[^"]+)">Use 1\.2<\/a>/.exec(page)?.[1];
     expect(link).toBeTruthy();
     const edit = await c.page(link!.replace(/&amp;/g, '&'));
     expect(edit).toContain(`name="image" required value="${REPO}:1.2"`);
+    expect(edit).toContain('name="pull" checked');
+    expect(edit).toContain('the newer version tagged for');
+    // Only that tag: another image in the link is ignored.
+    expect(await c.page(`/containers/${MADE}/edit?image=${encodeURIComponent('evil/app:latest')}`)).toContain(`name="image" required value="${REPO}:1.0"`);
   });
 });

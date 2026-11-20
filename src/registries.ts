@@ -1,5 +1,6 @@
 // Registry logins: credentials for private registries, handed to the Docker daemon with each pull
-// and update check (the X-Registry-Auth header). Logins made with `docker login` on the host live
+// and update check (the X-Registry-Auth header), and used by kontainers itself to list a
+// repository's tags on that registry (tags.ts). Logins made with `docker login` on the host live
 // in the Docker CLI's config file, which the daemon's API does not use, so they are entered here.
 //
 // Passwords are stored encrypted (AES-256-GCM) with a key kept in <data>/registry.key, a file the

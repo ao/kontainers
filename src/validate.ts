@@ -145,14 +145,17 @@ export function formatMemory(bytes: number): string {
 export function labels(input: unknown): Record<string, string> {
   if (input === undefined || input === null || input === '') return {};
   const entries: [string, string][] = typeof input === 'string'
-    ? input.split(/\r?\n/).map(l => l.trim()).filter(Boolean).map(l => { const i = l.indexOf('='); if (i <= 0) throw new ValidationError(`"${l.slice(0, 80)}" is not a label: KEY=value`); return [l.slice(0, i).trim(), l.slice(i + 1)] as [string, string]; })
+    ? input.split(/\r?\n/).map(l => l.trim()).filter(Boolean).map(l => { const i = l.indexOf('='); if (i <= 0) throw new ValidationError(`"${l.slice(0, 80)}" is not a label: KEY=value`); return [l.slice(0, i).trim(), l.slice(i + 1).trim()] as [string, string]; })
     : Object.entries(input as Record<string, unknown>).map(([k, val]) => [k, String(val)]);
   if (entries.length > 100) throw new ValidationError('at most 100 labels');
   const out: Record<string, string> = {};
   for (const [k, val] of entries) {
     if (!/^[A-Za-z0-9][A-Za-z0-9._\/-]{0,254}$/.test(k)) throw new ValidationError(`"${k.slice(0, 80)}" is not a label name (letters, digits, dots, dashes, slashes, underscores)`);
-    if ((/^kontainers\./i.test(k) && k.toLowerCase() !== 'kontainers.autoupdate') || /^(com\.docker\.|io\.docker\.|org\.dockerproject\.)/i.test(k)) throw new ValidationError(`${k} is a label kontainers or Docker sets itself`);
+    if (/^kontainers\./i.test(k) && k !== 'kontainers.autoupdate') throw new ValidationError(k.toLowerCase() === 'kontainers.autoupdate' ? `the label is kontainers.autoupdate, in small letters` : `${k} is a label kontainers or Docker sets itself`);
+    if (/^(com\.docker\.|io\.docker\.|org\.dockerproject\.)/i.test(k)) throw new ValidationError(`${k} is a label kontainers or Docker sets itself`);
     if (val.length > 4096 || /[\0\r\n]/.test(val)) throw new ValidationError(`the value of ${k} is too long or has line breaks`);
+    if (k === 'kontainers.autoupdate' && !['true', 'false'].includes(val)) throw new ValidationError('kontainers.autoupdate is true or false');
+    if (k in out) throw new ValidationError(`${k} is given twice`);
     out[k] = val;
   }
   return out;

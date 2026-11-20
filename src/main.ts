@@ -131,7 +131,7 @@ const autoUpdates: AutoUpdates = new AutoUpdates(db, docker, updates, notifier, 
 autoUpdates.start();
 // Newer version tags (tags.ts), listed after each update check, beside the automatic updates; a
 // note for each new one, once.
-const tags = new TagChecker(undefined, ref => registries.credentials(ref));
+const tags = new TagChecker(undefined, ref => registries.credentials(ref), Date.now, url => notifier.refusal(url));
 const checkTags = async () => {
   const list = await docker.listContainersWithRefs();
   await tags.checkAll(list.map(c => String(c.Ref)).filter(checkable));
@@ -141,12 +141,14 @@ const checkTags = async () => {
     const t = tags.get(ref);
     const p = parseRef(ref);
     if (!t || !p) continue;
-    for (const nt of [t.minor, t.major].filter((x): x is string => !!x)) {
-      const shown = `${ref.slice(0, ref.length - p.tag.length)}${nt}`;
-      const list = names.length > 10 ? `${names.slice(0, 10).join(', ')} and ${names.length - 10} more` : names.join(', ');
-      await notifier.send({ kind: 'version', title: `Newer version for ${ref}`, message: `${shown} is tagged; ${list} ${names.length === 1 ? 'runs' : 'run'} ${ref}. kontainers does not change tags; change it in Edit settings or the compose file.`, container: names.length === 1 ? names[0] : undefined },
-        `version:${ref}:${nt}`).catch(e => console.error(`kontainers: notification failed: ${(e as Error).message}`));
-    }
+    // One note per reference and pair of newer tags (again after 60 days, while it stays so).
+    const found = [t.minor, t.major].filter((x): x is string => !!x);
+    if (!found.length) continue;
+    const base = ref.slice(0, ref.length - p.tag.length);
+    const shown = found.map(x => `${base}${x}`).join(' and ');
+    const list = names.length > 10 ? `${names.slice(0, 10).join(', ')} and ${names.length - 10} more` : names.join(', ');
+    await notifier.send({ kind: 'version', title: `Newer version for ${ref}`, message: `${shown} ${found.length === 1 ? 'is' : 'are'} tagged; ${list} ${names.length === 1 ? 'runs' : 'run'} ${ref}. kontainers does not change tags.`, container: names.length === 1 ? names[0] : undefined },
+      `version:${ref}:${found.join('|')}`).catch(e => console.error(`kontainers: notification failed: ${(e as Error).message}`));
   }
 };
 updates.onChecked = () => {
