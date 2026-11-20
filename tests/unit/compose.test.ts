@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { composeFile } from '../../src/compose';
+import { composeFile, projectName } from '../../src/compose';
 
 describe('a compose file for a container made in kontainers', () => {
   test('values come back exactly, with $ doubled for compose', () => {
@@ -27,7 +27,10 @@ describe('a compose file for a container made in kontainers', () => {
   });
   test('a user network, external, with the aliases', () => {
     const doc = Bun.YAML.parse(composeFile({ name: 'My.DB', image: 'postgres:17', restart: 'unless-stopped' }, { networks: [{ name: 'backend', aliases: ['pg'], ipv4: '172.30.0.9' }, { name: 'other' }] })) as any;
-    expect(doc.name).toBe('my-db');
+    expect(doc.name).toBe(projectName('My.DB'));
+    expect(new Set(['k.a', 'k-a', 'K-A'].map(projectName)).size).toBe(3);
+    expect(projectName('k-a')).toBe('k-a');
+    expect(projectName('K.A')).toMatch(/^k-a-[0-9a-f]{6}$/);
     const db = doc.services['My.DB'];
     expect(db.networks).toEqual({ backend: { aliases: ['pg'], ipv4_address: '172.30.0.9' }, other: {} });
     expect(db.network_mode).toBeUndefined();

@@ -3,7 +3,16 @@
 // can end the line or start a mapping) with `$` doubled in values, because compose interpolates
 // `$VAR` there (not in keys).
 
+import { createHash } from 'node:crypto';
 import type { CreateSpec } from './docker';
+
+// The compose project a file for container `name` makes: its name in compose's letters, and when
+// that changed it (capitals, dots), a short hash of the name, so that k.a, k-a and K-A do not
+// share one project (each would see the others as orphans, and --remove-orphans removes them).
+export function projectName(name: string): string {
+  const folded = name.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+  return folded === name ? folded : `${folded}-${createHash('sha256').update(name).digest('hex').slice(0, 6)}`;
+}
 
 // Characters a YAML reader takes as a line break, drops, or refuses (go-yaml, which compose uses,
 // refuses C1 controls and the noncharacters), written as escapes.
@@ -21,7 +30,7 @@ export type ComposeNetworks = { mode: 'bridge' | 'none' } | { networks: ComposeN
 export function composeFile(spec: CreateSpec & { name: string }, net: ComposeNetworks = { mode: 'bridge' }, anonymous: string[] = []): string {
   // The project's name, so that it does not come from the directory's (two directories called
   // "app" would share one project).
-  const project = spec.name.toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+  const project = projectName(spec.name);
   const L: string[] = [`name: ${q(project)}`, 'services:', `  ${key(spec.name)}:`, `    image: ${q(spec.image)}`, `    container_name: ${q(spec.name)}`];
   if (spec.cmd) L.push('    command:', ...spec.cmd.map(a => `      - ${q(a)}`));
   if (spec.env?.length) L.push('    environment:', ...spec.env.map(e => `      - ${q(e)}`));

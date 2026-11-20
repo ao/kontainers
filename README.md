@@ -89,7 +89,9 @@ What works, and is covered by the test suites below:
   `docker compose up -d` with the file. Values are quoted, with `$` doubled so compose does not
   expand it. The page says when a volume is anonymous (a prune can delete it while no container
   uses it) or the tag has moved to another image; a container disconnected from every network,
-  or on the default bridge and other networks, gets no file. Both are for administrators only,
+  on the default bridge and other networks, or with links, gets no file. The file names its own
+  compose project (the container's name, with a short hash when capitals or dots had to change),
+  and is refused when a project of that name already exists. Both are for administrators only,
   as they show environment values.
 - update image: pull the image again and, if it changed, recreate the container under the same
   name, on the same networks with the same aliases, with the same volumes (anonymous ones

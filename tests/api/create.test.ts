@@ -122,6 +122,11 @@ describe.skipIf(!DOCKER)('create with limits and a network', () => {
     expect(doc.name).toBe(NAME);
     // Not for a container made elsewhere.
     expect((await c.get(`/containers/${PEER}-nope/compose`)).status).toBe(404);
+    // A compose project of the same name already on the host: refused, naming it.
+    expect((await api(`/containers/create?name=${NAME}-p`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ Image: 'busybox:1.36', Cmd: ['true'], Labels: { 'com.docker.compose.project': NAME } }) })).status).toBe(201);
+    try {
+      expect(await c.page(`/containers/${NAME}/compose`)).toContain(`a compose project called ${NAME} already exists on this host (${NAME}-p is in it)`);
+    } finally { await api(`/containers/${NAME}-p?force=1`, { method: 'DELETE' }); }
   });
 
   test('Edit settings keeps the limits and changes them', async () => {

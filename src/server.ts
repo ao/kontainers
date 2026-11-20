@@ -13,7 +13,7 @@ import { Auth, RateLimiter, safeEqual, type Session } from './auth';
 import { Docker, DockerError, summarizeStats, type CreateSpec } from './docker';
 import type { ProxyManager, RuleStore } from './proxy';
 import { snapshot } from './db';
-import { composeFile, type ComposeNetworks } from './compose';
+import { composeFile, projectName, type ComposeNetworks } from './compose';
 import { duplicable, editable, networkPlan, ownLabels, recreateSpec, type Endpoint, removeReplacedImage, replaceContainer, updateContainerDetailed, UpdateFailed, type Journal } from './update';
 import type { Notifier } from './notify';
 import { EVENT_KINDS } from './notify';
@@ -508,6 +508,7 @@ export function createHandler(d: Deps): Handler {
   // How a compose file connects `c`, from the networks it is on now (as Update image does), or why it
   // cannot say. The proxy network is left out: kontainers connects rule targets to it itself.
   const composeNetworks = (c: any): ComposeNetworks | string => {
+    if (c.HostConfig?.Links?.length) return 'it has links, which this file does not carry';
     const plan = networkPlan(c);
     if (plan.disconnect) return 'it is not connected to any network (it was disconnected), and the file would connect it again';
     if (plan.network?.mode === 'none') return { mode: 'none' };
@@ -762,6 +763,11 @@ export function createHandler(d: Deps): Handler {
           : locks.has(name) ? `an update or edit of ${name} is running; try again when it has finished`
           : setAsideOf(name) ? `it is the old container of ${setAsideOf(name)}, kept until its update or edit finishes`
           : duplicable(c, img, tagged)?.replace('can be duplicated', 'get a compose file here').replace('add another service to the compose file instead', 'its compose file is the one to use') ?? composeNetworks(c);
+        // A project of the same name (kontainers' own, say) would take this container in, and see its
+        // own containers as orphans of the file.
+        const project = projectName(name);
+        const taken = typeof why === 'string' ? null : (await docker.listContainers()).find(x => x.Labels?.['com.docker.compose.project'] === project);
+        if (taken) throw new v.ValidationError(`${name} cannot get a compose file: a compose project called ${project} already exists on this host (${views.listName(taken)} is in it), and the file would make the container part of it`);
         if (typeof why === 'string') throw new v.ValidationError(`${name} cannot get a compose file: ${why}`);
         const sp = recreateSpec(c, img);
         // An opt-in to automatic updates made with the switch goes in as the label, which compose keeps.

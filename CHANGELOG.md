@@ -14,7 +14,9 @@ Upgrading from 0.10.x: nothing to do; there is no database migration.
   the file) keeps them, and an opt-in to automatic updates becomes the label. The page warns
   about anonymous volumes, which a prune deletes while no container uses them, and about a tag
   that has moved to another image. No file for a container disconnected from every network, on
-  the default bridge and other networks, with links, or being updated. Strings are quoted, with
+  the default bridge and other networks, with links, or being updated. The file names its own
+  compose project, and is refused when a project of that name already exists (kontainers' own,
+  for one), since the two would take each other's containers for orphans. Strings are quoted, with
   `$` doubled in values so that compose does not expand it. Administrators only, since it has
   the environment values.
 
