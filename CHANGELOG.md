@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.8.0
+
+Image clean-up after updates, and limits and a network for containers made in kontainers.
+
+Upgrading from 0.7.x: nothing to do; there is no database migration. The clean-up is off until it
+is turned on (Settings, or `KONTAINERS_AUTOUPDATE_CLEANUP=1`).
+
+- Optional removal of the image a container ran before, after an update that worked (automatic,
+  Update image or Update all), when no container uses it and no tag points at it (Settings, or
+  `KONTAINERS_AUTOUPDATE_CLEANUP=1`; off by default). It is never forced.
+- Limits when creating a container in kontainers and in Edit settings: memory, CPUs and a process
+  count; every container page shows the limits it runs with.
+- A user network, and aliases on it, when creating a container in kontainers: bridge networks
+  that kontainers itself, its Docker API container and the proxy are not on; an alias may not take
+  a name already on the network (in any case, of running or stopped containers).
+- A container page says when a process in a running or restarting container was killed for
+  running out of memory.
+
 ## 0.7.0
 
 Read-only accounts, and Update all for compose projects.

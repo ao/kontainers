@@ -13,7 +13,7 @@ import { Auth, RateLimiter, safeEqual, type Session } from './auth';
 import { Docker, DockerError, summarizeStats, type CreateSpec } from './docker';
 import type { ProxyManager, RuleStore } from './proxy';
 import { snapshot } from './db';
-import { editable, recreateSpec, replaceContainer, updateContainerDetailed, UpdateFailed, type Journal } from './update';
+import { editable, recreateSpec, removeReplacedImage, replaceContainer, updateContainerDetailed, UpdateFailed, type Journal } from './update';
 import type { Notifier } from './notify';
 import { EVENT_KINDS } from './notify';
 import { labelledOn, type AutoUpdates } from './autoupdate';
@@ -242,6 +242,9 @@ export function containerSpec(f: Record<string, string>): CreateSpec {
     ports: lines(f.ports).map(parsePort),
     volumes: lines(f.volumes).map(parseVolume),
     restart: (f.restart as CreateSpec['restart']) || 'no',
+    memory: v.memoryLimit(f.memory),
+    nanoCpus: v.cpuLimit(f.cpus),
+    pids: v.pidsLimit(f.pids),
   };
 }
 
@@ -405,6 +408,53 @@ export function createHandler(d: Deps): Handler {
     if (views.isSelf(c, me)) {
       throw new v.ValidationError(c.Id === me.id ? 'this is kontainers itself; stopping or removing it here would cut off this page. Manage it on the host with docker compose or docker' : "this container serves kontainers' Docker API; stopping or removing it here would cut this page off from Docker. Manage it on the host with docker compose or docker");
     }
+  }
+
+  // The user networks a container made in kontainers may be put on: bridge networks, but not the
+  // ones kontainers itself or its Docker API container is on (a container there could reach the
+  // Docker API, and through it be root on the host), nor the proxy network (its members are
+  // managed by the proxy rules). null when kontainers cannot tell which those are.
+  async function networkChoices(): Promise<{ id: string; name: string }[] | null> {
+    const me = await self();
+    if (d.selfContainer && (!me || me.unknown)) return null;
+    const own = new Set<string>();
+    for (const id of [me?.id, me?.apiId].filter(Boolean) as string[]) {
+      const c = await docker.inspect(id).catch(() => null);
+      for (const [n, ep] of Object.entries(c?.NetworkSettings?.Networks || {}) as [string, any][]) { own.add(n); if (ep?.NetworkID) own.add(ep.NetworkID); }
+    }
+    return (await docker.listNetworks().catch(() => [])).filter((n: any) => n.Driver === 'bridge' && !['bridge', 'host', 'none'].includes(n.Name)
+      && n.Name !== cfg.proxy.network && !own.has(n.Name) && !own.has(n.Id)).map((n: any) => ({ id: String(n.Id), name: String(n.Name) })).sort((a: any, b: any) => a.name.localeCompare(b.name));
+  }
+
+  // The network (and aliases on it) for a new container, from the form; undefined for Docker's
+  // default bridge.
+  async function createNetwork(netIn: unknown, aliasesIn: unknown): Promise<{ mode: string; endpoint?: { Aliases?: string[] } } | undefined> {
+    const net = String(netIn || '').trim();
+    const aliases = [...new Set(String(aliasesIn || '').split(/[\s,]+/).filter(Boolean))];
+    if (!net || net === 'bridge') {
+      if (aliases.length) throw new v.ValidationError('aliases need a network other than the default bridge');
+      return undefined;
+    }
+    v.ref(net, 'network');
+    const n = await docker.inspectNetwork(net).catch(e => { throw (e as { status?: number })?.status === 404 ? new v.ValidationError(`there is no network ${net}`) : e; });
+    const choices = await networkChoices();
+    if (!choices) throw new v.ValidationError('kontainers cannot find its own container, so it cannot tell which networks reach its Docker API; set KONTAINERS_SELF_CONTAINER, or use the default bridge');
+    if (!choices.some(c => c.id === n.Id)) throw new v.ValidationError(`a container made here cannot go on ${n.Name}: only bridge networks that are not kontainers' own, its Docker API's or the proxy network (${cfg.proxy.network})`);
+    if (aliases.length > 10) throw new v.ValidationError('at most 10 aliases');
+    // Names already on that network, as Docker's DNS matches them (any case): another container's
+    // name or alias, running or stopped, and the Docker API's host.
+    const taken = new Set<string>([dockerApiHost(cfg.dockerHost) || ''].filter(Boolean).map(x => x.toLowerCase()));
+    const onIt = (await docker.listContainers()).filter((c: any) => Object.keys(c.NetworkSettings?.Networks || {}).includes(n.Name)).slice(0, 300);
+    for (const c of onIt) {
+      for (const nm of c.Names || []) taken.add(String(nm).replace(/^\//, '').toLowerCase());
+      const o = await docker.inspect(c.Id).catch(() => null);
+      for (const a of o?.NetworkSettings?.Networks?.[n.Name]?.Aliases || []) taken.add(String(a).toLowerCase());
+    }
+    for (const a of aliases) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$/.test(a)) throw new v.ValidationError(`"${a.slice(0, 64)}" is not a network alias (letters, digits, dots, dashes, underscores)`);
+      if (taken.has(a.toLowerCase())) throw new v.ValidationError(`${a} is already a name on ${n.Name}; pick another alias`);
+    }
+    return { mode: String(n.Name), endpoint: aliases.length ? { Aliases: aliases } : undefined };
   }
 
   // A proxy rule connects its target to the shared proxy network, which every other target can
@@ -616,7 +666,10 @@ export function createHandler(d: Deps): Handler {
       if (s.user.role === 'viewer' && (p === '/containers/new' || /^\/containers\/[^/]+\/edit$/.test(p) || /^\/proxy\/\d+\/edit$/.test(p) || p === '/api/backup' || p.startsWith('/settings/backups/'))) {
         return p.startsWith('/api/') ? text('a read-only account cannot do this\n', 403) : page(views.layout('Read-only account', ctx(s), views.html`<p class="error">This account is read-only.</p><p><a href="/containers">Containers</a></p>`), 403);
       }
-      if (p === '/containers/new') return page(views.newContainerPage(ctx(s), cfg.allowBindMounts, !!d.autoUpdates));
+      if (p === '/containers/new') {
+        const nets = ((await networkChoices()) ?? []).map(n => n.name);
+        return page(views.newContainerPage(ctx(s), cfg.allowBindMounts, !!d.autoUpdates, nets));
+      }
       if ((r = /^\/containers\/([^/]+)\/edit$/.exec(p))) {
         const c = await docker.inspect(r[1]);
         const me = await self();
@@ -712,7 +765,7 @@ export function createHandler(d: Deps): Handler {
       }
       if (p === '/settings') return page(views.settingsPage(ctx(s), auth.listUsers(), s.user.id, d.notifier ? d.notifier.list() : null, d.events ? { connected: d.events.connected, error: d.events.lastError } : null, d.registries ? d.registries.list() : null, d.schedule ? d.schedule.get() : null,
         d.twoFactor ? { mine: d.twoFactor.enabled(s.user.id), left: d.twoFactor.recoveryLeft(s.user.id), users: new Set(auth.listUsers().filter(u => d.twoFactor!.enabled(u.id)).map(u => u.id)) } : null,
-        d.backups ? { keep: d.backups.keep, files: d.backups.list(), dir: join(cfg.dataDir, 'backups') } : null));
+        d.backups ? { keep: d.backups.keep, files: d.backups.list(), dir: join(cfg.dataDir, 'backups') } : null, d.schedule?.cleanup() ?? false));
       if (p === '/api/backup') { safeAudit(s, 'backup', null, ip); return backup(); }
       if ((r = /^\/settings\/backups\/([^/]+)$/.exec(p)) && d.backups) {
         let name = '';
@@ -763,8 +816,10 @@ export function createHandler(d: Deps): Handler {
     if (p === '/containers') {
       return act(s, ip, failed => (failed ? '/containers/new' : '/containers'), 'container-create', f.name || f.image || null, async () => {
         const spec = containerSpec(f);
+        // The network and aliases are checked before the pull, which can take minutes.
+        const network = await createNetwork(f.network, f.aliases);
         if (f.pull) await docker.pull(spec.image);
-        const { Id } = await docker.create(spec);
+        const { Id } = await docker.create(spec, { network });
         if (f.start) {
           try {
             await docker.start(Id);
@@ -789,10 +844,15 @@ export function createHandler(d: Deps): Handler {
         if (refusal) throw new v.ValidationError(refusal);
         const name = String(c.Name || '').replace(/^\//, '');
         refuseSetAside(name);
+        // Bad input is refused before the lock is taken (a refusal after it would keep it).
+        const spec = containerSpec(f);
+        // A form without the limit fields (one opened before 0.8, a script) keeps the limits.
+        if (f.memory === undefined && c.HostConfig?.Memory > 0) spec.memory = c.HostConfig.Memory;
+        if (f.cpus === undefined && c.HostConfig?.NanoCpus > 0) spec.nanoCpus = c.HostConfig.NanoCpus;
+        if (f.pids === undefined && c.HostConfig?.PidsLimit > 0) spec.pids = c.HostConfig.PidsLimit;
         // Taken straight after the inspect, with nothing awaited in between, and held for the pull too.
         const release = locks.take(name);
         if (!release) throw new v.ValidationError(`an update or edit of ${name} is already running; try again in a minute`);
-        const spec = containerSpec(f);
         let rep: { id: string; note: string | null };
         try {
           if (f.pull) await docker.pull(spec.image);
@@ -828,7 +888,11 @@ export function createHandler(d: Deps): Handler {
           try {
             r = await updateContainerDetailed(docker, id, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, healthTimeoutMs: 0, ...replaceOpts() });
           } catch (e) { noteFailure(name, c.Id, e); throw e; }
-          if (r.changed) { d.autoUpdates?.recreated(name, r.id, c.Id); failedHere.delete(name); }
+          if (r.changed) {
+            d.autoUpdates?.recreated(name, r.id, c.Id); failedHere.delete(name);
+            const removed = d.schedule?.cleanup() ? await removeReplacedImage(docker, r.oldImage) : null;
+            if (removed) { r = { ...r, message: `${r.message.replace(/\.$/, '')}; ${removed}.` }; safeAudit(s, 'image-remove', removed.replace(/^removed the image it ran before \((.*)\)$/, '$1'), ip, `note: after the update of ${name}`); }
+          }
         } finally { release(); }
         if (c.Config?.Image && d.updates) await d.updates.check(c.Config.Image).catch(() => {});
         return r.message;
@@ -888,7 +952,12 @@ export function createHandler(d: Deps): Handler {
                 const c = await docker.inspect(n).catch(() => null);
                 if (!c || c.Config?.Labels?.['com.docker.compose.project'] !== project || views.isProtected(c, me)) { fails.push(`${n}: no longer in ${project}`); continue; }
                 const res = await updateContainerDetailed(docker, c.Id, { settleMs: Math.min(cfg.autoUpdateSettle, 5) * 1000, healthTimeoutMs: 0, ...replaceOpts() });
-                if (res.changed) { d.autoUpdates?.recreated(n, res.id, c.Id); failedHere.delete(n); done.push(n); if (res.note) notes.push(`${n}: ${res.note}`); } else same.push(`${n}: ${res.message}`);
+                if (res.changed) {
+                  d.autoUpdates?.recreated(n, res.id, c.Id); failedHere.delete(n); done.push(n);
+                  const removed = d.schedule?.cleanup() ? await removeReplacedImage(docker, res.oldImage) : null;
+                  if (removed) safeAudit(s, 'image-remove', removed.replace(/^removed the image it ran before \((.*)\)$/, '$1'), ip, `note: after the update of ${n}`);
+                  if (res.note || removed) notes.push(`${n}: ${[res.note, removed].filter(Boolean).join('; ')}`);
+                } else same.push(`${n}: ${res.message}`);
                 safeAudit(s, 'container-update', n, ip, res.changed ? (res.note ? `note: ${res.note}`.slice(0, 500) : null) : `note: ${res.message}`.slice(0, 500));
               } catch (e) {
                 fails.push(`${n}: ${errorMessage(e)}`);
@@ -1012,14 +1081,15 @@ export function createHandler(d: Deps): Handler {
     }
     if (p === '/settings/autoupdate') {
       let target: string | null = null;
-      try { target = describeSchedule(validateSchedule({ start: f.start, end: f.end, days: DAY_NAMES.map((_, i) => i).filter(i => f[`day_${i}`]), delayHours: f.delay })); } catch { /* the action says why */ }
+      try { target = `${describeSchedule(validateSchedule({ start: f.start, end: f.end, days: DAY_NAMES.map((_, i) => i).filter(i => f[`day_${i}`]), delayHours: f.delay }))}; old images ${f.cleanup ? 'removed' : 'kept'}`; } catch { /* the action says why */ }
       return act(s, ip, '/settings', 'schedule-set', target, async () => {
         if (!d.schedule) throw new v.ValidationError('automatic updates are not available');
         const sched = validateSchedule({ start: f.start, end: f.end, days: DAY_NAMES.map((_, i) => i).filter(i => f[`day_${i}`]), delayHours: f.delay });
         d.schedule.set(sched);
+        d.schedule.setCleanup(!!f.cleanup);
         // Something that waited may be due now.
         void d.autoUpdates?.afterCheck().catch(() => {});
-        return `Automatic updates now run ${describeSchedule(sched)}.`;
+        return `Automatic updates now run ${describeSchedule(sched)}; ${f.cleanup ? 'the image a container ran before is removed after an update that worked' : 'the images containers ran before are kept'}.`;
       });
     }
     if (p === '/settings/registries') {

@@ -10,7 +10,7 @@ import type { Database } from 'bun:sqlite';
 import type { Docker } from './docker';
 import type { Notifier } from './notify';
 import { containerStatus, type UpdateChecker } from './updates';
-import { inspectOthers, updatable, updateContainerDetailed, UpdateFailed, type Journal } from './update';
+import { inspectOthers, removeReplacedImage, updatable, updateContainerDetailed, UpdateFailed, type Journal } from './update';
 import { cloneRefusal } from './clone';
 import * as v from './validate';
 import { NameLocks } from './locks';
@@ -292,7 +292,11 @@ export class AutoUpdates {
         held = null;
         heldDigests = null;
         this.recreated(name, r.id, id);
-        quietly('could not record the automatic update', () => this.audit('auto-update', name));
+        // The image it ran before, if Settings says so and nothing else uses it: after the update
+        // is recorded, and on the record too.
+        const removed = this.opts.schedule?.cleanup() ? await removeReplacedImage(this.docker, r.oldImage) : null;
+        if (removed) result = `${result.replace(/\.$/, '')}; ${removed}.`;
+        quietly('could not record the automatic update', () => this.audit('auto-update', name, removed ? `note: ${removed}` : undefined));
         const what = r.running === false ? `${name} was recreated from the newest ${ref}; it was stopped before and is left stopped` : `${name} now runs the newest ${ref}`;
         note = { n: { kind: 'autoupdate', title: `Updated ${name}`, message: `${what}${r.note ? `; ${r.note}` : ''}.`, container: name } };
       }

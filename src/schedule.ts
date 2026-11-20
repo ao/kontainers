@@ -77,7 +77,19 @@ export const formTime = (min: number | null) => (min === null ? '' : hhmm(min));
 export class ScheduleStore {
   // A schedule given by the environment (KONTAINERS_AUTOUPDATE_WINDOW and _DELAY_HOURS) applies
   // until one is saved on the Settings page.
-  constructor(private db: Database, private fallback: Schedule = ANY_TIME, private now: () => number = Date.now) {}
+  constructor(private db: Database, private fallback: Schedule = ANY_TIME, private now: () => number = Date.now, private cleanupFallback = false) {}
+
+  // Whether the image a container ran before is removed after an update that worked (Settings;
+  // KONTAINERS_AUTOUPDATE_CLEANUP until it is saved there).
+  cleanup(): boolean {
+    try {
+      const r = this.db.query("SELECT value FROM settings WHERE key = 'update.cleanup'").get() as { value: string } | null;
+      return r ? r.value === '1' : this.cleanupFallback;
+    } catch { return false; } // a database error never turns removal on
+  }
+  setCleanup(on: boolean): void {
+    this.db.query("INSERT INTO settings (key, value) VALUES ('update.cleanup', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(on ? '1' : '0');
+  }
 
   // The last schedule read: a database error keeps it rather than falling back to "any time".
   private last: Schedule | null = null;

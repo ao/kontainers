@@ -6,6 +6,7 @@ import { containerStatus, type UpdateState } from './updates';
 import { EVENTS, EVENT_KINDS, maskUrl, type Target } from './notify';
 import type { RegistryLogin } from './registries';
 import type { BackupFile } from './backups';
+import { formatMemory } from './validate';
 import { DAY_NAMES, describeSchedule, formTime, type Schedule } from './schedule';
 
 export function esc(v: unknown): string {
@@ -399,9 +400,11 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
   <dt>Started</dt><dd>${!c.State?.StartedAt || c.State.StartedAt.startsWith('0001-') ? 'never' : `${c.State.StartedAt.slice(0, 16).replace('T', ' ')} UTC`}</dd>
   ${c.State?.Health ? html`<dt>Health</dt><dd>${c.State.Health.Status}${healthNote(c.State.Health)}</dd>` : ''}
   ${c.State?.Status === 'exited' ? html`<dt>Exit code</dt><dd>${c.State.ExitCode}${c.State.OOMKilled ? ' (out of memory)' : ''}</dd>` : ''}
+  ${c.State?.Status !== 'exited' && c.State?.OOMKilled ? html`<dt>Out of memory</dt><dd><span class="warn">a process in it was killed for running out of memory${c.State?.Status === 'restarting' ? ', and it keeps restarting' : ''}</span></dd>` : ''}
   <dt>Restart policy</dt><dd>${c.HostConfig?.RestartPolicy?.Name}${c.RestartCount ? html`<small class="warn">restarted ${c.RestartCount} time${c.RestartCount === 1 ? '' : 's'}</small>` : ''}</dd>
   ${[...(c.Config?.Entrypoint || []), ...(c.Config?.Cmd || [])].length ? html`<dt>Command</dt><dd><code>${brk(quoteArgs([...(c.Config?.Entrypoint || []), ...(c.Config?.Cmd || [])]))}</code></dd>` : ''}
   ${inspectPorts(c) ? html`<dt>Ports</dt><dd><span class="ref">${inspectPorts(c)}</span></dd>` : ''}
+  <dt>Limits</dt><dd>${limitsText(c.HostConfig)}</dd>
 </dl>
 <div class="actions">${isSelf(c, me) ? selfNote(c, me) : ctx.busy?.(name) ? html`<p class="muted">${ctx.busy(name)}; reload in a moment.</p>` : containerActions(ctx, urlId(c), name, c.State?.Status || '', true)}
 ${isProtected(c, me) || ctx.busy?.(name) ? '' : html`${post(ctx, `/containers/${urlId(c)}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' && !held ? 'primary' : '' })}${madeHere
@@ -428,7 +431,7 @@ ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
 <pre id="logs" tabindex="0" role="region" aria-label="Logs of ${name}" data-logs="/api/containers/${urlId(c)}/logs">loading…</pre>`, 'Containers');
 }
 
-export function newContainerPage(ctx: PageCtx, allowBind: boolean, autoUpdates = false): string {
+export function newContainerPage(ctx: PageCtx, allowBind: boolean, autoUpdates = false, networks: string[] = []): string {
   // After a failed create, the form comes back as it was sent.
   const f = ctx.form;
   const val = (k: string) => f?.[k] ?? '';
@@ -446,19 +449,43 @@ export function newContainerPage(ctx: PageCtx, allowBind: boolean, autoUpdates =
   <label>Volumes, one per line: <code>volume-name:/path[:ro]</code>${allowBind ? raw(' or <code>/host/path:/path[:ro]</code>') : raw('. Host paths are disabled.')}
     <textarea name="volumes" rows="2">${val('volumes')}</textarea></label>
   <label>Restart policy <select name="restart">${opt('no')}${opt('unless-stopped')}${opt('always')}${opt('on-failure')}</select></label>
+  <label>Network <select name="network"><option value="bridge">Docker's default bridge</option>${networks.map(n => html`<option${f?.network === n ? raw(' selected') : raw('')}>${n}</option>`)}</select></label>
+  <label>Aliases on that network, for other containers there to reach it by (optional) <input name="aliases" value="${val('aliases')}" placeholder="db, postgres"></label>
+${limitFields(f?.memory ?? '', f?.cpus ?? '', f?.pids ?? '')}
   <label class="check"><input type="checkbox" name="start"${box('start', true)}> Start after creating</label>
 ${autoUpdates ? html`  <label class="check"><input type="checkbox" name="autoupdate"${box('autoupdate', false)}> Update automatically when a check finds a newer image</label>\n` : ''}  <button>Create</button>
 </form>`, 'Containers');
 }
 
 
+const cpus = (n: number) => `${n} CPU${n === 1 ? '' : 's'}`;
+// The limits a container runs with, as docker run sets them.
+export function limitsText(h: any): string {
+  const parts = [
+    h?.Memory > 0 ? `memory ${/^\d+$/.test(formatMemory(h.Memory)) ? `${Math.round(h.Memory / 1024 ** 2 * 10) / 10}m` : formatMemory(h.Memory)}` : '',
+    h?.NanoCpus > 0 ? cpus(h.NanoCpus / 1e9) : h?.CpuQuota > 0 ? cpus(Math.round((h.CpuQuota / (h.CpuPeriod > 0 ? h.CpuPeriod : 100000)) * 100) / 100) : '',
+    h?.CpusetCpus ? `on CPUs ${h.CpusetCpus}` : '',
+    h?.PidsLimit > 0 ? `${h.PidsLimit} processes` : '',
+  ].filter(Boolean);
+  return parts.length ? parts.join(', ') : 'none';
+}
+
 // Shell-style quoting that splitArgs in server.ts reads back to the same list.
 export function quoteArgs(args: string[]): string {
   return args.map(a => (/^[A-Za-z0-9_\-./:=@%+,]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`)).join(' ');
 }
 
+// Memory, CPUs and processes, empty for none.
+function limitFields(memory: string, cpus: string, pids: string): Html {
+  return html`<fieldset class="limits"><legend>Limits (empty: none)</legend>
+  <label>Memory <input name="memory" value="${memory}" placeholder="512m" inputmode="text" size="8"></label>
+  <label>CPUs <input name="cpus" value="${cpus}" placeholder="1.5" inputmode="decimal" size="6"></label>
+  <label>Processes <input name="pids" value="${pids}" placeholder="200" inputmode="numeric" size="6"></label>
+</fieldset>`;
+}
+
 export interface EditSpec {
-  image: string; cmd?: string[]; env?: string[]; restart?: string;
+  image: string; cmd?: string[]; env?: string[]; restart?: string; memory?: number; nanoCpus?: number; pids?: number;
   ports?: { container: number; host: number; hostIp?: string; protocol?: string }[];
   volumes?: { source: string; target: string; readOnly?: boolean }[];
 }
@@ -487,6 +514,7 @@ ${imageGone ? html`<p class="warn">The image ${name} was created from is no long
   <label>Volumes, one per line: <code>volume-name:/path[:ro]</code>${allowBind ? raw(' or <code>/host/path:/path[:ro]</code>') : raw('. Host paths are disabled, except ones the container already has.')}
     <textarea name="volumes" rows="2">${vols}</textarea></label>
   <label>Restart policy <select name="restart">${opt('no')}${opt('unless-stopped')}${opt('always')}${opt('on-failure')}</select></label>
+${limitFields(f ? f.memory ?? '' : spec.memory ? formatMemory(spec.memory) : '', f ? f.cpus ?? '' : spec.nanoCpus ? String(spec.nanoCpus / 1e9) : '', f ? f.pids ?? '' : spec.pids ? String(spec.pids) : '')}
   <button class="primary">Save and recreate</button>
 </form>`, 'Containers');
 }
@@ -595,7 +623,7 @@ export function editRulePage(ctx: PageCtx, r: Rule): string {
 </form>`, 'Proxy');
 }
 
-export function settingsPage(ctx: PageCtx, users: { id: number; username: string; role?: string }[], selfId: number, targets: Target[] | null = null, watch: { connected: boolean; error: string | null } | null = null, logins: RegistryLogin[] | null = null, schedule: Schedule | null = null, tf: { mine: boolean; left: number; users: Set<number> } | null = null, backups: { keep: number; files: BackupFile[]; dir: string } | null = null): string {
+export function settingsPage(ctx: PageCtx, users: { id: number; username: string; role?: string }[], selfId: number, targets: Target[] | null = null, watch: { connected: boolean; error: string | null } | null = null, logins: RegistryLogin[] | null = null, schedule: Schedule | null = null, tf: { mine: boolean; left: number; users: Set<number> } | null = null, backups: { keep: number; files: BackupFile[]; dir: string } | null = null, cleanup = false): string {
   const viewer = (u: { role?: string }) => u.role === 'viewer';
   const rows = users.map(u => html`<tr><td>${u.username}${tf?.users.has(u.id) ? html` <small class="muted">two-factor</small>` : ''}</td><td>${viewer(u) ? 'read-only' : 'administrator'}</td>
 <td class="actions">${u.id === selfId ? html`<em>you</em>` : html`${post(ctx, `/settings/users/${u.id}/role`, viewer(u) ? 'Make administrator' : 'Make read-only', { fields: { role: viewer(u) ? 'admin' : 'viewer' }, confirm: viewer(u) ? `Make ${u.username} an administrator, with full control of the Docker host?` : `Make ${u.username} read-only? Its sessions end.` })} ${post(ctx, `/settings/users/${u.id}/remove`, 'Remove', { confirm: `Remove user ${u.username}?`, cls: 'danger' })}${tf?.users.has(u.id) ? html` ${post(ctx, `/settings/users/${u.id}/2fa-reset`, 'Turn off two-factor', { confirm: `Turn off two-factor login for ${u.username}? They log in with the password alone until they set it up again.` })}` : ''}`}</td></tr>`);
@@ -622,7 +650,7 @@ ${ctx.readOnly ? html`<h2>Your account</h2><p>This account is read-only: it sees
   <label>Role <select name="role"><option value="viewer">Read-only</option><option value="admin">Administrator</option></select></label>
   <button>Add user</button>
 </form>`}
-${schedule ? scheduleSection(ctx, schedule) : ''}
+${schedule ? scheduleSection(ctx, schedule, cleanup) : ''}
 ${targets ? notifySection(ctx, targets, watch) : ''}
 ${logins ? registrySection(ctx, logins) : ''}
 ${ctx.readOnly ? '' : html`<h2>Backup</h2>
@@ -637,7 +665,7 @@ function backupSection(b: { keep: number; files: BackupFile[]; dir: string }): H
 ${rows.length ? html`<div class="scroll"><table><thead><tr><th scope="col">Copy</th><th scope="col">Taken</th><th scope="col">At</th><th scope="col">Size</th></tr></thead><tbody>${rows}</tbody></table></div>` : html`<p class="muted">No copies yet${b.keep > 0 ? '; the first daily one is taken a minute after kontainers starts' : ''}.</p>`}`;
 }
 
-function scheduleSection(ctx: PageCtx, s: Schedule): Html {
+function scheduleSection(ctx: PageCtx, s: Schedule, cleanup = false): Html {
   const days = DAY_NAMES.map((d, i) => html`<label class="check"><input type="checkbox" name="day_${i}"${s.days.includes(i) ? raw(' checked') : raw('')}> ${d}</label>`);
   return html`<h2>Automatic updates</h2>
 <p>Containers that are updated automatically get a newer image ${describeSchedule(s)}. The time now is ${new Date().toISOString().slice(11, 16)} UTC.</p>
@@ -648,6 +676,7 @@ function scheduleSection(ctx: PageCtx, s: Schedule): Html {
   </fieldset>
   <fieldset><legend>On these days (none ticked: every day); a window past midnight counts for the day it starts</legend>${days}</fieldset>
   <label>Wait this many hours after a newer image is first seen (0: at once) <input name="delay" type="number" min="0" max="720" value="${s.delayHours}"></label>
+  <label class="check"><input type="checkbox" name="cleanup"${cleanup ? raw(' checked') : raw('')}> After an update that worked (automatic, Update image or Update all), remove the image the container ran before, if no other container uses it and no tag points at it. Going back to it then takes a pull of its digest, which the result names.</label>
   <button>Save</button>
 </form>`;
 }
