@@ -30,6 +30,7 @@ export interface Config {
   autoUpdateHealthTimeout: number; // seconds to wait for "healthy" after settling, when there is a healthcheck
   autoUpdateSchedule: Schedule; // when automatic updates may run, until one is saved on the Settings page
   autoUpdateCleanup: boolean; // remove the replaced image after an update, until Settings says otherwise
+  versionCheck: boolean; // list registries' tags after each update check, for newer version tags
 }
 
 export function isLoopback(host: string): boolean {
@@ -126,5 +127,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     autoUpdateHealthTimeout: optionalInt("KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT", env.KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT, 0, 3600) ?? 120,
     autoUpdateSchedule: scheduleFromEnv(env.KONTAINERS_AUTOUPDATE_WINDOW, env.KONTAINERS_AUTOUPDATE_DELAY_HOURS),
     autoUpdateCleanup: onOff('KONTAINERS_AUTOUPDATE_CLEANUP', env.KONTAINERS_AUTOUPDATE_CLEANUP),
+    versionCheck: env.KONTAINERS_VERSION_CHECK === undefined || env.KONTAINERS_VERSION_CHECK === '' ? true : onOff('KONTAINERS_VERSION_CHECK', env.KONTAINERS_VERSION_CHECK),
   };
 }

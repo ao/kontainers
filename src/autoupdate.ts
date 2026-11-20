@@ -60,11 +60,11 @@ export class AutoUpdates {
   async set(id: string, on: boolean): Promise<string> {
     const c = await this.docker.inspect(id);
     const name = String(c.Name || '').replace(/^\//, '');
-    if (!on && labelledOn(c.Config?.Labels)) throw new v.ValidationError(`${name} has the label ${AUTO_LABEL}=true, which turns automatic updates on; remove the label (in its compose file, say) to turn them off`);
+    if (!on && labelledOn(c.Config?.Labels)) throw new v.ValidationError(`${name} has the label ${AUTO_LABEL}=true, which turns automatic updates on; remove the label (in Edit settings, or in its compose file) to turn them off`);
     // While it is replaced, the container under the name may be the one about to be rolled back.
     if (on && this.busy.has(name)) throw new v.ValidationError(`an update or edit of ${name} is running; turn automatic updates on when it has finished`);
     if (on) {
-      const refusal = updatable(c, await inspectOthers(this.docker, c.Id));
+      const refusal = updatable(c, await inspectOthers(this.docker, c.Id), await this.docker.inspectImage(c.Image).catch(() => null));
       if (refusal) throw new v.ValidationError(refusal);
       this.db.query('INSERT INTO auto_update (container, container_id, created_at) VALUES (?, ?, ?) ON CONFLICT (container) DO UPDATE SET container_id = excluded.container_id').run(name, c.Id, this.now());
       return `${name} will be updated automatically when a check finds a newer image.`;
@@ -217,7 +217,9 @@ export class AutoUpdates {
         // The label opts this container in, whichever container had the name before; not one that
         // Update image refuses at a glance (a digest, an image ID, a swarm task).
         const refusedAtAGlance = String(c.Ref || '').includes('@') || /^(sha256:)?[0-9a-f]{12,64}$/.test(String(c.Ref || '')) || !!c.Labels?.['com.docker.swarm.task.id'];
-        if (labelledOn(c.Labels) && !refusedAtAGlance && !this.busy.has(name) && !(await this.protect(c))) {
+        // Not when the image carries the label: an image's labels are every container's.
+        const imageLabelled = labelledOn(c.Labels) ? labelledOn((await this.docker.inspectImage(String(c.ImageID)).catch(() => null))?.Config?.Labels) : false;
+        if (labelledOn(c.Labels) && !imageLabelled && !refusedAtAGlance && !this.busy.has(name) && !(await this.protect(c))) {
           // Not one Update image would refuse (--rm, shared namespaces): it would fail every pass.
           const full = await this.docker.inspect(c.Id).catch(() => null);
           if (full && full.Config?.Labels?.['kontainers.managed'] !== 'true' && cloneRefusal(full, await inspectOthers(this.docker, c.Id))) continue;

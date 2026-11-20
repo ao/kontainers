@@ -1,5 +1,6 @@
 // Registry logins: credentials for private registries, handed to the Docker daemon with each pull
-// and update check (the X-Registry-Auth header). Logins made with `docker login` on the host live
+// and update check (the X-Registry-Auth header), and used by kontainers itself to list a
+// repository's tags on that registry (tags.ts). Logins made with `docker login` on the host live
 // in the Docker CLI's config file, which the daemon's API does not use, so they are entered here.
 //
 // Passwords are stored encrypted (AES-256-GCM) with a key kept in <data>/registry.key, a file the
@@ -82,6 +83,13 @@ export class Registries {
     const r = this.db.query('DELETE FROM registry_logins WHERE id = ? RETURNING registry').get(id) as { registry: string } | null;
     if (!r) throw Object.assign(new v.ValidationError('registry login not found'), { status: 404 });
     return r.registry;
+  }
+
+  // The login for `ref`'s registry, for kontainers' own requests to it (listing tags), or null.
+  credentials(ref: string): { username: string; password: string } | null {
+    const h = this.header(ref);
+    if (!h) return null;
+    try { const j = JSON.parse(Buffer.from(h.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString()); return { username: j.username, password: j.password }; } catch { return null; }
   }
 
   // The X-Registry-Auth header value for pulling or looking up `ref`, or null without a login.

@@ -13,7 +13,7 @@ import { Auth, RateLimiter, safeEqual, type Session } from './auth';
 import { Docker, DockerError, summarizeStats, type CreateSpec } from './docker';
 import type { ProxyManager, RuleStore } from './proxy';
 import { snapshot } from './db';
-import { editable, recreateSpec, removeReplacedImage, replaceContainer, updateContainerDetailed, UpdateFailed, type Journal } from './update';
+import { editable, ownLabels, recreateSpec, removeReplacedImage, replaceContainer, updateContainerDetailed, UpdateFailed, type Journal } from './update';
 import type { Notifier } from './notify';
 import { EVENT_KINDS } from './notify';
 import { labelledOn, type AutoUpdates } from './autoupdate';
@@ -29,6 +29,7 @@ import { validateRegistry, type Registries } from './registries';
 import { validateSchedule, describeSchedule, DAY_NAMES, type ScheduleStore } from './schedule';
 import { otpauthUri, type TwoFactor } from './totp';
 import type { Backups } from './backups';
+import type { TagChecker } from './tags';
 
 export interface Deps {
   cfg: Config;
@@ -53,6 +54,7 @@ export interface Deps {
   schedule?: ScheduleStore;
   twoFactor?: TwoFactor;
   backups?: Backups;
+  tags?: TagChecker;
 }
 
 export type Handler = (req: Request, socketIp: string) => Promise<Response>;
@@ -242,6 +244,7 @@ export function containerSpec(f: Record<string, string>): CreateSpec {
     ports: lines(f.ports).map(parsePort),
     volumes: lines(f.volumes).map(parseVolume),
     restart: (f.restart as CreateSpec['restart']) || 'no',
+    labels: v.labels(f.labels),
     memory: v.memoryLimit(f.memory),
     nanoCpus: v.cpuLimit(f.cpus),
     pids: v.pidsLimit(f.pids),
@@ -384,7 +387,8 @@ export function createHandler(d: Deps): Handler {
     ? { get: (ref: string) => d.updates!.get(ref), lastRun: d.updates.lastRun, scheduled: cfg.updateCheckHours > 0 ? cfg.updateCheckHours : null,
         held: (name: string, id: string) => (d.autoUpdates?.isOn(name, id) ? d.autoUpdates.heldImage(name) : manualHeld(name, id)?.image ?? null),
         heldDigests: (name: string) => d.autoUpdates?.heldDigests(name) ?? failedHere.get(name)?.digests,
-        heldManually: (name: string, id: string) => !d.autoUpdates?.isOn(name, id) && !!manualHeld(name, id) }
+        heldManually: (name: string, id: string) => !d.autoUpdates?.isOn(name, id) && !!manualHeld(name, id),
+        tags: (ref: string) => d.tags?.get(ref) ?? null }
     : null;
 
   // A password asked again from a logged-in session (turning off two-factor, replacing its key,
@@ -674,18 +678,28 @@ export function createHandler(d: Deps): Handler {
         const c = await docker.inspect(r[1]);
         const me = await self();
         if (me && views.isSelf(c, me)) throw new v.ValidationError("this is kontainers itself or the container that serves its Docker API; change it on the host");
-        const refusal = editable(c);
+        const refusal = editable(c, await docker.inspectImage(c.Image).catch(() => null));
         if (refusal) throw new v.ValidationError(refusal);
         const oldImage = await docker.inspectImage(c.Image).catch(() => null);
         const spec = recreateSpec(c, oldImage);
-        return page(views.editContainerPage(ctx(s), c, spec, cfg.allowBindMounts, !oldImage));
+        // From "a newer version is tagged": the image field filled in with it, and only with a tag
+        // the last check found for this container's image (not any image a link names).
+        const want = url.searchParams.get('image');
+        const t = d.tags?.get(String(c.Config?.Image || ''));
+        const base = String(c.Config?.Image || '').replace(/:[^:/]*$/, ':');
+        const fromTag = want && t && [t.minor, t.major].some(x => x && base + x === want) ? want : null;
+        if (fromTag) spec.image = fromTag;
+        return page(views.editContainerPage(ctx(s), c, spec, cfg.allowBindMounts, !oldImage, fromTag));
       }
       if ((r = /^\/containers\/([^/]+)$/.exec(p))) {
         const c = await docker.inspect(r[1]);
         const name = String(c.Name || '').replace(/^\//, '');
         const row = d.autoUpdates?.get(name) ?? null;
-        const auto = d.autoUpdates ? { on: d.autoUpdates.isOn(name, c.Id, c.Config?.Labels), label: labelledOn(c.Config?.Labels), row, waiting: d.autoUpdates.waitingFor(name) } : null;
-        return page(views.containerPage(ctx(s), c, await self(), updateView(), auto));
+        // The label counts when the container has it, not when its image does.
+        const img = await docker.inspectImage(c.Image).catch(() => null);
+        const own = labelledOn(c.Config?.Labels) && !labelledOn(img?.Config?.Labels) ? c.Config?.Labels : null;
+        const auto = d.autoUpdates ? { on: d.autoUpdates.isOn(name, c.Id, own), label: labelledOn(own), row, waiting: d.autoUpdates.waitingFor(name) } : null;
+        return page(views.containerPage(ctx(s), c, await self(), updateView(), auto, editable(c, img) === null || (c.Config?.Labels?.['kontainers.managed'] === 'true' && img?.Config?.Labels?.['kontainers.managed'] !== 'true')));
       }
       // kontainers' own logs (and its socket proxy's) are for administrators: they can hold what
       // only Settings shows.
@@ -840,13 +854,14 @@ export function createHandler(d: Deps): Handler {
       return act(s, ip, () => back, 'container-edit', id, async () => {
         await refuseSelf(id);
         const c = await docker.inspect(id);
-        const refusal = editable(c);
+        const refusal = editable(c, await docker.inspectImage(c.Image).catch(() => null));
         if (refusal) throw new v.ValidationError(refusal);
         const name = String(c.Name || '').replace(/^\//, '');
         refuseSetAside(name);
         // Bad input is refused before the lock is taken (a refusal after it would keep it).
         const spec = containerSpec(f);
         // A form without the limit fields (one opened before 0.8, a script) keeps the limits.
+        if (f.labels === undefined) spec.labels = ownLabels(c, await docker.inspectImage(c.Image).catch(() => null));
         if (f.memory === undefined && c.HostConfig?.Memory > 0) spec.memory = c.HostConfig.Memory;
         if (f.cpus === undefined && c.HostConfig?.NanoCpus > 0) spec.nanoCpus = c.HostConfig.NanoCpus;
         if (f.pids === undefined && c.HostConfig?.PidsLimit > 0) spec.pids = c.HostConfig.PidsLimit;

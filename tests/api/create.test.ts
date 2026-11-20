@@ -86,3 +86,47 @@ describe.skipIf(!DOCKER)('create with limits and a network', () => {
     expect((await api(`/containers/cr-bad-${run}/json`)).status).toBe(404);
   }, 60000);
 });
+
+describe.skipIf(!DOCKER)('labels on create and edit', () => {
+  let srv: Running, c: Client;
+  const L = `cr-lab-${run}`;
+  beforeAll(async () => { ({ srv, c } = await readyServer({ KONTAINERS_UPDATE_CHECK_HOURS: '0' })); }, 60000);
+  afterAll(async () => { await api(`/containers/${L}?force=1`, { method: 'DELETE' }); await srv?.stop(); });
+  test('set, kept by Edit, changed by Edit; reserved names refused', async () => {
+    await c.page('/containers/new');
+    expect((await c.submit('/containers', { image: 'busybox:1.36', name: L, pull: 'on', cmd: 'sleep 600', start: 'on', labels: 'team=web\nkontainers.autoupdate=true' })).error).toBe('');
+    expect((await inspect(L)).Config.Labels).toMatchObject({ team: 'web', 'kontainers.autoupdate': 'true', 'kontainers.managed': 'true' });
+    expect(await c.page(`/containers/${L}`)).toContain('the container has the label <code>kontainers.autoupdate=true</code>');
+    const edit = await c.page(`/containers/${L}/edit`);
+    expect(edit).toContain('team=web');
+    expect((await c.submit(`/containers/${L}/edit`, { image: 'busybox:1.36', cmd: 'sleep 600', ports: '', env: '', volumes: '', restart: 'no', labels: 'team=api' })).error).toBe('');
+    const now = (await inspect(L)).Config.Labels;
+    expect(now.team).toBe('api');
+    expect(now['kontainers.autoupdate']).toBeUndefined();
+    await c.page('/containers/new');
+    expect((await c.submit('/containers', { image: 'busybox:1.36', name: `cr-lab2-${run}`, cmd: 'true', labels: 'com.docker.compose.project=x' })).error).toContain('sets itself');
+  }, 60000);
+});
+
+describe.skipIf(!DOCKER)('labels an image carries', () => {
+  let srv: Running, c: Client;
+  const X = `cr-inh-${run}`, IMG = `cr-inh-img${run}:1`;
+  beforeAll(async () => {
+    const tmp = `cr-inh-tmp-${run}`;
+    await api('/images/create?fromImage=busybox&tag=1.36', { method: 'POST' }).then(r => r.text());
+    expect((await api(`/containers/create?name=${tmp}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ Image: 'busybox:1.36', Cmd: ['true'] }) })).status).toBe(201);
+    const [repo, tag] = IMG.split(':');
+    expect((await api(`/commit?container=${tmp}&repo=${repo}&tag=${tag}&changes=${encodeURIComponent('LABEL kontainers.managed=true\nLABEL kontainers.autoupdate=true')}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status).toBe(201);
+    await api(`/containers/${tmp}?force=1`, { method: 'DELETE' });
+    expect((await api(`/containers/create?name=${X}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ Image: IMG, Cmd: ['sleep', '600'], HostConfig: { CapAdd: ['NET_ADMIN'] } }) })).status).toBe(201);
+    ({ srv, c } = await readyServer({ KONTAINERS_UPDATE_CHECK_HOURS: '0' }));
+  }, 60000);
+  afterAll(async () => { await api(`/containers/${X}?force=1`, { method: 'DELETE' }); await api(`/images/${IMG}?force=1`, { method: 'DELETE' }); await srv?.stop(); });
+  test('do not make a docker run container look made in kontainers, nor opt it into automatic updates', async () => {
+    expect(await c.page(`/containers/${X}/edit`)).toContain('only containers created in kontainers can be edited here');
+    const page = await c.page(`/containers/${X}`);
+    expect(page).not.toContain('the container has the label');
+    expect(page).toContain('Created outside kontainers');
+    expect(page).toContain('name="on"'); // the switch, off
+  });
+});

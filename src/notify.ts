@@ -14,6 +14,7 @@ import { lookup } from 'node:dns/promises';
 
 export const EVENTS = {
   update: 'a container has a newer image',
+  version: 'a newer version is tagged for an image a container uses',
   autoupdate: 'an automatic update ran or failed',
   exit: 'a container stopped on its own (crash, error exit, out of memory)',
   health: 'a container became unhealthy',

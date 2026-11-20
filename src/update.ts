@@ -6,26 +6,30 @@ import { Docker, DockerError, type CreateSpec } from './docker';
 import * as v from './validate';
 import { cloneBody, cloneDiff, cloneRefusal, composeImageLabel, imageDoubts } from './clone';
 
+// Whether kontainers made the container: its label, unless the image carries it (an image's labels
+// are every container's, docker run ones too).
+const madeHere = (c: any, image?: any) => c?.Config?.Labels?.['kontainers.managed'] === 'true' && image?.Config?.Labels?.['kontainers.managed'] !== 'true';
+
 // Edit settings: only containers kontainers created; compose owns its containers' settings.
-export function editable(c: any): string | null {
+export function editable(c: any, image?: any): string | null {
   const labels = c?.Config?.Labels || {};
   if (labels['com.docker.compose.project']) return 'this container belongs to a compose project; change it in the compose file and run docker compose up -d';
-  if (labels['kontainers.managed'] !== 'true') return 'only containers created in kontainers can be edited here';
+  if (!madeHere(c, image)) return 'only containers created in kontainers can be edited here';
   const mode = String(c?.HostConfig?.NetworkMode || '');
   if (mode === 'host' || mode.startsWith('container:')) return `it uses ${mode === 'host' ? "the host's network" : "another container's network"}, which kontainers does not set up, so it cannot be recreated here; recreate it with docker`;
   return null;
 }
 
 // How Update image recreates a container: from the settings kontainers made it with, or by copying.
-export const recreatedBy = (c: any): 'spec' | 'clone' => {
+export const recreatedBy = (c: any, image?: any): 'spec' | 'clone' => {
   const labels = c?.Config?.Labels || {};
-  return labels['kontainers.managed'] === 'true' && !labels['com.docker.compose.project'] ? 'spec' : 'clone';
+  return madeHere(c, image) && !labels['com.docker.compose.project'] ? 'spec' : 'clone';
 };
 
 // Why Update image cannot handle `c`, or null. others: every other container, inspected (a copy
 // must not cut off containers that share its namespaces); without it that is not checked.
-export function updatable(c: any, others: any[] = []): string | null {
-  return recreatedBy(c) === 'spec' ? editable(c) : cloneRefusal(c, others);
+export function updatable(c: any, others: any[] = [], image?: any): string | null {
+  return recreatedBy(c, image) === 'spec' ? editable(c, image) : cloneRefusal(c, others);
 }
 
 // Every container but `id`, inspected, a few at a time. One that went away meanwhile is left out.
@@ -40,6 +44,17 @@ export async function inspectOthers(docker: Docker, id: string): Promise<any[]> 
 }
 
 const sameList = (a: unknown, b: unknown) => JSON.stringify(a || []) === JSON.stringify(b || []);
+
+// The labels a container made in kontainers was given: not kontainers' own, Docker's, or the image's.
+export function ownLabels(c: any, image?: any): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, val] of Object.entries(c?.Config?.Labels || {}) as [string, string][]) {
+    if ((/^kontainers\./.test(k) && k !== 'kontainers.autoupdate') || /^(com\.docker\.|io\.docker\.|org\.dockerproject\.)/.test(k)) continue;
+    if (image?.Config?.Labels?.[k] === val) continue;
+    out[k] = val;
+  }
+  return out;
+}
 
 // The settings the user gave, recovered from the container and the image it was created from:
 // image defaults (ENV, CMD) are left out so the new image's own defaults apply.
@@ -77,6 +92,7 @@ export function recreateSpec(c: any, oldImage: any): CreateSpec {
     ports,
     volumes,
     restart: ['no', 'always', 'unless-stopped', 'on-failure'].includes(restart) ? restart : 'no',
+    labels: ownLabels(c, oldImage),
     // Limits set in kontainers (Create or Edit settings) stay.
     memory: c.HostConfig?.Memory > 0 ? c.HostConfig.Memory : undefined,
     nanoCpus: c.HostConfig?.NanoCpus > 0 ? c.HostConfig.NanoCpus : undefined,
@@ -233,10 +249,10 @@ const platformOf = (img: any) => (img?.Os && img?.Architecture ? `${img.Os}/${im
 
 export async function updateContainerDetailed(docker: Docker, id: string, opts: UpdateOptions = {}): Promise<UpdateResult> {
   const first = await docker.inspect(id);
-  const how = recreatedBy(first);
+  const how = recreatedBy(first, await docker.inspectImage(first.Image).catch(() => null));
   // A copy is made from everything the daemon knows about the container.
   const c = how === 'clone' ? await docker.inspectFull(first.Id) : first;
-  const refusal = updatable(c, how === 'clone' ? await inspectOthers(docker, c.Id) : []);
+  const refusal = how === 'spec' ? editable(c) : cloneRefusal(c, await inspectOthers(docker, c.Id));
   if (refusal) throw new v.ValidationError(refusal);
   const name = String(c.Name).replace(/^\//, '');
   const ref = c.Config.Image as string;

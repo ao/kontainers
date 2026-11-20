@@ -37,13 +37,13 @@ replacement it is rolling back), and will not stop or remove itself. The Securit
 
 Memory and start time were measured on the 0.4.0 release candidate, on an EC2 m7g.4xlarge (arm64,
 16 vCPUs, Ubuntu 24.04, Docker 29.9.3), by `scripts/test.sh screenshots` in three runs. The download
-size is the published 0.4.1 image's, and those of 0.5.0 to 0.7.0 are the same: 19 MB more than 0.3.0's, because the Bun base image grew by
+size is the published 0.4.1 image's, and those of 0.5.0 to 0.8.0 are the same: 19 MB more than 0.3.0's, because the Bun base image grew by
 16 MB (oven/bun 1.4.4-slim against 1.3.1-slim) and Caddy and Debian by 4 MB. 0.4.0 also stored
 the Caddy binary twice (16.5 MB more), which 0.4.1 fixed.
 
 | | |
 |---|---|
-| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1 to 0.7.0, compressed layers on Docker Hub |
+| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1 to 0.8.0, compressed layers on Docker Hub |
 | Memory at idle | 30 to 34 MiB, with Caddy serving two HTTPS rules and four other containers on the host (`docker stats` after 30 s, three runs) |
 | Start | 239 to 299 ms from `docker start` to a healthy `/healthz` (fifteen starts over three runs) |
 
@@ -73,9 +73,11 @@ What works, and is covered by the test suites below:
   runs and nothing is expanded. The list has a search, a state filter including "needs
   attention", and grouping by compose project. The detail page shows the command, ports,
   restarts, health and limits, and CPU, memory, network and process counts refreshed every 5
-  seconds. A container created in kontainers can get limits (memory such as `512m`, CPUs such as
-  `1.5`, a process count) and be made on a user network with aliases there, for other
-  containers on it to reach it by.
+  seconds. A container created in kontainers can get labels (`KEY=value`; names kontainers and
+  Docker set themselves are refused, except `kontainers.autoupdate` in small letters; a label the
+  image carries does not count as the container's own for these), limits (memory such as
+  `512m`, CPUs such as `1.5`, a process count), and be made on a user network with aliases there,
+  for other containers on it to reach it by.
 - update image: pull the image again and, if it changed, recreate the container under the same
   name, on the same networks with the same aliases, with the same volumes (anonymous ones
   included). One created in kontainers gets the settings it was created with. Any other
@@ -96,7 +98,7 @@ What works, and is covered by the test suites below:
   created (other services in its compose project are updated like any). A copy mounts the old container's anonymous volumes by
   name, so `docker compose down -v` leaves them; Clean up lists them as unused anonymous volumes.
 - edit settings, for containers created in kontainers (compose ones change in the compose file): change the image, command, ports,
-  environment, volumes, restart policy or limits (networks stay); saving recreates the container the same way, with the
+  environment, volumes, labels, restart policy or limits (networks stay); saving recreates the container the same way, with the
   old one put back if the new one does not stay up. Bad input is refused before anything stops.
 - update checks: every 6 hours, and on "Check for updates", kontainers asks the registry which
   image each container's tag points at now (through the Docker daemon, which downloads only the
@@ -105,6 +107,20 @@ What works, and is covered by the test suites below:
   this needs `DISTRIBUTION=1`, which `compose.yaml` sets. On Docker Hub, checks count toward the
   pull rate limit: from one address without a login, six checks of six images lowered the
   remaining count by three (Docker 29.9, 2026-11-14); Docker Hub reported a limit of 100 an hour.
+- newer version tags: after each update check, kontainers lists the tags of each repository
+  whose containers use a version tag (`nginx:1.27`, `postgres:17`, `v2.3-alpine`) and says when a
+  newer one of the same shape is tagged, within the major version and above it (`1.29`, and `2.1`
+  as a new major version); pre-releases and other variants (`-rc1`, another suffix) do not count.
+  It lists them itself, with the registry's API and the login saved on the Settings page, and sends
+  a notification per reference when newer ones appear (again after 60 days while they stay). It
+  never changes a tag: for a container made in kontainers the page links to Edit settings with the
+  new tag filled in (only that tag; a link cannot fill in another image); others change in their
+  compose file. The notifications are their own event on the Settings page, off for existing
+  targets. A lookup that fails says why on the container's page. Answers are capped (4 MB a page,
+  50 000 tags, 90 s a repository), no redirects are followed, a registry's token service must be
+  HTTPS, and link-local addresses and the Docker API are never asked. Registries on the host's
+  loopback address cannot be reached from kontainers' container (its loopback is its own).
+  `KONTAINERS_VERSION_CHECK=0` turns this off.
 - automatic updates, per container (any that Update image handles; opted in on its page or with
   the label `kontainers.autoupdate=true`): after each check that
   finds a newer image, the container is updated as Update image does it, then watched for
@@ -177,8 +193,8 @@ What kontainers does about it:
   higher address limit is because everyone behind one SSH tunnel or proxy shares an address).
   Setup is limited to 5 wrong tokens per address.
   `X-Forwarded-For` is only read from addresses listed in `KONTAINERS_TRUSTED_PROXIES`.
-- Container creation only sends image, name, command, environment, port bindings, named volumes,
-  restart policy, limits (memory, CPUs, processes) and a network with aliases to Docker. Host
+- Container creation only sends image, name, command, environment, labels, port bindings, named
+  volumes, restart policy, limits (memory, CPUs, processes) and a network with aliases to Docker. Host
   paths as volumes are refused unless `KONTAINERS_ALLOW_BIND_MOUNTS=1`. Ports without a host
   address are published on `127.0.0.1`. The network must be a bridge network that kontainers
   itself, its Docker API container and the proxy are not on (a container on the API network could
@@ -225,7 +241,7 @@ With `docker run`, mounting the socket directly:
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.8.0
+      ataiva/kontainers:0.9.0
     docker logs kontainers | grep 'setup token'
 
 The image runs as an unprivileged user, so it needs the socket's group (`--group-add`). On
@@ -306,7 +322,7 @@ to be public: they serve the sites you route, not the kontainers UI.
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.8.0
+      ataiva/kontainers:0.9.0
 
 Use your own email address: Let's Encrypt rejects reserved domains such as example.com, and
 kontainers refuses to start with one.
@@ -352,6 +368,7 @@ briefly unavailable; Caddy did not renew certificates in a process that started 
 | `KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT` | `120` | Seconds to wait for "healthy" after settling, for images with a healthcheck, 0 to 3600 |
 | `KONTAINERS_AUTOUPDATE_WINDOW` | unset (any time) | When automatic updates may run, in UTC: `02:00-05:00`, optionally followed by days (`02:00-05:00 Sat,Sun`); applies until a window is saved on the Settings page |
 | `KONTAINERS_AUTOUPDATE_DELAY_HOURS` | `0` | Hours a newer image waits after a check first sees it, 0 to 720; as above |
+| `KONTAINERS_VERSION_CHECK` | `1` | `0` (or `false`): do not list registries' tags for newer version tags |
 | `KONTAINERS_AUTOUPDATE_CLEANUP` | `0` | `1` (or `true`): after an update that worked, remove the image the container ran before if no container uses it and no tag points at it; applies until the switch on the Settings page is saved |
 | `KONTAINERS_BACKUP_KEEP` | `7` | Daily copies of the database kept in `/data/backups`, 0 to 365; `0` turns them off |
 | `KONTAINERS_HTTP_PORT` / `KONTAINERS_HTTPS_PORT` | `80` / `443` | Proxy ports |
