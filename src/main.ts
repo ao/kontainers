@@ -144,7 +144,7 @@ const checkTags = async () => {
     for (const nt of [t.minor, t.major].filter((x): x is string => !!x)) {
       const shown = `${ref.slice(0, ref.length - p.tag.length)}${nt}`;
       const list = names.length > 10 ? `${names.slice(0, 10).join(', ')} and ${names.length - 10} more` : names.join(', ');
-      await notifier.send({ kind: 'update', title: `Newer version for ${ref}`, message: `${shown} is tagged; ${list} ${names.length === 1 ? 'runs' : 'run'} ${ref}. kontainers does not change tags; change it in Edit settings or the compose file.`, container: names.length === 1 ? names[0] : undefined },
+      await notifier.send({ kind: 'version', title: `Newer version for ${ref}`, message: `${shown} is tagged; ${list} ${names.length === 1 ? 'runs' : 'run'} ${ref}. kontainers does not change tags; change it in Edit settings or the compose file.`, container: names.length === 1 ? names[0] : undefined },
         `version:${ref}:${nt}`).catch(e => console.error(`kontainers: notification failed: ${(e as Error).message}`));
     }
   }

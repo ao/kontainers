@@ -113,6 +113,7 @@ What works, and is covered by the test suites below:
   It lists them itself, with the registry's API and the login saved on the Settings page, and sends
   one notification per new version. It never changes a tag: for a container made in kontainers the
   page links to Edit settings with the new tag filled in; others change in their compose file.
+  The notifications are their own event on the Settings page, off for existing targets.
   `KONTAINERS_VERSION_CHECK=0` turns this off.
 - automatic updates, per container (any that Update image handles; opted in on its page or with
   the label `kontainers.autoupdate=true`): after each check that

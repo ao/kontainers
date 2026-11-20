@@ -126,7 +126,7 @@ describe('Notifier', () => {
   });
 
   test('every event kind has a description', () => {
-    expect(EVENT_KINDS).toEqual(['update', 'autoupdate', 'exit', 'health', 'cert']);
+    expect(EVENT_KINDS).toEqual(['update', 'version', 'autoupdate', 'exit', 'health', 'cert']);
   });
 });
 
