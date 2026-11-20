@@ -14,12 +14,16 @@ describe('resource limits', () => {
     for (const bad of ['5m', 'lots', '-1g', '1x', '1e9']) expect(() => memoryLimit(bad)).toThrow();
     expect(cpuLimit('0.5')).toBe(5e8);
     expect(cpuLimit('2')).toBe(2e9);
-    for (const bad of ['0', '0.001', '2000', 'half', '1.234']) expect(() => cpuLimit(bad)).toThrow();
+    // What docker update --cpus 0.125 sets reads back and saves unchanged; a decimal comma is fine.
+    expect(cpuLimit('0.125')).toBe(1.25e8);
+    expect(cpuLimit('0,5')).toBe(5e8);
+    for (const bad of ['0', '0.001', '2000', 'half', '1.2345678901']) expect(() => cpuLimit(bad)).toThrow();
     expect(pidsLimit('200')).toBe(200);
     for (const bad of ['0', '-5', '1.5', 'many']) expect(() => pidsLimit(bad)).toThrow();
     expect(formatMemory(512 * 1024 ** 2)).toBe('512m');
     expect(formatMemory(1.5 * 1024 ** 3)).toBe('1.5g');
     expect(formatMemory(1000 * 1024 ** 2)).toBe('1000m');
+    expect(formatMemory(1.5 * 1024 ** 3 + 7)).toBe(String(1.5 * 1024 ** 3 + 7)); // not rounded away
   });
 
   test('sent to Docker as HostConfig, checked again there', () => {
@@ -36,6 +40,8 @@ describe('resource limits', () => {
     expect(recreateSpec(c, { Config: { Env: [] } })).toMatchObject({ memory: 268435456, nanoCpus: 1.5e9, pids: 64 });
     expect(limitsText(c.HostConfig)).toBe('memory 256m, 1.5 CPUs, 64 processes');
     expect(limitsText({ CpuQuota: 50000, CpuPeriod: 100000 })).toBe('0.5 CPUs');
+    expect(limitsText({ CpuQuota: 100000, CpuPeriod: 0 })).toBe('1 CPU'); // the kernel's default period
+    expect(limitsText({ NanoCpus: 1e9, CpusetCpus: '0-1' })).toBe('1 CPU, on CPUs 0-1');
     expect(limitsText({})).toBe('none');
   });
 });

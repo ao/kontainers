@@ -289,13 +289,14 @@ export class AutoUpdates {
       const r = await updateContainerDetailed(this.docker, id, { settleMs: this.opts.settleMs, healthTimeoutMs: this.opts.healthTimeoutMs, skipImage: held, signal: this.opts.signal, wasStopped: this.opts.wasStopped, journal: this.opts.journal, expectDigest });
       result = r.message;
       if (r.changed) {
-        // The image it ran before, if Settings says so and nothing else uses it.
-        const removed = this.opts.schedule?.cleanup() ? await removeReplacedImage(this.docker, r.oldImage) : null;
-        if (removed) result = `${result.replace(/\.$/, '')}; ${removed}.`;
         held = null;
         heldDigests = null;
         this.recreated(name, r.id, id);
-        quietly('could not record the automatic update', () => this.audit('auto-update', name));
+        // The image it ran before, if Settings says so and nothing else uses it: after the update
+        // is recorded, and on the record too.
+        const removed = this.opts.schedule?.cleanup() ? await removeReplacedImage(this.docker, r.oldImage) : null;
+        if (removed) result = `${result.replace(/\.$/, '')}; ${removed}.`;
+        quietly('could not record the automatic update', () => this.audit('auto-update', name, removed ? `note: ${removed}` : undefined));
         const what = r.running === false ? `${name} was recreated from the newest ${ref}; it was stopped before and is left stopped` : `${name} now runs the newest ${ref}`;
         note = { n: { kind: 'autoupdate', title: `Updated ${name}`, message: `${what}${r.note ? `; ${r.note}` : ''}.`, container: name } };
       }

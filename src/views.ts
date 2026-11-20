@@ -457,11 +457,13 @@ ${autoUpdates ? html`  <label class="check"><input type="checkbox" name="autoupd
 }
 
 
+const cpus = (n: number) => `${n} CPU${n === 1 ? '' : 's'}`;
 // The limits a container runs with, as docker run sets them.
 export function limitsText(h: any): string {
   const parts = [
     h?.Memory > 0 ? `memory ${formatMemory(h.Memory)}` : '',
-    h?.NanoCpus > 0 ? `${h.NanoCpus / 1e9} CPU${h.NanoCpus === 1e9 ? '' : 's'}` : h?.CpuQuota > 0 && h?.CpuPeriod > 0 ? `${Math.round((h.CpuQuota / h.CpuPeriod) * 100) / 100} CPUs` : '',
+    h?.NanoCpus > 0 ? cpus(h.NanoCpus / 1e9) : h?.CpuQuota > 0 ? cpus(Math.round((h.CpuQuota / (h.CpuPeriod > 0 ? h.CpuPeriod : 100000)) * 100) / 100) : '',
+    h?.CpusetCpus ? `on CPUs ${h.CpusetCpus}` : '',
     h?.PidsLimit > 0 ? `${h.PidsLimit} processes` : '',
   ].filter(Boolean);
   return parts.length ? parts.join(', ') : 'none';
@@ -673,7 +675,7 @@ function scheduleSection(ctx: PageCtx, s: Schedule, cleanup = false): Html {
   </fieldset>
   <fieldset><legend>On these days (none ticked: every day); a window past midnight counts for the day it starts</legend>${days}</fieldset>
   <label>Wait this many hours after a newer image is first seen (0: at once) <input name="delay" type="number" min="0" max="720" value="${s.delayHours}"></label>
-  <label class="check"><input type="checkbox" name="cleanup"${cleanup ? raw(' checked') : raw('')}> After an update that worked (automatic, Update image or Update all), remove the image the container ran before, if no other container uses it and no tag points at it</label>
+  <label class="check"><input type="checkbox" name="cleanup"${cleanup ? raw(' checked') : raw('')}> After an update that worked (automatic, Update image or Update all), remove the image the container ran before, if no other container uses it and no tag points at it. Going back to it then takes a pull of its digest, which the result names.</label>
   <button>Save</button>
 </form>`;
 }

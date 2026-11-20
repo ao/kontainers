@@ -114,17 +114,17 @@ export function memoryLimit(v: unknown): number | undefined {
 
 // CPUs, as docker run --cpus: 0.01 to 1024, in steps of 0.01. Returned in Docker's NanoCpus.
 export function cpuLimit(v: unknown): number | undefined {
-  const s = String(v ?? '').trim();
+  const s = String(v ?? '').trim().replace(',', '.');
   if (!s) return undefined;
-  if (!/^\d+(\.\d{1,2})?$/.test(s) || Number(s) < 0.01 || Number(s) > 1024) throw new ValidationError('CPUs must be a number such as 0.5 or 2, from 0.01 to 1024');
-  return Math.round(Number(s) * 100) * 1e7;
+  if (!/^\d+(\.\d{1,9})?$/.test(s) || Number(s) < 0.01 || Number(s) > 1024) throw new ValidationError('CPUs must be a number such as 0.5 or 2, from 0.01 to 1024');
+  return Math.round(Number(s) * 1e9);
 }
 
 // The most processes (and threads) the container may run, as docker run --pids-limit.
 export function pidsLimit(v: unknown): number | undefined {
   const s = String(v ?? '').trim();
   if (!s) return undefined;
-  if (!/^\d+$/.test(s) || Number(s) < 1 || Number(s) > 4194304) throw new ValidationError('the process limit must be a whole number from 1 to 4194304');
+  if (!/^\d+$/.test(s) || Number(s) < 1 || Number(s) > 2 ** 31 - 1) throw new ValidationError('the process limit must be a whole number from 1');
   return Number(s);
 }
 
@@ -133,7 +133,8 @@ export function pidsLimit(v: unknown): number | undefined {
 export function formatMemory(bytes: number): string {
   for (const [u, n] of [['t', 4], ['g', 3], ['m', 2], ['k', 1]] as [string, number][]) {
     const x = bytes / 1024 ** n;
-    if (x >= 1 && Math.abs(x * 100 - Math.round(x * 100)) < 1e-6) return `${Math.round(x * 100) / 100}${u}`;
+    // Exactly (an exact hundredth of the unit), so an untouched Edit saves the same value.
+    if (x >= 1 && Math.round(Math.round(x * 100) / 100 * 1024 ** n) === bytes) return `${Math.round(x * 100) / 100}${u}`;
   }
   return String(bytes);
 }

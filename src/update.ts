@@ -305,12 +305,15 @@ export async function updateContainerDetailed(docker: Docker, id: string, opts: 
 // was done, for the result, or null.
 export async function removeReplacedImage(docker: Docker, imageId: string): Promise<string | null> {
   try {
+    const tagged = (i: any) => (i?.RepoTags || []).some((t: string) => t && t !== '<none>:<none>');
     const img = await docker.inspectImage(imageId).catch(() => null);
-    if (!img) return null;
-    if ((img.RepoTags || []).some((t: string) => t && t !== '<none>:<none>')) return null;
+    if (!img || tagged(img)) return null;
     if ((await docker.listContainers()).some(c => c.ImageID === img.Id)) return null;
+    // Looked at again just before: a tag given to it meanwhile would go with it.
+    if (tagged(await docker.inspectImage(img.Id).catch(() => null))) return null;
     await docker.removeImage(img.Id);
-    return `removed the image it ran before (${String(img.Id).replace(/^sha256:/, '').slice(0, 12)}, ${Math.round((img.Size || 0) / 1e6)} MB)`;
+    // Its digest is what pulls it back (an image ID cannot be pulled).
+    return `removed the image it ran before (${img.RepoDigests?.[0] || String(img.Id).replace(/^sha256:/, '').slice(0, 12)})`;
   } catch (e) {
     console.error(`kontainers: could not remove the replaced image ${imageId.slice(7, 19)}: ${(e as Error).message}`);
     return null;

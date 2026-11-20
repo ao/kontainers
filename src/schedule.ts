@@ -85,7 +85,7 @@ export class ScheduleStore {
     try {
       const r = this.db.query("SELECT value FROM settings WHERE key = 'update.cleanup'").get() as { value: string } | null;
       return r ? r.value === '1' : this.cleanupFallback;
-    } catch { return this.cleanupFallback; }
+    } catch { return false; } // a database error never turns removal on
   }
   setCleanup(on: boolean): void {
     this.db.query("INSERT INTO settings (key, value) VALUES ('update.cleanup', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(on ? '1' : '0');

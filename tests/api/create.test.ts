@@ -48,11 +48,29 @@ describe.skipIf(!DOCKER)('create with limits and a network', () => {
     expect(x.NetworkSettings.Networks[NET].Aliases).toEqual(expect.arrayContaining(['db', 'primary']));
   }, 60000);
 
+  test('the proxy network is not offered, and not accepted', async () => {
+    await c.page('/networks');
+    await c.submit('/networks', { name: 'kontainers-proxy' });
+    expect(await c.page('/containers/new')).not.toContain('<option>kontainers-proxy</option>');
+    await c.page('/containers/new');
+    expect((await c.submit('/containers', { image: 'busybox:1.36', name: `cr-px-${run}`, cmd: 'true', network: 'kontainers-proxy' })).error).toContain('only bridge networks');
+    await api('/networks/kontainers-proxy', { method: 'DELETE' });
+  });
+
+  test('a bad limit in Edit settings is refused, and the container can be edited again at once', async () => {
+    await c.page(`/containers/${NAME}/edit`);
+    expect((await c.submit(`/containers/${NAME}/edit`, { image: 'busybox:1.36', cmd: 'sleep 600', ports: '', env: '', volumes: '', restart: 'no', memory: '5m' })).error).toContain('at least 6m');
+    expect(await c.page(`/containers/${NAME}`)).toContain(`action="/containers/${NAME}/stop"`); // not stuck as busy
+  });
+
   test('bad values are refused before anything is made', async () => {
     for (const [form, msg] of [
       [{ memory: '2m' }, 'at least 6m'], [{ cpus: 'lots' }, 'CPUs must be'], [{ pids: '0' }, 'process limit'],
       [{ aliases: 'x' }, 'aliases need a network'], [{ network: 'nope-' + run }, 'there is no network'], [{ network: NET, aliases: 'bad alias!' }, 'not a network alias'],
-      [{ network: 'host' }, 'network or none'],
+      [{ network: 'host' }, 'only bridge networks'], [{ network: 'none' }, 'only bridge networks'],
+      // Names already on the network: a container's name, and an alias another one has.
+      [{ network: NET, aliases: NAME }, 'already a name'], [{ network: NET, aliases: 'db' }, 'already a name'],
+      [{ network: NET, aliases: 'a b c d e f g h i j k' }, 'at most 10 aliases'],
     ] as [Record<string, string>, string][]) {
       await c.page('/containers/new');
       const r = await c.submit('/containers', { image: 'busybox:1.36', name: `cr-bad-${run}`, cmd: 'true', ...form });
