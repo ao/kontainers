@@ -445,14 +445,21 @@ ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
 }
 
 // A compose file for a container made in kontainers, and how to move the container into compose.
-export function composePage(ctx: PageCtx, c: any, yaml: string): string {
+export function composePage(ctx: PageCtx, c: any, yaml: string, info: { anonymous?: string[]; moved?: boolean } = {}): string {
   const name = String(c.Name || '').replace(/^\//, '');
+  // Compose reads cpus as a 32-bit float: say when the limit will not come back the same.
+  const nano = Number(c.HostConfig?.NanoCpus) || 0;
+  const cpusDrift = nano > 0 && Math.round(Math.fround(nano / 1e9) * 1e9) !== nano;
+  const running = !!c.State?.Running;
   return layout(`Compose file for ${name}`, ctx, html`
 <p><a href="/containers/${urlId(c)}">Back to ${name}</a></p>
-<p>The settings kontainers made ${name} with, as a compose file. Its named volumes and its network are declared <code>external</code>, so the ones it has now are used, with their data. Environment values are in the file.</p>
-<p>To move ${name} into compose: save this as <code>compose.yaml</code> in a directory of its own, stop and remove ${name} here (its named volumes stay), and run <code>docker compose up -d</code> in that directory. kontainers then shows it as part of that compose project: Update image copies it, and its settings change in the file.</p>
+<p>The settings kontainers made ${name} with, as a compose file, with the networks it is on now (not the proxy network, which kontainers connects rule targets to itself). Its volumes and networks are declared <code>external</code>, so the ones it has now are used, with their data. Environment values are in the file.</p>
+${info.anonymous?.length ? html`<p class="warn">${info.anonymous.length === 1 ? 'One of its volumes is' : `${info.anonymous.length} of its volumes are`} anonymous (Docker made ${info.anonymous.length === 1 ? 'it' : 'them'} for a <code>VOLUME</code> of the image): while no container uses ${info.anonymous.length === 1 ? 'it' : 'them'}, between removing ${name} and <code>docker compose up</code>, or after a <code>docker compose down</code>, Clean up and <code>docker volume prune</code> delete ${info.anonymous.length === 1 ? 'it' : 'them'}. Copy the data into a named volume first if it matters.</p>` : ''}
+${info.moved ? html`<p class="warn">${c.Config?.Image} names another image now than the one ${name} runs (an update that was put back, or a rebuild): compose would start that one.</p>` : ''}
+${cpusDrift ? html`<p class="warn">Compose reads the CPU limit with less precision: ${nano / 1e9} becomes about ${Math.fround(nano / 1e9)}.</p>` : ''}
+<p>To move ${name} into compose: save this as <code>compose.yaml</code> in a directory of its own and check it with <code>docker compose config</code> there, then stop and remove ${name} here (its volumes stay), and run ${running ? html`<code>docker compose up -d</code>` : html`<code>docker compose create</code> (${name} is not running, and <code>up</code> would start it)`} in that directory. kontainers then shows it as part of that compose project: Update image copies it, and its settings change in the file. An image held back from automatic updates is forgotten with the container.</p>
 <p><a class="button" href="/containers/${urlId(c)}/compose.yaml">Download compose.yaml</a></p>
-<pre class="logs"><code>${yaml}</code></pre>`, 'Containers');
+<pre class="file"><code>${yaml}</code></pre>`, 'Containers');
 }
 
 // The container a New container form is a duplicate of: why it cannot be, the network it is on
@@ -800,7 +807,7 @@ ${p.namedUnused ? html`<p class="muted">${p.namedUnused} named volume${p.namedUn
 // What each audit action means, for the Activity page.
 const ACTIONS: Record<string, string> = {
   'login': 'logged in', 'login-failed': 'failed to log in', 'logout': 'logged out', 'setup': 'created the first account',
-  'password-change': 'changed their password', 'user-create': 'added a user', 'user-remove': 'removed a user', 'user-role': 'changed the role of', 'project-update': 'updated the compose project', 'refused': 'was refused, as a read-only account,', 'backup': 'downloaded a backup',
+  'password-change': 'changed their password', 'user-create': 'added a user', 'user-remove': 'removed a user', 'user-role': 'changed the role of', 'project-update': 'updated the compose project', 'refused': 'was refused, as a read-only account,', 'backup': 'downloaded a backup', 'compose-file': 'downloaded the compose file of',
   'container-create': 'created a container', 'container-start': 'started', 'container-stop': 'stopped', 'container-restart': 'restarted',
   'container-unpause': 'unpaused', 'container-remove': 'removed', 'container-update': 'updated the image of', 'container-edit': 'edited the settings of',
   'autoupdate-on': 'turned on automatic updates for', 'autoupdate-off': 'turned off automatic updates for', 'auto-update': 'updated automatically',

@@ -118,7 +118,8 @@ describe.skipIf(!DOCKER)('create with limits and a network', () => {
     const doc = Bun.YAML.parse(await res.text()) as any;
     expect(doc.services[NAME]).toMatchObject({ image: 'busybox:1.36', container_name: NAME, command: ['sleep', '600'], mem_limit: 64 * 1024 ** 2, cpus: 0.5, pids_limit: 50 });
     expect(doc.services[NAME].networks[NET].aliases).toEqual(expect.arrayContaining(['db', 'primary']));
-    expect(doc.networks[NET]).toEqual({ external: true });
+    expect(doc.networks).toEqual({ [NET]: { external: true } });
+    expect(doc.name).toBe(NAME);
     // Not for a container made elsewhere.
     expect((await c.get(`/containers/${PEER}-nope/compose`)).status).toBe(404);
   });

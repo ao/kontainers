@@ -13,8 +13,8 @@ import { Auth, RateLimiter, safeEqual, type Session } from './auth';
 import { Docker, DockerError, summarizeStats, type CreateSpec } from './docker';
 import type { ProxyManager, RuleStore } from './proxy';
 import { snapshot } from './db';
-import { composeFile } from './compose';
-import { duplicable, editable, ownLabels, recreateSpec, removeReplacedImage, replaceContainer, updateContainerDetailed, UpdateFailed, type Journal } from './update';
+import { composeFile, type ComposeNetworks } from './compose';
+import { duplicable, editable, networkPlan, ownLabels, recreateSpec, type Endpoint, removeReplacedImage, replaceContainer, updateContainerDetailed, UpdateFailed, type Journal } from './update';
 import type { Notifier } from './notify';
 import { EVENT_KINDS } from './notify';
 import { labelledOn, type AutoUpdates } from './autoupdate';
@@ -505,6 +505,19 @@ export function createHandler(d: Deps): Handler {
   // meanwhile would leave two instances on the same data, or nothing to put back.
   // Also while a replacement a restart interrupted is not tidied up yet (its journal entry is open),
   // and for a name shortened to fit Docker's 128 characters.
+  // How a compose file connects `c`, from the networks it is on now (as Update image does), or why it
+  // cannot say. The proxy network is left out: kontainers connects rule targets to it itself.
+  const composeNetworks = (c: any): ComposeNetworks | string => {
+    const plan = networkPlan(c);
+    if (plan.disconnect) return 'it is not connected to any network (it was disconnected), and the file would connect it again';
+    if (plan.network?.mode === 'none') return { mode: 'none' };
+    const list = [...(plan.network ? [[plan.network.mode, plan.network.endpoint || {}] as [string, Endpoint]] : []), ...plan.connect].filter(([n]) => n !== cfg.proxy.network);
+    if (!plan.network) return list.length ? `it is on Docker's default bridge and on ${list.map(([n]) => n).join(', ')}, which one compose file cannot put together` : { mode: 'bridge' };
+    if (!list.length) return 'it is only on the proxy network';
+    const linked = list.find(([, ep]) => ep.Links?.length);
+    if (linked) return `it has links on ${linked[0]}, which this file does not carry`;
+    return { networks: list.map(([n, ep]) => ({ name: n, aliases: ep.Aliases, ipv4: ep.IPAMConfig?.IPv4Address as string | undefined, ipv6: ep.IPAMConfig?.IPv6Address as string | undefined, linkLocal: ep.IPAMConfig?.LinkLocalIPs as string[] | undefined, gwPriority: ep.GwPriority, driverOpts: ep.DriverOpts })) };
+  };
   // An image by reference, as a promise even when the reference is refused (a rejection, not a throw).
   const imageNamed = (ref: string) => Promise.resolve().then(() => docker.inspectImage(ref));
   const setAsideOf = (name: string) => {
@@ -737,23 +750,30 @@ export function createHandler(d: Deps): Handler {
       }
       if ((r = /^\/containers\/([^/]+)\/compose(\.yaml)?$/.exec(p))) {
         // A compose file for a container made in kontainers (administrators only: it has the
-        // environment values).
+        // environment values). Refused where Duplicate is, and where the file could not say how
+        // the container is connected.
         const c = await docker.inspect(r[1]);
-        const me = await self();
-        if (me && views.isProtected(c, me)) throw new v.ValidationError('this is kontainers itself or the container that serves its Docker API');
-        const img = await imageNamed(String(c.Image)).catch(() => null);
-        const why = duplicable(c, img);
-        if (why) throw new v.ValidationError(why.replace('can be duplicated', 'get a compose file here').replace('add another service to the compose file instead', 'its compose file is the one to use'));
-        const sp = recreateSpec(c, img);
         const name = String(c.Name || '').replace(/^\//, '');
-        const net = String(c.HostConfig?.NetworkMode || '');
-        const own = new Set([String(c.Id).slice(0, 12), name, String(c.Config?.Hostname || '')]);
-        const aliases = (c.NetworkSettings?.Networks?.[net]?.Aliases || []).filter((a: string) => !own.has(a));
+        const missing = (e: unknown) => e instanceof DockerError && e.status === 404;
+        const img = await imageNamed(String(c.Image)).catch(e => { if (missing(e)) return null; throw e; });
+        const tagged = img ? await imageNamed(String(c.Config?.Image || '')).catch(e => { if (missing(e) || e instanceof v.ValidationError) return null; throw e; }) : undefined;
+        const me = await self();
+        const why = me && views.isProtected(c, me) ? 'this is kontainers itself or the container that serves its Docker API'
+          : locks.has(name) ? `an update or edit of ${name} is running; try again when it has finished`
+          : setAsideOf(name) ? `it is the old container of ${setAsideOf(name)}, kept until its update or edit finishes`
+          : duplicable(c, img, tagged)?.replace('can be duplicated', 'get a compose file here').replace('add another service to the compose file instead', 'its compose file is the one to use') ?? composeNetworks(c);
+        if (typeof why === 'string') throw new v.ValidationError(`${name} cannot get a compose file: ${why}`);
+        const sp = recreateSpec(c, img);
         // An opt-in to automatic updates made with the switch goes in as the label, which compose keeps.
         if (d.autoUpdates?.isOn(name, c.Id, null)) sp.labels = { ...sp.labels, 'kontainers.autoupdate': 'true' };
-        const yaml = composeFile({ ...sp, name }, net && net !== 'bridge' && net !== 'default' ? { name: net, aliases } : undefined);
-        if (r[2]) return new Response(yaml, { headers: { 'content-type': 'application/yaml; charset=utf-8', 'content-disposition': 'attachment; filename="compose.yaml"' } });
-        return page(views.composePage(ctx(s), c, yaml));
+        const vols = new Map((await docker.listVolumes()).map((x: any) => [String(x.Name), x]));
+        const anonymous = (sp.volumes || []).map(m => m.source).filter(src => cleanup.isAnonymousVolume(vols.get(src)));
+        const yaml = composeFile({ ...sp, name }, why, anonymous);
+        if (r[2]) {
+          safeAudit(s, 'compose-file', name, ip);
+          return new Response(yaml, { headers: { 'content-type': 'application/yaml; charset=utf-8', 'content-disposition': 'attachment; filename="compose.yaml"' } });
+        }
+        return page(views.composePage(ctx(s), c, yaml, { anonymous, moved: !!tagged && tagged.Id !== img.Id }));
       }
       if ((r = /^\/containers\/([^/]+)\/edit$/.exec(p))) {
         const c = await docker.inspect(r[1]);

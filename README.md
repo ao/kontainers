@@ -84,10 +84,13 @@ What works, and is covered by the test suites below:
   are not ticked. A network kontainers no longer offers is named on the form, not copied, and so is
   a tag that has moved to another image since. It needs the image the container was made from, and
   its tag, to be on the host. Compose file shows (and downloads) a `compose.yaml` with the same
-  settings, its named volumes and network declared `external`, for moving the container into
-  compose: remove it in kontainers and run `docker compose up -d` with the file. Values are
-  quoted, with `$` doubled so compose does not expand it. Both are for administrators only, as
-  they show environment values.
+  settings and the networks the container is on now (aliases, fixed addresses), its volumes and
+  networks declared `external`, for moving it into compose: remove it in kontainers and run
+  `docker compose up -d` with the file. Values are quoted, with `$` doubled so compose does not
+  expand it. The page says when a volume is anonymous (a prune can delete it while no container
+  uses it) or the tag has moved to another image; a container disconnected from every network,
+  or on the default bridge and other networks, gets no file. Both are for administrators only,
+  as they show environment values.
 - update image: pull the image again and, if it changed, recreate the container under the same
   name, on the same networks with the same aliases, with the same volumes (anonymous ones
   included). One created in kontainers gets the settings it was created with. Any other

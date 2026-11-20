@@ -7,11 +7,16 @@ A compose file for a container made in kontainers.
 Upgrading from 0.10.x: nothing to do; there is no database migration.
 
 - Compose file, on the page of a container made in kontainers: a `compose.yaml` with its image,
-  command, environment, ports, volumes, labels, restart policy, limits and network with aliases,
-  shown and as a download. Its named volumes and its network are declared `external`, so moving
-  the container into compose (remove it here, `docker compose up -d` with the file) keeps their
-  data, and an opt-in to automatic updates becomes the label. Every value is quoted, with `$` doubled so that compose does not expand it.
-  Administrators only, since it has the environment values.
+  command, environment, ports, volumes, labels, restart policy, limits, and the networks it is on
+  now with their aliases and fixed addresses (not the proxy network, which kontainers connects
+  itself), shown and as a download (written to Activity). Its volumes and networks are declared
+  `external`, so moving the container into compose (remove it here, `docker compose up -d` with
+  the file) keeps them, and an opt-in to automatic updates becomes the label. The page warns
+  about anonymous volumes, which a prune deletes while no container uses them, and about a tag
+  that has moved to another image. No file for a container disconnected from every network, on
+  the default bridge and other networks, with links, or being updated. Strings are quoted, with
+  `$` doubled in values so that compose does not expand it. Administrators only, since it has
+  the environment values.
 
 ## 0.10.0
 

@@ -141,6 +141,7 @@ ul.pulls { margin: 0 0 1rem; padding-left: 1.2rem; }
 dl.facts { display: grid; grid-template-columns: max-content 1fr; gap: .35rem 1.5rem; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: .9rem 1.1rem; max-width: 46rem; }
 dl.facts dt { color: var(--muted); }
 dl.facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+pre.file { background: #0f1418; color: #d7dee2; padding: .9rem 1rem; overflow: auto; font: .82rem/1.5 var(--mono); border-radius: 6px; }
 pre#logs { background: #0f1418; color: #d7dee2; padding: .9rem 1rem; max-height: 32rem; overflow: auto; font: .82rem/1.5 var(--mono); white-space: pre-wrap; border-radius: 6px; }
 
 @media (max-width: 720px) {
