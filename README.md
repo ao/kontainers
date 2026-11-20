@@ -37,13 +37,13 @@ replacement it is rolling back), and will not stop or remove itself. The Securit
 
 Memory and start time were measured on the 0.4.0 release candidate, on an EC2 m7g.4xlarge (arm64,
 16 vCPUs, Ubuntu 24.04, Docker 29.9.3), by `scripts/test.sh screenshots` in three runs. The download
-size is the published 0.4.1 image's, and those of 0.5.0 to 0.9.0 are the same: 19 MB more than 0.3.0's, because the Bun base image grew by
+size is the published 0.4.1 image's, and those of 0.5.0 to 0.10.0 are the same: 19 MB more than 0.3.0's, because the Bun base image grew by
 16 MB (oven/bun 1.4.4-slim against 1.3.1-slim) and Caddy and Debian by 4 MB. 0.4.0 also stored
 the Caddy binary twice (16.5 MB more), which 0.4.1 fixed.
 
 | | |
 |---|---|
-| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1 to 0.9.0, compressed layers on Docker Hub |
+| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1 to 0.10.0, compressed layers on Docker Hub |
 | Memory at idle | 30 to 34 MiB, with Caddy serving two HTTPS rules and four other containers on the host (`docker stats` after 30 s, three runs) |
 | Start | 239 to 299 ms from `docker start` to a healthy `/healthz` (fifteen starts over three runs) |
 
@@ -83,7 +83,16 @@ What works, and is covered by the test suites below:
   not its ports, volumes or network aliases, which the new one needs its own of; Pull and Start
   are not ticked. A network kontainers no longer offers is named on the form, not copied, and so is
   a tag that has moved to another image since. It needs the image the container was made from, and
-  its tag, to be on the host.
+  its tag, to be on the host. Compose file shows (and downloads) a `compose.yaml` with the same
+  settings and the networks the container is on now (aliases, fixed addresses), its volumes and
+  networks declared `external`, for moving it into compose: remove it in kontainers and run
+  `docker compose up -d` with the file. Values are quoted, with `$` doubled so compose does not
+  expand it. The page says when a volume is anonymous (a prune can delete it while no container
+  uses it) or the tag has moved to another image; a container disconnected from every network,
+  on the default bridge and other networks, or with links, gets no file. The file names its own
+  compose project (the container's name, with a short hash when capitals or dots had to change),
+  and is refused when a project of that name already exists. Both are for administrators only,
+  as they show environment values.
 - update image: pull the image again and, if it changed, recreate the container under the same
   name, on the same networks with the same aliases, with the same volumes (anonymous ones
   included). One created in kontainers gets the settings it was created with. Any other
@@ -247,7 +256,7 @@ With `docker run`, mounting the socket directly:
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.10.0
+      ataiva/kontainers:0.11.0
     docker logs kontainers | grep 'setup token'
 
 The image runs as an unprivileged user, so it needs the socket's group (`--group-add`). On
@@ -328,7 +337,7 @@ to be public: they serve the sites you route, not the kontainers UI.
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.10.0
+      ataiva/kontainers:0.11.0
 
 Use your own email address: Let's Encrypt rejects reserved domains such as example.com, and
 kontainers refuses to start with one.
