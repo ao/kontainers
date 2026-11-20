@@ -16,7 +16,8 @@ import { TwoFactor } from './totp';
 import { diskFull, setDegraded } from './storage';
 import { ProxyManager, RuleStore } from './proxy';
 import { createHandler, dockerApiAddress } from './server';
-import { UpdateChecker } from './updates';
+import { UpdateChecker, checkable } from './updates';
+import { TagChecker, parseRef } from './tags';
 import { Notifier } from './notify';
 import { Registries, registryOf } from './registries';
 import { AutoUpdates } from './autoupdate';
@@ -128,9 +129,32 @@ const schedule = new ScheduleStore(db, cfg.autoUpdateSchedule, Date.now, cfg.aut
 const backups = new Backups(db, cfg.dataDir, cfg.backupKeep);
 const autoUpdates: AutoUpdates = new AutoUpdates(db, docker, updates, notifier, { settleMs: cfg.autoUpdateSettle * 1000, healthTimeoutMs: cfg.autoUpdateHealthTimeout * 1000, signal: stopping.signal, journal, wasStopped: (id: string): boolean => events.wasStopped(id), schedule }, systemAudit);
 autoUpdates.start();
-updates.onChecked = () => autoUpdates.afterCheck();
+// Newer version tags (tags.ts), listed after each update check, beside the automatic updates; a
+// note for each new one, once.
+const tags = new TagChecker(undefined, ref => registries.credentials(ref));
+const checkTags = async () => {
+  const list = await docker.listContainersWithRefs();
+  await tags.checkAll(list.map(c => String(c.Ref)).filter(checkable));
+  const byRef = new Map<string, string[]>();
+  for (const c of list) { const n = String(c.Names?.[0] || '').replace(/^\//, ''); byRef.set(String(c.Ref), [...(byRef.get(String(c.Ref)) || []), n]); }
+  for (const [ref, names] of byRef) {
+    const t = tags.get(ref);
+    const p = parseRef(ref);
+    if (!t || !p) continue;
+    for (const nt of [t.minor, t.major].filter((x): x is string => !!x)) {
+      const shown = `${ref.slice(0, ref.length - p.tag.length)}${nt}`;
+      const list = names.length > 10 ? `${names.slice(0, 10).join(', ')} and ${names.length - 10} more` : names.join(', ');
+      await notifier.send({ kind: 'update', title: `Newer version for ${ref}`, message: `${shown} is tagged; ${list} ${names.length === 1 ? 'runs' : 'run'} ${ref}. kontainers does not change tags; change it in Edit settings or the compose file.`, container: names.length === 1 ? names[0] : undefined },
+        `version:${ref}:${nt}`).catch(e => console.error(`kontainers: notification failed: ${(e as Error).message}`));
+    }
+  }
+};
+updates.onChecked = () => {
+  if (cfg.versionCheck) void checkTags().catch(e => console.error(`kontainers: newer version tags: ${(e as Error).message}`));
+  return autoUpdates.afterCheck();
+};
 const events: EventWatcher = new EventWatcher(docker, notifier, Date.now, ms => Bun.sleep(ms), name => autoUpdates.busy.has(name));
-const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, selfCandidates, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal, schedule, twoFactor: new TwoFactor(db), backups });
+const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, selfCandidates, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal, schedule, twoFactor: new TwoFactor(db), backups, tags: cfg.versionCheck ? tags : undefined });
 updates.start();
 events.replaceWindowMs = (cfg.autoUpdateSettle + cfg.autoUpdateHealthTimeout + 60) * 1000;
 events.start();

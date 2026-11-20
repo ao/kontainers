@@ -29,6 +29,7 @@ import { validateRegistry, type Registries } from './registries';
 import { validateSchedule, describeSchedule, DAY_NAMES, type ScheduleStore } from './schedule';
 import { otpauthUri, type TwoFactor } from './totp';
 import type { Backups } from './backups';
+import type { TagChecker } from './tags';
 
 export interface Deps {
   cfg: Config;
@@ -53,6 +54,7 @@ export interface Deps {
   schedule?: ScheduleStore;
   twoFactor?: TwoFactor;
   backups?: Backups;
+  tags?: TagChecker;
 }
 
 export type Handler = (req: Request, socketIp: string) => Promise<Response>;
@@ -384,7 +386,8 @@ export function createHandler(d: Deps): Handler {
     ? { get: (ref: string) => d.updates!.get(ref), lastRun: d.updates.lastRun, scheduled: cfg.updateCheckHours > 0 ? cfg.updateCheckHours : null,
         held: (name: string, id: string) => (d.autoUpdates?.isOn(name, id) ? d.autoUpdates.heldImage(name) : manualHeld(name, id)?.image ?? null),
         heldDigests: (name: string) => d.autoUpdates?.heldDigests(name) ?? failedHere.get(name)?.digests,
-        heldManually: (name: string, id: string) => !d.autoUpdates?.isOn(name, id) && !!manualHeld(name, id) }
+        heldManually: (name: string, id: string) => !d.autoUpdates?.isOn(name, id) && !!manualHeld(name, id),
+        tags: (ref: string) => d.tags?.get(ref) ?? null }
     : null;
 
   // A password asked again from a logged-in session (turning off two-factor, replacing its key,
@@ -678,6 +681,9 @@ export function createHandler(d: Deps): Handler {
         if (refusal) throw new v.ValidationError(refusal);
         const oldImage = await docker.inspectImage(c.Image).catch(() => null);
         const spec = recreateSpec(c, oldImage);
+        // From "a newer version is tagged": the image field filled in with it.
+        const want = url.searchParams.get('image');
+        if (want && /^[\w./:@-]{1,255}$/.test(want)) spec.image = want;
         return page(views.editContainerPage(ctx(s), c, spec, cfg.allowBindMounts, !oldImage));
       }
       if ((r = /^\/containers\/([^/]+)$/.exec(p))) {

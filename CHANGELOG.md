@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Newer version tags: after each update check, kontainers lists the tags of the repositories that
+  containers use with a version tag, and says (on the Containers page, the container's page and in
+  one notification per version) when a newer tag of the same shape exists, within the major
+  version and above it. It never changes a tag; for a container made in kontainers the page links
+  to Edit settings with the new tag filled in. kontainers asks the registries itself, with the
+  logins saved on the Settings page; `KONTAINERS_VERSION_CHECK=0` turns it off.
+
 ## 0.8.0
 
 Image clean-up after updates, and limits and a network for containers made in kontainers.

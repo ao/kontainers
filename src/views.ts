@@ -213,6 +213,8 @@ export interface UpdateView {
   heldDigests?: (name: string) => string[] | undefined;
   // The held image failed under Update image or Update all, not an automatic update.
   heldManually?: (name: string, id: string) => boolean;
+  // Newer version tags of a reference (tags.ts), when known.
+  tags?: (ref: string) => { minor: string | null; major: string | null; error?: string } | null;
   lastRun: number | null;
   scheduled: number | null; // hours between scheduled checks, or null when off
 }
@@ -238,8 +240,12 @@ export function heldBack(u: UpdateView | null, name: string, id: string, ref: st
   return ds && st.remoteDigest && ds.some(d => d.endsWith('@' + st.remoteDigest)) ? held : null;
 }
 
-const updateBadge = (u: UpdateView | null, ref: string, imageId: string | undefined, name = '', id = '') =>
-  !hasNewer(u, ref, imageId) ? '' : heldBack(u, name, id, ref) ? html`<small class="muted">newest image held back</small>` : html`<small class="update">newer image available</small>`;
+const updateBadge = (u: UpdateView | null, ref: string, imageId: string | undefined, name = '', id = '') => {
+  const t = u?.tags?.(ref);
+  const version = t && (t.minor || t.major) ? html` <small class="update">newer version ${t.minor || t.major}</small>` : '';
+  const image = !hasNewer(u, ref, imageId) ? '' : heldBack(u, name, id, ref) ? html`<small class="muted">newest image held back</small>` : html`<small class="update">newer image available</small>`;
+  return html`${image}${version}`;
+};
 
 // The Containers page's search and filters, from its query string.
 export type StateFilter = 'all' | 'running' | 'stopped' | 'attention';
@@ -405,6 +411,7 @@ export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, 
   ${[...(c.Config?.Entrypoint || []), ...(c.Config?.Cmd || [])].length ? html`<dt>Command</dt><dd><code>${brk(quoteArgs([...(c.Config?.Entrypoint || []), ...(c.Config?.Cmd || [])]))}</code></dd>` : ''}
   ${inspectPorts(c) ? html`<dt>Ports</dt><dd><span class="ref">${inspectPorts(c)}</span></dd>` : ''}
   <dt>Limits</dt><dd>${limitsText(c.HostConfig)}</dd>
+  ${newerVersions(updates, c, madeHere, project)}
 </dl>
 <div class="actions">${isSelf(c, me) ? selfNote(c, me) : ctx.busy?.(name) ? html`<p class="muted">${ctx.busy(name)}; reload in a moment.</p>` : containerActions(ctx, urlId(c), name, c.State?.Status || '', true)}
 ${isProtected(c, me) || ctx.busy?.(name) ? '' : html`${post(ctx, `/containers/${urlId(c)}/update`, 'Update image', { confirm: `Pull ${c.Config?.Image} and, if it changed, recreate ${name} with the same settings?`, cls: upd?.status === 'available' && !held ? 'primary' : '' })}${madeHere
@@ -457,6 +464,18 @@ ${autoUpdates ? html`  <label class="check"><input type="checkbox" name="autoupd
 </form>`, 'Containers');
 }
 
+
+// "A newer version is tagged": nginx:1.28 (and 2.0, a new major version), with a way to it.
+function newerVersions(u: UpdateView | null, c: any, madeHere: boolean, project: string): Html {
+  const ref = String(c.Config?.Image || '');
+  const t = u?.tags?.(ref);
+  if (!t || (!t.minor && !t.major)) return html``;
+  const base = ref.slice(0, ref.lastIndexOf(':') + 1);
+  const one = (tag: string, what: string) => html`<span class="ref">${base}${tag}</span>${what}${madeHere ? html` <a href="/containers/${urlId(c)}/edit?image=${encodeURIComponent(base + tag)}">use it</a>` : ''}`;
+  const parts = [t.minor ? one(t.minor, '') : '', t.major ? one(t.major, t.minor ? ' (a new major version)' : ' (a new major version)') : ''].filter(x => x !== '');
+  const how = madeHere ? '' : project ? html` <small class="muted">change the tag in the compose file to use it</small>` : html` <small class="muted">recreate the container with that tag to use it</small>`;
+  return html`<dt>Newer version</dt><dd>${parts.map((p, i) => html`${i ? ' and ' : ''}${p}`)} ${parts.length > 1 ? 'are' : 'is'} tagged.${how}</dd>`;
+}
 
 const cpus = (n: number) => `${n} CPU${n === 1 ? '' : 's'}`;
 // The limits a container runs with, as docker run sets them.

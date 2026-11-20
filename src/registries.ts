@@ -84,6 +84,13 @@ export class Registries {
     return r.registry;
   }
 
+  // The login for `ref`'s registry, for kontainers' own requests to it (listing tags), or null.
+  credentials(ref: string): { username: string; password: string } | null {
+    const h = this.header(ref);
+    if (!h) return null;
+    try { const j = JSON.parse(Buffer.from(h.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString()); return { username: j.username, password: j.password }; } catch { return null; }
+  }
+
   // The X-Registry-Auth header value for pulling or looking up `ref`, or null without a login.
   header(ref: string): string | null {
     const registry = registryOf(ref);

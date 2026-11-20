@@ -37,13 +37,13 @@ replacement it is rolling back), and will not stop or remove itself. The Securit
 
 Memory and start time were measured on the 0.4.0 release candidate, on an EC2 m7g.4xlarge (arm64,
 16 vCPUs, Ubuntu 24.04, Docker 29.9.3), by `scripts/test.sh screenshots` in three runs. The download
-size is the published 0.4.1 image's, and those of 0.5.0 to 0.7.0 are the same: 19 MB more than 0.3.0's, because the Bun base image grew by
+size is the published 0.4.1 image's, and those of 0.5.0 to 0.8.0 are the same: 19 MB more than 0.3.0's, because the Bun base image grew by
 16 MB (oven/bun 1.4.4-slim against 1.3.1-slim) and Caddy and Debian by 4 MB. 0.4.0 also stored
 the Caddy binary twice (16.5 MB more), which 0.4.1 fixed.
 
 | | |
 |---|---|
-| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1 to 0.7.0, compressed layers on Docker Hub |
+| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1 to 0.8.0, compressed layers on Docker Hub |
 | Memory at idle | 30 to 34 MiB, with Caddy serving two HTTPS rules and four other containers on the host (`docker stats` after 30 s, three runs) |
 | Start | 239 to 299 ms from `docker start` to a healthy `/healthz` (fifteen starts over three runs) |
 
@@ -105,6 +105,14 @@ What works, and is covered by the test suites below:
   this needs `DISTRIBUTION=1`, which `compose.yaml` sets. On Docker Hub, checks count toward the
   pull rate limit: from one address without a login, six checks of six images lowered the
   remaining count by three (Docker 29.9, 2026-11-14); Docker Hub reported a limit of 100 an hour.
+- newer version tags: after each update check, kontainers lists the tags of each repository
+  whose containers use a version tag (`nginx:1.27`, `postgres:17`, `v2.3-alpine`) and says when a
+  newer one of the same shape is tagged, within the major version and above it (`1.29`, and `2.1`
+  as a new major version); pre-releases and other variants (`-rc1`, another suffix) do not count.
+  It lists them itself, with the registry's API and the login saved on the Settings page, and sends
+  one notification per new version. It never changes a tag: for a container made in kontainers the
+  page links to Edit settings with the new tag filled in; others change in their compose file.
+  `KONTAINERS_VERSION_CHECK=0` turns this off.
 - automatic updates, per container (any that Update image handles; opted in on its page or with
   the label `kontainers.autoupdate=true`): after each check that
   finds a newer image, the container is updated as Update image does it, then watched for
@@ -352,6 +360,7 @@ briefly unavailable; Caddy did not renew certificates in a process that started 
 | `KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT` | `120` | Seconds to wait for "healthy" after settling, for images with a healthcheck, 0 to 3600 |
 | `KONTAINERS_AUTOUPDATE_WINDOW` | unset (any time) | When automatic updates may run, in UTC: `02:00-05:00`, optionally followed by days (`02:00-05:00 Sat,Sun`); applies until a window is saved on the Settings page |
 | `KONTAINERS_AUTOUPDATE_DELAY_HOURS` | `0` | Hours a newer image waits after a check first sees it, 0 to 720; as above |
+| `KONTAINERS_VERSION_CHECK` | `1` | `0` (or `false`): do not list registries' tags for newer version tags |
 | `KONTAINERS_AUTOUPDATE_CLEANUP` | `0` | `1` (or `true`): after an update that worked, remove the image the container ran before if no container uses it and no tag points at it; applies until the switch on the Settings page is saved |
 | `KONTAINERS_BACKUP_KEEP` | `7` | Daily copies of the database kept in `/data/backups`, 0 to 365; `0` turns them off |
 | `KONTAINERS_HTTP_PORT` / `KONTAINERS_HTTPS_PORT` | `80` / `443` | Proxy ports |
