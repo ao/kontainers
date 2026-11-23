@@ -1,5 +1,5 @@
 # kontainers: one image, one process (plus Caddy when the proxy is on).
-FROM caddy:2.11.8 AS caddy
+FROM caddy:2.11.9 AS caddy
 
 FROM oven/bun:1.4.4-slim
 # Caddy runs as the unprivileged "bun" user and only needs to bind 80 and 443. It is copied in and
