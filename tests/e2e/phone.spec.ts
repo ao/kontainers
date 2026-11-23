@@ -16,7 +16,7 @@ async function login(page: Page) {
   await expect(page).toHaveURL(/\/containers$/);
 }
 
-const PAGES = ['/containers', '/containers/new', '/images', '/cleanup', '/networks', '/volumes', '/proxy', '/activity', '/settings'];
+const PAGES = ['/containers', '/containers/new', '/images', '/cleanup', '/networks', '/volumes', '/proxy', '/events', '/events?problems=1', '/activity', '/settings'];
 
 async function check(page: Page, path: string, label: string) {
   await page.goto(path);

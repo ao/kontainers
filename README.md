@@ -37,13 +37,13 @@ replacement it is rolling back), and will not stop or remove itself. The Securit
 
 Memory and start time were measured on the 0.4.0 release candidate, on an EC2 m7g.4xlarge (arm64,
 16 vCPUs, Ubuntu 24.04, Docker 29.9.3), by `scripts/test.sh screenshots` in three runs. The download
-size is the published 0.4.1 image's, and those of 0.5.0 to 0.11.0 are the same to 0.1 MB: 19 MB more than 0.3.0's, because the Bun base image grew by
+size is the published 0.4.1 image's, and those of 0.5.0 to 0.12.0 are the same to 0.1 MB: 19 MB more than 0.3.0's, because the Bun base image grew by
 16 MB (oven/bun 1.4.4-slim against 1.3.1-slim) and Caddy and Debian by 4 MB. 0.4.0 also stored
 the Caddy binary twice (16.5 MB more), which 0.4.1 fixed.
 
 | | |
 |---|---|
-| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1 to 0.10.0, 102.0 and 102.4 MB for 0.11.0, compressed layers on Docker Hub |
+| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1 to 0.10.0, 102.0 and 102.4 MB for 0.11.0 and 0.12.0, compressed layers on Docker Hub |
 | Memory at idle | 30 to 34 MiB, with Caddy serving two HTTPS rules and four other containers on the host (`docker stats` after 30 s, three runs) |
 | Start | 239 to 299 ms from `docker start` to a healthy `/healthz` (fifteen starts over three runs) |
 
@@ -80,7 +80,14 @@ What works, and is covered by the test suites below:
   events, under its name across updates and under its own ID when renamed, kept for 30 days
   (`KONTAINERS_HISTORY_DAYS`), at most 2000 entries a name (checked hourly) and 300 000 in all.
   Docker itself keeps only its last few hundred events; at start kontainers reads those since
-  the last one it recorded, up to a day back, and the history says when some may be missing. The detail page shows the command, ports,
+  the last one it recorded, up to a day back, and the history says when some may be missing.
+  The Events page has every container's history, with a search and a filter for problems only
+  (crashes, out of memory, unhealthy). The Containers page says how many times each container
+  crashed in the last 24 hours, counted for that container (one that replaced it starts at 0);
+  three or more count as needing attention, and so does a stopped container whose last exit was
+  a crash. A crash is an exit code other than 0 that nobody
+  asked for: no docker stop, restart or kill (other than a reload signal such as HUP) since it
+  last started. Counts come from the history, so a container past 2000 entries shows fewer. The detail page shows the command, ports,
   restarts, health and limits, and CPU, memory, network and process counts refreshed every 5
   seconds. A container created in kontainers can get labels (`KEY=value`; names kontainers and
   Docker set themselves are refused, except `kontainers.autoupdate` in small letters; a label the
@@ -181,8 +188,9 @@ administrator can start a privileged container that mounts the host's filesystem
 administrator account as root.
 
 Accounts are administrators or read-only. A read-only account sees the containers, images,
-networks, volumes and proxy rules, container logs, and on the Activity page what was done to
-them (not by whom or from where); it changes nothing but its own password and two-factor login,
+networks, volumes and proxy rules, container logs, the container history and Events page
+(including removed containers'), and on the Activity page what was done to them (not by whom or
+from where); it changes nothing but its own password and two-factor login,
 and sends at most 30 forms a minute. The server refuses every other change and the database
 downloads, and the pages leave those controls out. It does not see the other accounts, logins,
 notification targets, registry logins, backups, or the logs of kontainers itself and its socket
@@ -264,7 +272,7 @@ With `docker run`, mounting the socket directly:
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.12.0
+      ataiva/kontainers:0.13.0
     docker logs kontainers | grep 'setup token'
 
 The image runs as an unprivileged user, so it needs the socket's group (`--group-add`). On
@@ -345,7 +353,7 @@ to be public: they serve the sites you route, not the kontainers UI.
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.12.0
+      ataiva/kontainers:0.13.0
 
 Use your own email address: Let's Encrypt rejects reserved domains such as example.com, and
 kontainers refuses to start with one.
