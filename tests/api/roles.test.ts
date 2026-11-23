@@ -44,7 +44,7 @@ describe.skipIf(!DOCKER)('read-only accounts', () => {
       ['/containers', { image: 'busybox:1.36', name: `ro-x-${run}` }], ['/updates/check', {}], ['/images/pull', { image: 'busybox:1.36' }], ['/networks', { name: `ro-n-${run}` }],
       ['/volumes', { name: `ro-v-${run}` }], ['/settings/users', { username: 'mallory', password: PW }], [`/settings/users/${readerId}/role`, { role: 'admin' }],
       ['/settings/notify', { kind: 'ntfy', url: 'https://ntfy.sh/x' }], ['/settings/registries', { registry: 'ghcr.io', username: 'u', password: 'p' }],
-      ['/settings/autoupdate', { start: '', end: '' }], ['/projects/x/update', {}], ['/cleanup/volumes', {}], ['/proxy', { hostname: 'a.test', targetContainer: NAME, targetPort: '80' }],
+      ['/settings/autoupdate', { start: '', end: '' }], ['/projects/x/update', {}], ['/cleanup/volumes', {}], ['/containers/bulk', { op: 'stop', [`sel_${NAME}`]: 'on' }], ['/proxy', { hostname: 'a.test', targetContainer: NAME, targetPort: '80' }],
     ];
     for (const [p, form] of tries) {
       const res = await reader.post(p, form);

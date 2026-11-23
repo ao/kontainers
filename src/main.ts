@@ -23,6 +23,7 @@ import { Registries, registryOf } from './registries';
 import { AutoUpdates } from './autoupdate';
 import { EventWatcher, checkCertificates } from './events';
 import { Backups } from './backups';
+import { History } from './history';
 
 let cfg: ReturnType<typeof loadConfig>;
 try { cfg = loadConfig(); } catch (e) { console.error(`kontainers: ${(e as Error).message}`); process.exit(1); }
@@ -156,7 +157,41 @@ updates.onChecked = () => {
   return autoUpdates.afterCheck();
 };
 const events: EventWatcher = new EventWatcher(docker, notifier, Date.now, ms => Bun.sleep(ms), name => autoUpdates.busy.has(name));
-const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, selfCandidates, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal, schedule, twoFactor: new TwoFactor(db), backups, tags: cfg.versionCheck ? tags : undefined });
+// Container history (history.ts): every event the stream brings, and at start what the daemon
+// still holds since the last one recorded (at most a day back; it keeps a few hundred).
+const history = new History(db, cfg.historyDays);
+if (history.enabled) {
+  events.onEvent = ev => history.record(ev);
+  const until = Date.now() / 1000;
+  // At most until (a row dated later, after a clock change, would make Docker refuse the range).
+  const last = history.lastSeconds();
+  const since = Math.min(until, Math.max(last ?? 0, until - 86400));
+  // Tried again for a few minutes when Docker is not there yet (it is often restarted with kontainers).
+  void (async () => {
+    for (let i = 0; i < 6; i++) {
+      try {
+        // Every kind of event, to tell whether Docker's buffer (its last 256 events) ran over.
+        const all = await docker.pastEvents({}, since, until, true);
+        for (const ev of all) { try { history.record(ev); } catch { /* one odd event */ } }
+        const first = all[0]?.timeNano ?? (all[0]?.time ? all[0].time * 1e9 : 0);
+        // Only when there was a history to continue (not on a first start) and it was recent.
+        if (last !== null && last === since && all.length >= 256 && first > since * 1e9) {
+          history.gap(first);
+          console.log('kontainers: Docker kept only its last events from while kontainers was not running; the container history may miss some');
+        }
+        return;
+      } catch (e) {
+        if (i === 5) console.error(`kontainers: could not read Docker's recent events for the container history: ${(e as Error).message}`);
+        else await Bun.sleep(30_000);
+      }
+    }
+  })();
+}
+const pruneHistory = () => { try { history.prune(); } catch (e) { console.error(`kontainers: could not prune the container history: ${(e as Error).message}`); } };
+// With KONTAINERS_HISTORY_DAYS=0 this empties it.
+pruneHistory();
+const historyTimer = setInterval(pruneHistory, 3600_000);
+const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, selfCandidates, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal, schedule, twoFactor: new TwoFactor(db), backups, tags: cfg.versionCheck ? tags : undefined, history: history.enabled ? history : undefined });
 updates.start();
 events.replaceWindowMs = (cfg.autoUpdateSettle + cfg.autoUpdateHealthTimeout + 60) * 1000;
 events.start();
@@ -263,6 +298,8 @@ async function shutdown(sig: string) {
   events.stop();
   for (const t of certTimers) clearTimeout(t as any);
   clearInterval(auditTimer);
+  clearInterval(historyTimer);
+  try { history.flush(); } catch { /* the volume is full, probably */ }
   for (const t of backupTimers) clearTimeout(t as any);
   await proxy.stop();
   db.close();

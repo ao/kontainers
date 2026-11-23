@@ -37,13 +37,13 @@ replacement it is rolling back), and will not stop or remove itself. The Securit
 
 Memory and start time were measured on the 0.4.0 release candidate, on an EC2 m7g.4xlarge (arm64,
 16 vCPUs, Ubuntu 24.04, Docker 29.9.3), by `scripts/test.sh screenshots` in three runs. The download
-size is the published 0.4.1 image's, and those of 0.5.0 to 0.10.0 are the same: 19 MB more than 0.3.0's, because the Bun base image grew by
+size is the published 0.4.1 image's, and those of 0.5.0 to 0.11.0 are the same to 0.1 MB: 19 MB more than 0.3.0's, because the Bun base image grew by
 16 MB (oven/bun 1.4.4-slim against 1.3.1-slim) and Caddy and Debian by 4 MB. 0.4.0 also stored
 the Caddy binary twice (16.5 MB more), which 0.4.1 fixed.
 
 | | |
 |---|---|
-| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1 to 0.10.0, compressed layers on Docker Hub |
+| Download | 101.9 MB (arm64) and 102.3 MB (amd64) for 0.4.1 to 0.10.0, 102.0 and 102.4 MB for 0.11.0, compressed layers on Docker Hub |
 | Memory at idle | 30 to 34 MiB, with Caddy serving two HTTPS rules and four other containers on the host (`docker stats` after 30 s, three runs) |
 | Start | 239 to 299 ms from `docker start` to a healthy `/healthz` (fifteen starts over three runs) |
 
@@ -71,8 +71,16 @@ What works, and is covered by the test suites below:
   only; kontainers never force-removes them), logs (filter, 300 to 5000 lines, timestamps on or
   off, download). Commands are split with shell quoting (`sh -c "echo hi; sleep 60"`, and
   `$'one\ntwo'` for a line break in an argument) but no shell runs and nothing is expanded. The
-  list has a search, a state filter including "needs
-  attention", and grouping by compose project. The detail page shows the command, ports,
+  list has a search, a state filter including "needs attention", grouping by compose project, and
+  a tick box per container to start, restart, stop or remove up to 200 at once, one at a time,
+  each on the Activity page (remove takes only the stopped ones; kontainers' own containers and
+  ones being updated have no box; after 20 s the page comes back and the rest goes on). The
+  detail page has the container's history: created, started, stopped (with the exit code),
+  killed (with the signal), out of memory, health changes, renamed, removed, from Docker's
+  events, under its name across updates and under its own ID when renamed, kept for 30 days
+  (`KONTAINERS_HISTORY_DAYS`), at most 2000 entries a name (checked hourly) and 300 000 in all.
+  Docker itself keeps only its last few hundred events; at start kontainers reads those since
+  the last one it recorded, up to a day back, and the history says when some may be missing. The detail page shows the command, ports,
   restarts, health and limits, and CPU, memory, network and process counts refreshed every 5
   seconds. A container created in kontainers can get labels (`KEY=value`; names kontainers and
   Docker set themselves are refused, except `kontainers.autoupdate` in small letters; a label the
@@ -256,7 +264,7 @@ With `docker run`, mounting the socket directly:
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.11.0
+      ataiva/kontainers:0.12.0
     docker logs kontainers | grep 'setup token'
 
 The image runs as an unprivileged user, so it needs the socket's group (`--group-add`). On
@@ -337,7 +345,7 @@ to be public: they serve the sites you route, not the kontainers UI.
       -v /var/run/docker.sock:/var/run/docker.sock \
       --group-add "$(stat -c %g /var/run/docker.sock)" \
       -v kontainers-data:/data \
-      ataiva/kontainers:0.11.0
+      ataiva/kontainers:0.12.0
 
 Use your own email address: Let's Encrypt rejects reserved domains such as example.com, and
 kontainers refuses to start with one.
@@ -386,6 +394,7 @@ briefly unavailable; Caddy did not renew certificates in a process that started 
 | `KONTAINERS_VERSION_CHECK` | `1` | `0` (or `false`): do not list registries' tags for newer version tags |
 | `KONTAINERS_AUTOUPDATE_CLEANUP` | `0` | `1` (or `true`): after an update that worked, remove the image the container ran before if no container uses it and no tag points at it; applies until the switch on the Settings page is saved |
 | `KONTAINERS_BACKUP_KEEP` | `7` | Daily copies of the database kept in `/data/backups`, 0 to 365; `0` turns them off |
+| `KONTAINERS_HISTORY_DAYS` | `30` | Days of container history kept, 0 to 365 (at most 2000 entries per container name); `0` turns it off and empties it |
 | `KONTAINERS_HTTP_PORT` / `KONTAINERS_HTTPS_PORT` | `80` / `443` | Proxy ports |
 
 `/healthz` returns 200 while the process runs. `/readyz` returns 200 when the database and the

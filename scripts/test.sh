@@ -110,7 +110,9 @@ if [ "$SUITE" = all ] || [ "$SUITE" = image ]; then
     -e KONTAINERS_TEST_SOCKET_PROXY=tcp://docker-proxy:2375 \
     "$BUN_IMAGE" bun test --timeout 120000 tests/image
   # The same image with a data volume that fills up: 1 MB of tmpfs, owned by the image's user.
-  start_app "--tmpfs /data:rw,size=1m,mode=0700,uid=$(docker run --rm --entrypoint id "$IMG" -u)"
+  # History off: its small writes can fit where an activity entry does not, and let SQLite reuse
+  # its log, so whether the volume is full at a given step would depend on timing.
+  start_app "--tmpfs /data:rw,size=1m,mode=0700,uid=$(docker run --rm --entrypoint id "$IMG" -u) -e KONTAINERS_HISTORY_DAYS=0"
   docker run --rm --network "container:$APP" -v "$CACHE":/cache -v "$PWD":/app -w /app \
     -e KONTAINERS_TEST_URL=http://127.0.0.1:8080 -e KONTAINERS_TEST_SETUP_TOKEN="$TOKEN" \
     "$BUN_IMAGE" bun test --timeout 180000 tests/diskfull

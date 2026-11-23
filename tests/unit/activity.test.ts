@@ -30,7 +30,7 @@ describe('activityPage', () => {
 });
 
 test('actionsMatching finds actions by their description', () => {
-  expect(actionsMatching('stopped')).toEqual(['container-stop', 'project-stop']);
+  expect(actionsMatching('stopped').sort()).toEqual(['bulk-stop', 'container-stop', 'project-stop']);
   expect(actionsMatching('automatic')).toEqual(expect.arrayContaining(['autoupdate-on', 'autoupdate-off', 'auto-update']));
   expect(actionsMatching('')).toEqual([]);
 });

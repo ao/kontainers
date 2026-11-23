@@ -5,6 +5,9 @@ import { BoundedLog, demux } from '../../src/docker';
 import { brk, esc, html, raw, formatPorts, isSelf, containersPage, containerPage, editContainerPage, imagesPage, proxyPage, loginPage, quoteArgs, setupPage } from '../../src/views';
 import type { Rule } from '../../src/proxy';
 
+// A page without the Containers page's bulk form (its buttons are for the ticked containers).
+const noBulk = (h: string) => h.replace(/<form method="post" action="\/containers\/bulk"[\s\S]*?<\/form>/, '');
+
 const local = loadConfig({});
 const pub = loadConfig({ KONTAINERS_PUBLIC_URL: 'https://k.example.com', KONTAINERS_LISTEN: '0.0.0.0:8080' });
 
@@ -105,7 +108,7 @@ describe('form parsing', () => {
 describe('pages', () => {
   const ctx = { user: 'admin', csrf: 'tok', proxyEnabled: true };
   const row = (State: string) => ({ Id: 'a'.repeat(64), Names: ['/web'], Image: 'nginx', State, Status: '', Ports: [] });
-  const buttons = (htmlText: string) => [...htmlText.matchAll(/<button[^>]*>([^<]+)<\/button>/g)].map(m => m[1]).filter(b => b !== 'Log out' && b !== 'Apply' && !b.endsWith(' all'));
+  const buttons = (htmlText: string) => [...noBulk(htmlText).matchAll(/<button[^>]*>([^<]+)<\/button>/g)].map(m => m[1]).filter(b => b !== 'Log out' && b !== 'Apply' && !b.endsWith(' all'));
 
   test('container actions follow the state; Remove only when stopped', () => {
     expect(buttons(containersPage(ctx, [row('running')]))).toEqual(['Stop', 'Restart']);
@@ -385,7 +388,7 @@ describe('round 3', () => {
   test('a container being replaced shows what is happening instead of its buttons', () => {
     const busy = (n: string) => n === 'web' ? 'being updated or edited' : n === 'web-old-12345678' ? 'old container of web, kept until its update or edit finishes' : null;
     const rows = [{ Id: 'a'.repeat(64), Names: ['/web'], Image: 'x:1', State: 'running', Status: '', Ports: [] }, { Id: '12345678' + 'b'.repeat(56), Names: ['/web-old-12345678'], Image: 'x:1', State: 'exited', Status: '', Ports: [] }];
-    const page = containersPage({ ...ctx, busy }, rows);
+    const page = noBulk(containersPage({ ...ctx, busy }, rows));
     expect(page).toContain('being updated or edited');
     expect(page).toContain('old container of web');
     expect(page).not.toContain('>Stop<');

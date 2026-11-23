@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.12.0
+
+Container history, and actions on several containers at once.
+
+Upgrading from 0.11.x: the database is migrated to schema 10 (a table for the history); a copy
+of it is saved in `/data/backups` first, and an older kontainers can be started on that copy.
+
+- History, on each container's page: what happened to it (created, started, stopped with the
+  exit code, killed with the signal, out of memory, health changes, renamed, removed), from
+  Docker's events, newest first, 50 at a time. kontainers records them as they happen (written
+  once a second), and at start reads what the daemon still holds since the last one, up to a day
+  back (Docker keeps only its last few hundred; when those ran over while kontainers was not
+  running, the history says that some events may be missing). Kept under the container's name across updates
+  and under its own ID when it is renamed, with another container's entries marked; for 30 days
+  (`KONTAINERS_HISTORY_DAYS`, 0 to turn it off), at most 2000 per name (checked hourly) and
+  300 000 in all.
+- A tick box per container on the Containers page, and Start, Restart, Stop and Remove for up to
+  200 ticked ones, one at a time, each on the Activity page; after 20 s the page comes back and
+  the rest goes on. Remove takes only stopped containers and keeps volumes; kontainers' own
+  containers and ones being updated or edited have no box, and Stop, Restart and Remove are
+  refused while kontainers cannot find its own container; a row the search hides is unticked.
+- Caddy 2.11.9.
+
 ## 0.11.0
 
 A compose file for a container made in kontainers.

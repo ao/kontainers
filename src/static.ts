@@ -45,6 +45,9 @@ th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid var(-
    anywhere, so the table fits the screen. Ordinary words (headers, states, buttons) stay whole. */
 /* Long names, references and addresses carry <wbr> break points (views.ts brk); IDs stay whole. */
 code.id { white-space: nowrap; }
+td.nowrap { white-space: nowrap; }
+td input.sel { margin: 0 .4rem 0 0; vertical-align: middle; }
+form.bulk { display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; margin: .6rem 0; }
 ul.codes { columns: 2; max-width: 24rem; font-size: 1.05rem; }
 .phone-only { display: none; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -171,8 +174,13 @@ table + form.stack, .scroll + form.stack { margin-top: 1rem; }
 `;
 
 const js = `
+// A form with several buttons (the bulk actions) asks with the one pressed; the click is noted for
+// browsers without SubmitEvent.submitter.
+var lastButton = null;
+document.addEventListener('click', function (e) { var b = e.target.closest && e.target.closest('button'); lastButton = b && b.form ? b : null; }, true);
 document.addEventListener('submit', function (e) {
-  var msg = e.target.getAttribute('data-confirm');
+  var by = e.submitter || (lastButton && lastButton.form === e.target ? lastButton : null);
+  var msg = (by && by.getAttribute('data-confirm')) || e.target.getAttribute('data-confirm');
   if (msg && !window.confirm(msg)) e.preventDefault();
 });
 (function () {
@@ -286,6 +294,9 @@ document.addEventListener('submit', function (e) {
       total++;
       var ok = keep(r, t, st);
       r.hidden = !ok;
+      // A row the filter hides is not acted on by the bulk buttons.
+      var sel = r.querySelector('input.sel');
+      if (sel && !ok) sel.checked = false;
       if (ok) { any = true; seen = true; }
     }
     if (head) head.hidden = !seen;
@@ -301,6 +312,10 @@ document.addEventListener('submit', function (e) {
   }
   q.addEventListener('input', apply);
   form.elements.state.addEventListener('change', apply);
+  // A box the browser ticks again on reload or Back, in a row the filter hides, is unticked too.
+  function untickHidden() { var bs = table.querySelectorAll('tr[hidden] input.sel'); for (var i = 0; i < bs.length; i++) bs[i].checked = false; }
+  window.addEventListener('pageshow', untickHidden);
+  untickHidden();
 })();
 `;
 

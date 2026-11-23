@@ -84,7 +84,11 @@ export class EventWatcher {
     }
   }
 
+  // Every event seen, before anything else looks at it (the container history records them).
+  onEvent?: (ev: DockerEvent) => void;
+
   async handle(ev: DockerEvent): Promise<void> {
+    try { this.onEvent?.(ev); } catch (e) { console.error(`kontainers: recording an event failed: ${(e as Error).message}`); }
     if ((ev.Type ?? 'container') !== 'container') return;
     const id = ev.Actor?.ID || ev.id || '';
     const attrs = ev.Actor?.Attributes || {};
