@@ -80,7 +80,11 @@ What works, and is covered by the test suites below:
   events, under its name across updates and under its own ID when renamed, kept for 30 days
   (`KONTAINERS_HISTORY_DAYS`), at most 2000 entries a name (checked hourly) and 300 000 in all.
   Docker itself keeps only its last few hundred events; at start kontainers reads those since
-  the last one it recorded, up to a day back, and the history says when some may be missing. The detail page shows the command, ports,
+  the last one it recorded, up to a day back, and the history says when some may be missing.
+  The Events page has every container's history, with a search and a filter for problems only
+  (crashes, out of memory, unhealthy); the list says how many times a container crashed in the
+  last 24 hours (a crash: an exit code other than 0 with no docker stop or kill in the minute
+  before), and three or more count as needing attention. The detail page shows the command, ports,
   restarts, health and limits, and CPU, memory, network and process counts refreshed every 5
   seconds. A container created in kontainers can get labels (`KEY=value`; names kontainers and
   Docker set themselves are refused, except `kontainers.autoupdate` in small letters; a label the

@@ -702,7 +702,15 @@ export function createHandler(d: Deps): Handler {
 
     if (m === 'GET') {
       if (p === '/') return redirect('/containers');
-      if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainersWithRefs(), await self(), updateView(), views.parseFilter(url.searchParams)));
+      if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainersWithRefs(), await self(), updateView(), views.parseFilter(url.searchParams), d.history?.crashes(Date.now() - 86_400_000)));
+      if (p === '/events') {
+        // Every container's history (history.ts), newest first; ?problems=1 for crashes and the like.
+        const q = (url.searchParams.get('q') || '').trim().slice(0, 100);
+        const problems = url.searchParams.get('problems') === '1';
+        const b = url.searchParams.get('before');
+        const before = b && /^\d{1,19}$/.test(b) ? b : undefined;
+        return page(views.eventsPage(ctx(s), d.history ? d.history.recent({ q, problems, before }) : null, { q, problems, before: before ?? null }, cfg.historyDays));
+      }
       // What only an administrator may open: forms that change things, and copies of the database.
       if (s.user.role === 'viewer' && (p === '/containers/new' || /^\/containers\/[^/]+\/(edit|compose|compose\.yaml)$/.test(p) || /^\/proxy\/\d+\/edit$/.test(p) || p === '/api/backup' || p.startsWith('/settings/backups/'))) {
         return p.startsWith('/api/') ? text('a read-only account cannot do this\n', 403) : page(views.layout('Read-only account', ctx(s), views.html`<p class="error">This account is read-only.</p><p><a href="/containers">Containers</a></p>`), 403);

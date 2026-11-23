@@ -116,6 +116,27 @@ export class History {
     return { rows, more: all.length > limit };
   }
 
+  // Every container's entries, newest first (the Events page). q: part of a name. problems: only
+  // crashes, running out of memory, turning unhealthy, and the notes about missing events.
+  recent(opts: { q?: string; problems?: boolean; limit?: number; before?: string } = {}): { rows: HistoryRow[]; more: boolean } {
+    this.flush();
+    const limit = opts.limit ?? 100;
+    const where = ['e.nano < CAST(? AS INTEGER)'];
+    const args: (string | number)[] = [opts.before ?? '9223372036854775807'];
+    if (opts.q) { where.push(`(e.name LIKE ? ESCAPE '\\' OR e.name = '*')`); args.push(`%${opts.q.replace(/[\\%_]/g, c => `\\${c}`)}%`); }
+    if (opts.problems) where.push(`(${CRASH} OR e.action = 'oom' OR (e.action = 'health_status' AND e.detail = 'unhealthy') OR e.action = 'gap')`);
+    const all = this.db.query(`SELECT CAST(e.nano AS TEXT) AS nano, e.container_id, e.name, e.action, e.detail FROM container_events e
+      WHERE ${where.join(' AND ')} AND e.action != 'rename_to' ORDER BY e.nano DESC LIMIT ?`).all(...args, limit + 1) as Omit<HistoryRow, 'at'>[];
+    return { rows: all.slice(0, limit).map(r => ({ ...r, at: Math.floor(Number(r.nano) / 1e6) })), more: all.length > limit };
+  }
+
+  // How many times each container name crashed since `sinceMs` (the Containers page).
+  crashes(sinceMs: number): Map<string, number> {
+    this.flush();
+    const rows = this.db.query(`SELECT e.name AS name, COUNT(*) AS n FROM container_events e WHERE e.nano > ? AND ${CRASH} GROUP BY e.name`).all(sinceMs * 1e6) as { name: string; n: number }[];
+    return new Map(rows.map(r => [r.name, r.n]));
+  }
+
   // The time of the newest event recorded, in seconds, to replay the daemon's buffer from at start.
   lastSeconds(): number | null {
     this.flush();
@@ -137,6 +158,11 @@ export class History {
     this.db.query('DELETE FROM container_events WHERE nano < (SELECT nano FROM container_events ORDER BY nano DESC LIMIT 1 OFFSET ?)').run(TOTAL - 1);
   }
 }
+
+// A crash: the container stopped with an exit code other than 0, and nobody asked it to (no kill
+// or stop of it in the minute before: docker stop ends in 137 or 143 on purpose).
+const CRASH = `(e.action = 'die' AND e.detail IS NOT NULL AND e.detail != '0' AND NOT EXISTS (SELECT 1 FROM container_events k
+  WHERE k.container_id = e.container_id AND k.action IN ('kill', 'stop') AND k.nano <= e.nano AND k.nano > e.nano - 60000000000))`;
 
 // Linux signal numbers, as docker kill reports them.
 const SIGNALS: Record<string, string> = { 1: 'SIGHUP', 2: 'SIGINT', 3: 'SIGQUIT', 6: 'SIGABRT', 9: 'SIGKILL', 10: 'SIGUSR1', 12: 'SIGUSR2', 15: 'SIGTERM', 28: 'SIGWINCH' };

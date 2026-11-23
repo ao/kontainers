@@ -141,3 +141,48 @@ describe('bulk actions on the Containers page', () => {
     expect(containersPage({ user: 'u', csrf: 'c', busy: () => 'being updated or edited' }, list)).not.toContain('/containers/bulk');
   });
 });
+
+describe('the Events page and crash counts', () => {
+  test('problems only: crashes nobody asked for, out of memory, unhealthy; a name search', () => {
+    const h = mk();
+    h.record(ev('start', A, { name: 'web_1%x' }));
+    h.record(ev('die', A, { name: 'web_1%x', exitCode: '1' }));           // a crash
+    h.record(ev('kill', B, { name: 'db', signal: '15' }));
+    h.record(ev('die', B, { name: 'db', exitCode: '143' }));               // docker stop: not a crash
+    h.record(ev('oom', C, { name: 'big' }));
+    h.record(ev('die', C, { name: 'big', exitCode: '137' }));              // killed for memory
+    h.record(ev('health_status: unhealthy', B, { name: 'db' }));
+    const all = h.recent();
+    expect(all.rows.length).toBe(7);
+    expect(h.recent({ problems: true }).rows.map(r => `${r.name} ${say(r)}`)).toEqual(['db turned unhealthy', 'big killed (exit code 137, SIGKILL)', 'big ran out of memory', 'web_1%x stopped with exit code 1']);
+    // % and _ are taken as they are, not as wildcards.
+    expect(h.recent({ q: '1%' }).rows.map(r => r.name)).toEqual(['web_1%x', 'web_1%x']);
+    expect(h.recent({ q: 'd_' }).rows).toEqual([]);
+    expect(h.crashes(0)).toEqual(new Map([['web_1%x', 1], ['big', 1]]));
+  });
+  test('the Containers page: a crash count, and three or more in a day need attention', () => {
+    const list = [
+      { Id: A, Names: ['/web'], Image: 'nginx:1', Ref: 'nginx:1', ImageID: 'sha256:1', State: 'running', Status: 'Up 2 minutes', Labels: {}, Ports: [] },
+      { Id: B, Names: ['/db'], Image: 'pg:17', Ref: 'pg:17', ImageID: 'sha256:2', State: 'running', Status: 'Up 1 hour', Labels: {}, Ports: [] },
+    ];
+    const page = containersPage({ user: 'u', csrf: 'c' }, list, null, null, undefined, new Map([['web', 4], ['db', 1]]));
+    expect(page).toContain('crashed 4 times in 24 h');
+    expect(page).toContain('crashed once in 24 h');
+    expect(page).toMatch(/<tr data-name="web"[^>]*data-attention="1"/);
+    expect(page).not.toMatch(/<tr data-name="db"[^>]*data-attention="1"/);
+    expect(page).toContain('1 needs attention');
+    const only = containersPage({ user: 'u', csrf: 'c' }, list, null, null, { q: '', state: 'attention', group: false }, new Map([['web', 4]]));
+    expect(only).toMatch(/<tr data-name="web"[^>]*data-attention="1"(?![^>]*hidden)/);
+    expect(only).toMatch(/<tr data-name="db"[^>]* hidden>/);
+  });
+  test('the page, with its filter and paging; off when the history is', async () => {
+    const { eventsPage } = await import('../../src/views');
+    const rows = [{ at: 1_700_000_000_000, nano: '1700000000000000000', container_id: 'a'.repeat(16), name: 'web', action: 'start', detail: null }, { at: 1_700_000_000_000, nano: '1699999999000000000', container_id: '', name: '*', action: 'gap', detail: null }];
+    const page = eventsPage({ user: 'u', csrf: 'c' }, { rows, more: true }, { q: 'we', problems: true, before: null }, 30);
+    expect(page).toContain('<a href="/containers/web#history">web</a>');
+    expect(page).toContain('some of what happened before this may be missing');
+    expect(page).toContain('href="/events?q=we&amp;problems=1&amp;before=1699999999000000000">Older</a>');
+    expect(page).toContain('aria-current="page">Events</a>');
+    expect(eventsPage({ user: 'u', csrf: 'c' }, null, { q: '', problems: false, before: null }, 0)).toContain('The container history is off');
+  });
+});

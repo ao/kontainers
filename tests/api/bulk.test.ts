@@ -58,5 +58,8 @@ describe.skipIf(!DOCKER)('bulk actions and history', () => {
     const page = await until('the history', async () => { const p = await c.page(`/containers/${B}`); return p.includes('stopped on request') && /<td>started<\/td>[\s\S]*<td>stopped/.test(p) ? p : null; });
     expect(page).toContain('<h2 id="history">History</h2>');
     expect(page).toContain('created from busybox:1.36');
+    // Host-wide, on the Events page; not among the problems.
+    expect(await c.page(`/events?q=${B}`)).toContain(`<a href="/containers/${B}#history">`);
+    expect(await c.page(`/events?q=${B}&problems=1`)).not.toContain(`<a href="/containers/${B}#history">`);
   }, 60000);
 });

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.13.0
+
+An Events page, and crash counts on the Containers page.
+
+Upgrading from 0.12.x: nothing to do; there is no database migration.
+
+- Events (a new page in the menu): every container's history, newest first, 100 at a time, with
+  a search by name and a filter for problems only: crashes (an exit code other than 0 with no
+  docker stop or kill in the minute before), running out of memory, turning unhealthy, and the
+  notes about events Docker did not keep.
+- The Containers page says how many times a container crashed in the last 24 hours, with a link
+  to its history; three or more count as needing attention, also while it is up again.
+
 ## 0.12.0
 
 Container history, and actions on several containers at once.
