@@ -230,3 +230,48 @@ describe('what counts as a crash', () => {
     expect(new Set(seen).size).toBe(150);
   });
 });
+
+describe('round 24', () => {
+  test('a crash loop with no starts recorded between its dies is counted quickly', () => {
+    const d = db();
+    const h = mk(d);
+    const ins = d.query('INSERT INTO container_events (nano, container_id, name, action, detail) VALUES (?, ?, ?, ?, ?)');
+    d.transaction(() => { for (let i = 0; i < 100_000; i++) ins.run((t + i) * 1e6, `c${String(i % 100).padStart(15, '0')}`, `loop-${i % 100}`, 'die', '1'); })();
+    t += 200_000;
+    const started = Date.now();
+    const counts = h.crashes(0);
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(counts.size).toBe(100);
+    expect(counts.get(`c${'0'.repeat(15)}`)).toBe(1000);
+    expect(h.recent({ problems: true, q: 'loop-7' }).rows.length).toBe(100);
+  });
+  test('a search that matches more than 500 names looks at the newest, and says so', () => {
+    const h = mk();
+    for (let i = 0; i < 600; i++) h.record(ev('die', i.toString(16).padStart(16, '0').padEnd(64, 'a'), { name: `many-${i}`, exitCode: '1' }));
+    const r = h.recent({ q: 'many-' });
+    expect(r.narrowed).toBe(true);
+    expect(r.rows[0].name).toBe('many-599');
+    expect(h.recent({ q: 'many-59' }).narrowed).toBeUndefined();
+  });
+  test('the last exit of a stopped container, by the crash rule', () => {
+    const h = mk();
+    const at = (ms: number, action: string, id: string, attrs: Record<string, string>) => ({ Type: 'container', Action: action, Actor: { ID: id, Attributes: attrs }, timeNano: (t + ms) * 1e6 });
+    h.record(at(0, 'start', A, { name: 'slowstop' }));
+    h.record(at(1000, 'kill', A, { name: 'slowstop', signal: '15' }));
+    h.record(at(66000, 'die', A, { name: 'slowstop', exitCode: '1' }));
+    h.record(at(0, 'oom', B, { name: 'oom' }));
+    h.record(at(10, 'die', B, { name: 'oom', exitCode: '137' }));
+    t += 100_000;
+    expect(h.lastExits([A, B, C])).toEqual(new Map([[A.slice(0, 16), false], [B.slice(0, 16), true]]));
+    const list = [
+      { Id: A, Names: ['/slowstop'], Image: 'x', Ref: 'x', ImageID: 'sha256:1', State: 'exited', Status: 'Exited (1) 1 minute ago', Labels: {}, Ports: [] },
+      { Id: B, Names: ['/oom'], Image: 'x', Ref: 'x', ImageID: 'sha256:1', State: 'exited', Status: 'Exited (137) 1 minute ago', Labels: {}, Ports: [] },
+      { Id: C, Names: ['/old'], Image: 'x', Ref: 'x', ImageID: 'sha256:1', State: 'exited', Status: 'Exited (2) 1 day ago', Labels: {}, Ports: [] },
+    ];
+    const page = containersPage({ user: 'u', csrf: 'c' }, list, null, null, undefined, new Map(), h.lastExits([A, B, C]));
+    expect(page).not.toMatch(/<tr data-name="slowstop"[^>]*data-attention/);
+    expect(page).toMatch(/<tr data-name="oom"[^>]*data-attention="1"/);
+    // Not recorded: the exit code decides, as before.
+    expect(page).toMatch(/<tr data-name="old"[^>]*data-attention="1"/);
+  });
+});

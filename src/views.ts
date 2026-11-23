@@ -318,10 +318,14 @@ const filterQuery = (f: ListFilter, over: Partial<ListFilter> = {}) => {
 
 // crashes: how many times each container (by the first ID_CHARS of its ID) crashed in the last 24
 // hours (history.ts); three or more is a crash loop, which needs attention even while it is up again.
-export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = null, updates: UpdateView | null = null, f: ListFilter = DEFAULT_FILTER, crashes: Map<string, number> = new Map()): string {
-  const crashed = (c: any) => crashes.get(String(c.Id || '').slice(0, ID_CHARS)) ?? 0;
+// exits: for stopped containers, whether their last exit was a crash by the history's rule (it
+// knows whether someone asked: a 137 after docker stop is not, an OOM kill is); without it, the
+// exit code decides.
+export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = null, updates: UpdateView | null = null, f: ListFilter = DEFAULT_FILTER, crashes: Map<string, number> = new Map(), exits: Map<string, boolean> = new Map()): string {
+  const key = (c: any) => String(c.Id || '').slice(0, ID_CHARS);
+  const crashed = (c: any) => crashes.get(key(c)) ?? 0;
   const looping = (c: any) => crashed(c) >= 3;
-  const attentionOf = (c: any) => needsAttention(c) || looping(c);
+  const attentionOf = (c: any) => looping(c) || (c.State === 'exited' && exits.has(key(c)) ? exits.get(key(c))! : needsAttention(c));
   const keep = (c: any) => matchesFilter(c, f, attentionOf);
   // Every container is rendered; the ones the filter leaves out carry `hidden`, so the page works
   // without script, and the search box can widen the filter as well as narrow it.
@@ -859,7 +863,7 @@ const ACTIONS: Record<string, string> = {
 // Every container's history, newest first, 100 at a time (null: the history is off).
 // current: the containers there are now, by name, as their pages are addressed (urlId): a removed
 // one has no page, so its name searches the Events instead.
-export function eventsPage(ctx: PageCtx, h: { rows: HistoryRow[]; more: boolean } | null, f: { q: string; problems: boolean; before: string | null }, days: number, current: Map<string, string> = new Map()): string {
+export function eventsPage(ctx: PageCtx, h: { rows: HistoryRow[]; more: boolean; narrowed?: boolean } | null, f: { q: string; problems: boolean; before: string | null }, days: number, current: Map<string, string> = new Map()): string {
   if (!h) return layout('Events', ctx, html`<p>The container history is off (<code>KONTAINERS_HISTORY_DAYS=0</code>), so there is nothing to show.</p>`);
   const at = (t: number) => new Date(t).toISOString().slice(0, 19).replace('T', ' ');
   const qs = (over: Record<string, string>) => { const p = new URLSearchParams(); if (f.q) p.set('q', f.q); if (f.problems) p.set('problems', '1'); for (const [k, x] of Object.entries(over)) p.set(k, x); const t = p.toString(); return t ? `/events?${t}` : '/events'; };
@@ -871,6 +875,7 @@ export function eventsPage(ctx: PageCtx, h: { rows: HistoryRow[]; more: boolean 
 <label>Container <input type="search" name="q" value="${f.q}" placeholder="part of a name" autocomplete="off"></label>
 <label class="check"><input type="checkbox" name="problems" value="1"${f.problems ? raw(' checked') : raw('')}> Only crashes, out of memory and unhealthy</label>
 <button>Apply</button>${f.q || f.problems ? html` <a href="/events">Clear</a>` : ''}</form>
+${h.narrowed ? html`<p class="warn">More than 500 container names match: these are the entries of the 500 with the newest ones. Type more of the name to see the others.</p>` : ''}
 ${rows.length ? html`<div class="scroll"><table class="history"><thead><tr><th>Time (UTC)</th><th>Container</th><th>What happened</th></tr></thead><tbody>${rows}</tbody></table></div>` : html`<p class="muted">Nothing${f.q || f.problems ? ' matches' : ' recorded yet'}${f.before ? ' before that' : ''}.</p>`}
 <p>${f.before ? html`<a href="${qs({})}">Newest</a> ` : ''}${h.more ? html`<a href="${qs({ before: h.rows[h.rows.length - 1].cursor })}">Older</a>` : ''}</p>`);
 }

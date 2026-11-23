@@ -47,7 +47,12 @@ export class History {
     // An index of the rows the problems filter and the crash counts look at, so neither scans the
     // whole table. Made here rather than by a migration: an older kontainers opens the database
     // as it is (an extra index changes nothing for it). Without room for it, the queries still work.
-    try { db.exec(`CREATE INDEX IF NOT EXISTS container_events_problem ON container_events (nano) WHERE ${PROBLEM_ROWS.replace(/e\./g, '')}`); } catch { /* slower, not wrong */ }
+    // And one of each container's starts, stops and kills, so finding the last of them before a die
+    // is a seek, not a walk back through every row in between (a crash loop's dies).
+    try {
+      db.exec(`CREATE INDEX IF NOT EXISTS container_events_problem ON container_events (nano) WHERE ${PROBLEM_ROWS.replace(/e\./g, '')}`);
+      db.exec(`CREATE INDEX IF NOT EXISTS container_events_control ON container_events (container_id, nano) WHERE ${CONTROL_ROWS.replace(/k\./g, '')}`);
+    } catch { /* slower, not wrong */ }
   }
 
   get enabled(): boolean { return this.days > 0; }
@@ -133,17 +138,21 @@ export class History {
 
   // Every container's entries, newest first (the Events page). q: part of a name. problems: only
   // crashes, running out of memory, turning unhealthy, and the notes about missing events.
-  recent(opts: { q?: string; problems?: boolean; limit?: number; before?: string } = {}): { rows: HistoryRow[]; more: boolean } {
+  // narrowed: more names matched the search than are looked at (the 500 with the newest entries).
+  recent(opts: { q?: string; problems?: boolean; limit?: number; before?: string } = {}): { rows: HistoryRow[]; more: boolean; narrowed?: boolean } {
     this.flush();
     const limit = opts.limit ?? 100;
     const pg = page(opts.before);
     const where = [pg.sql, "e.action != 'rename_to'"];
     const args: (string | number)[] = [...pg.args];
+    let narrowed = false;
     if (opts.q) {
       // The names that match first (from the name index), then their rows: a LIKE with a leading %
       // cannot use an index, and the rows of a quiet container are few among many.
       const like = `%${opts.q.replace(/[\\%_]/g, c => `\\${c}`)}%`;
-      const names = (this.db.query(`SELECT DISTINCT name FROM container_events WHERE name LIKE ? ESCAPE '\\' LIMIT 500`).all(like) as { name: string }[]).map(r => r.name);
+      const found = (this.db.query(`SELECT name FROM container_events WHERE name LIKE ? ESCAPE '\\' GROUP BY name ORDER BY MAX(nano) DESC LIMIT 501`).all(like) as { name: string }[]).map(r => r.name);
+      narrowed = found.length > 500;
+      const names = found.slice(0, 500);
       where.push(`e.name IN (${['*', ...names].map(() => '?').join(', ')})`);
       args.push('*', ...names);
     }
@@ -151,7 +160,20 @@ export class History {
     if (opts.problems) where.push(PROBLEM_ROWS, `(${CRASH} OR e.action = 'oom' OR (e.action = 'health_status' AND e.detail = 'unhealthy') OR e.action = 'gap')`);
     const all = this.db.query(`SELECT ${ROW} FROM container_events e WHERE ${where.join(' AND ')} ORDER BY e.nano DESC, e.rowid DESC LIMIT ?`)
       .all(...args, limit + 1) as Omit<HistoryRow, 'at'>[];
-    return { rows: all.slice(0, limit).map(withAt), more: all.length > limit };
+    return { rows: all.slice(0, limit).map(withAt), more: all.length > limit, ...(narrowed ? { narrowed } : {}) };
+  }
+
+  // For stopped containers (the first ID_CHARS of their IDs): whether their last exit was a crash,
+  // by the same rule as the counts. A container whose exit was not recorded is not in the map.
+  lastExits(ids: string[]): Map<string, boolean> {
+    this.flush();
+    const q = this.db.query(`SELECT ${CRASH} AS crash FROM container_events e WHERE e.container_id = ? AND e.action = 'die' ORDER BY e.nano DESC LIMIT 1`);
+    const out = new Map<string, boolean>();
+    for (const id of ids.slice(0, 500)) {
+      const r = q.get(id.slice(0, ID_CHARS)) as { crash: number } | null;
+      if (r) out.set(id.slice(0, ID_CHARS), !!r.crash);
+    }
+    return out;
   }
 
   // How many times each container (its first ID_CHARS of ID) crashed since `sinceMs` (the
@@ -191,8 +213,10 @@ const NOT_ENDING = "('1', '10', '12', '28', 'HUP', 'USR1', 'USR2', 'WINCH', 'SIG
 // A crash: the container stopped with an exit code other than 0, and nobody asked it to: of its
 // starts, stops and ending kills, the last one before the die is a start (docker stop and restart
 // send a kill first, however long the stop then takes; a reload signal does not count).
+// CONTROL_ROWS is the term the second partial index is made for, so the lookup can use it.
+const CONTROL_ROWS = "k.action IN ('start', 'stop', 'kill')";
 const CRASH = `(e.action = 'die' AND e.detail IS NOT NULL AND e.detail != '0' AND COALESCE((SELECT k.action FROM container_events k
-  WHERE k.container_id = e.container_id AND k.nano <= e.nano AND (k.action IN ('start', 'stop') OR (k.action = 'kill' AND UPPER(COALESCE(k.detail, '')) NOT IN ${NOT_ENDING}))
+  WHERE k.container_id = e.container_id AND k.nano <= e.nano AND ${CONTROL_ROWS} AND (k.action != 'kill' OR UPPER(COALESCE(k.detail, '')) NOT IN ${NOT_ENDING})
   ORDER BY k.nano DESC LIMIT 1), 'start') = 'start')`;
 
 // Linux signal numbers, as docker kill reports them.

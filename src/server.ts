@@ -524,6 +524,7 @@ export function createHandler(d: Deps): Handler {
   // Crashes per container in the last day, for the Containers page; a history that cannot be read
   // leaves the page without them rather than without the page.
   const crashCounts = () => { try { return d.history?.crashes(Date.now() - 86_400_000); } catch (e) { console.error(`kontainers: could not count crashes: ${(e as Error).message}`); return undefined; } };
+  const lastExits = (ids: string[]) => { try { return d.history?.lastExits(ids); } catch (e) { console.error(`kontainers: could not read the last exits: ${(e as Error).message}`); return undefined; } };
   // An image by reference, as a promise even when the reference is refused (a rejection, not a throw).
   const imageNamed = (ref: string) => Promise.resolve().then(() => docker.inspectImage(ref));
   const setAsideOf = (name: string) => {
@@ -705,7 +706,10 @@ export function createHandler(d: Deps): Handler {
 
     if (m === 'GET') {
       if (p === '/') return redirect('/containers');
-      if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainersWithRefs(), await self(), updateView(), views.parseFilter(url.searchParams), crashCounts()));
+      if (p === '/containers') {
+        const list = await docker.listContainersWithRefs();
+        return page(views.containersPage(ctx(s), list, await self(), updateView(), views.parseFilter(url.searchParams), crashCounts(), lastExits(list.filter(c => c.State === 'exited').map(c => String(c.Id)))));
+      }
       if (p === '/events') {
         // Every container's history (history.ts), newest first; ?problems=1 for crashes and the like.
         const q = (url.searchParams.get('q') || '').trim().slice(0, 100);

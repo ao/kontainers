@@ -84,7 +84,8 @@ What works, and is covered by the test suites below:
   The Events page has every container's history, with a search and a filter for problems only
   (crashes, out of memory, unhealthy). The Containers page says how many times each container
   crashed in the last 24 hours, counted for that container (one that replaced it starts at 0);
-  three or more count as needing attention. A crash is an exit code other than 0 that nobody
+  three or more count as needing attention, and so does a stopped container whose last exit was
+  a crash. A crash is an exit code other than 0 that nobody
   asked for: no docker stop, restart or kill (other than a reload signal such as HUP) since it
   last started. Counts come from the history, so a container past 2000 entries shows fewer. The detail page shows the command, ports,
   restarts, health and limits, and CPU, memory, network and process counts refreshed every 5

@@ -14,8 +14,11 @@ Upgrading from 0.12.x: nothing to do; there is no database migration.
   container last started, however long the stop took.
 - The Containers page says how many times a container crashed in the last 24 hours, with a link
   to its history, counted per container (one that replaced a crashing one starts at 0); three or
-  more count as needing attention, also while it is up again.
-- An index for those (made at start, not by a migration, so 0.12 still opens the database).
+  more count as needing attention, also while it is up again. A stopped container needs attention
+  when its last exit was a crash by that rule (an OOM kill's 137 does; a slow docker stop that
+  ends in exit 1 does not); without a recorded exit, its exit code decides, as before.
+- Two indexes for those (made at start, not by a migration, so 0.12 still opens the database).
+  A search that matches more than 500 names shows those with the newest entries, and says so.
 
 ## 0.12.0
 
