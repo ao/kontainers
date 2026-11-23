@@ -71,8 +71,13 @@ What works, and is covered by the test suites below:
   only; kontainers never force-removes them), logs (filter, 300 to 5000 lines, timestamps on or
   off, download). Commands are split with shell quoting (`sh -c "echo hi; sleep 60"`, and
   `$'one\ntwo'` for a line break in an argument) but no shell runs and nothing is expanded. The
-  list has a search, a state filter including "needs
-  attention", and grouping by compose project. The detail page shows the command, ports,
+  list has a search, a state filter including "needs attention", grouping by compose project, and
+  a tick box per container to start, restart, stop or remove several at once (remove takes only
+  the stopped ones; kontainers' own containers and ones being updated have no box). The detail
+  page has the container's history: created, started, stopped (with the exit code), killed,
+  out of memory, health changes, renamed, removed, from Docker's events, kept for 30 days under
+  its name across updates (`KONTAINERS_HISTORY_DAYS`; Docker itself keeps only its last few
+  hundred events). The detail page shows the command, ports,
   restarts, health and limits, and CPU, memory, network and process counts refreshed every 5
   seconds. A container created in kontainers can get labels (`KEY=value`; names kontainers and
   Docker set themselves are refused, except `kontainers.autoupdate` in small letters; a label the
@@ -386,6 +391,7 @@ briefly unavailable; Caddy did not renew certificates in a process that started 
 | `KONTAINERS_VERSION_CHECK` | `1` | `0` (or `false`): do not list registries' tags for newer version tags |
 | `KONTAINERS_AUTOUPDATE_CLEANUP` | `0` | `1` (or `true`): after an update that worked, remove the image the container ran before if no container uses it and no tag points at it; applies until the switch on the Settings page is saved |
 | `KONTAINERS_BACKUP_KEEP` | `7` | Daily copies of the database kept in `/data/backups`, 0 to 365; `0` turns them off |
+| `KONTAINERS_HISTORY_DAYS` | `30` | Days of container history kept, 0 to 365 (at most 2000 entries per container name); `0` turns it off and empties it |
 | `KONTAINERS_HTTP_PORT` / `KONTAINERS_HTTPS_PORT` | `80` / `443` | Proxy ports |
 
 `/healthz` returns 200 while the process runs. `/readyz` returns 200 when the database and the

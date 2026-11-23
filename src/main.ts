@@ -23,6 +23,7 @@ import { Registries, registryOf } from './registries';
 import { AutoUpdates } from './autoupdate';
 import { EventWatcher, checkCertificates } from './events';
 import { Backups } from './backups';
+import { History } from './history';
 
 let cfg: ReturnType<typeof loadConfig>;
 try { cfg = loadConfig(); } catch (e) { console.error(`kontainers: ${(e as Error).message}`); process.exit(1); }
@@ -156,7 +157,21 @@ updates.onChecked = () => {
   return autoUpdates.afterCheck();
 };
 const events: EventWatcher = new EventWatcher(docker, notifier, Date.now, ms => Bun.sleep(ms), name => autoUpdates.busy.has(name));
-const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, selfCandidates, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal, schedule, twoFactor: new TwoFactor(db), backups, tags: cfg.versionCheck ? tags : undefined });
+// Container history (history.ts): every event the stream brings, and at start what the daemon
+// still holds since the last one recorded (at most a day back; it keeps a few hundred).
+const history = new History(db, cfg.historyDays);
+if (history.enabled) {
+  events.onEvent = ev => history.record(ev);
+  const until = Date.now() / 1000;
+  const since = Math.max(history.lastSeconds() ?? 0, until - 86400);
+  void docker.pastEvents({}, since, until).then(list => { for (const ev of list) history.record(ev); })
+    .catch(e => console.error(`kontainers: could not read Docker's recent events for the container history: ${(e as Error).message}`));
+}
+const pruneHistory = () => { try { history.prune(); } catch (e) { console.error(`kontainers: could not prune the container history: ${(e as Error).message}`); } };
+// With KONTAINERS_HISTORY_DAYS=0 this empties it.
+pruneHistory();
+const historyTimer = setInterval(pruneHistory, 3600_000);
+const handler = createHandler({ cfg, db, auth, docker, rules, proxy, selfContainer, selfCandidates, updates, notifier, autoUpdates, events, stopping: stopping.signal, registries, journal, schedule, twoFactor: new TwoFactor(db), backups, tags: cfg.versionCheck ? tags : undefined, history: history.enabled ? history : undefined });
 updates.start();
 events.replaceWindowMs = (cfg.autoUpdateSettle + cfg.autoUpdateHealthTimeout + 60) * 1000;
 events.start();
@@ -263,6 +278,7 @@ async function shutdown(sig: string) {
   events.stop();
   for (const t of certTimers) clearTimeout(t as any);
   clearInterval(auditTimer);
+  clearInterval(historyTimer);
   for (const t of backupTimers) clearTimeout(t as any);
   await proxy.stop();
   db.close();

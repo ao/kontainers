@@ -26,6 +26,7 @@ export interface Config {
   allowInsecure: boolean;
   updateCheckHours: number; // 0 turns scheduled update checks off
   backupKeep: number; // daily database copies kept in <data>/backups; 0 turns them off
+  historyDays: number; // days of container history kept (Docker's events); 0 turns it off
   autoUpdateSettle: number; // seconds a new container is watched after an automatic update
   autoUpdateHealthTimeout: number; // seconds to wait for "healthy" after settling, when there is a healthcheck
   autoUpdateSchedule: Schedule; // when automatic updates may run, until one is saved on the Settings page
@@ -123,6 +124,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     allowInsecure: bool(env.KONTAINERS_ALLOW_INSECURE),
     updateCheckHours: optionalInt("KONTAINERS_UPDATE_CHECK_HOURS", env.KONTAINERS_UPDATE_CHECK_HOURS, 0, 720) ?? 6,
     backupKeep: optionalInt("KONTAINERS_BACKUP_KEEP", env.KONTAINERS_BACKUP_KEEP, 0, 365) ?? 7,
+    historyDays: optionalInt('KONTAINERS_HISTORY_DAYS', env.KONTAINERS_HISTORY_DAYS, 0, 365) ?? 30,
     autoUpdateSettle: optionalInt("KONTAINERS_AUTOUPDATE_SETTLE", env.KONTAINERS_AUTOUPDATE_SETTLE, 0, 600) ?? 30,
     autoUpdateHealthTimeout: optionalInt("KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT", env.KONTAINERS_AUTOUPDATE_HEALTH_TIMEOUT, 0, 3600) ?? 120,
     autoUpdateSchedule: scheduleFromEnv(env.KONTAINERS_AUTOUPDATE_WINDOW, env.KONTAINERS_AUTOUPDATE_DELAY_HOURS),

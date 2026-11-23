@@ -7,6 +7,7 @@ import { EVENTS, EVENT_KINDS, maskUrl, type Target } from './notify';
 import type { RegistryLogin } from './registries';
 import type { BackupFile } from './backups';
 import { formatMemory } from './validate';
+import { describe as describeEvent, type HistoryRow } from './history';
 import { DAY_NAMES, describeSchedule, formTime, type Schedule } from './schedule';
 
 export function esc(v: unknown): string {
@@ -319,8 +320,11 @@ export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = 
   const row = (c: any) => {
     const name = nameOf(c);
     const project = projectOf(c);
+    // A box for the bulk actions, except for kontainers itself and its Docker API container, a
+    // container being updated, and read-only accounts.
+    const box = !ctx.readOnly && !isProtected(c, me) && !ctx.busy?.(name) ? html`<input type="checkbox" class="sel" form="bulk" name="sel_${c.Id}" aria-label="Select ${name}">` : '';
     return html`<tr data-name="${name}" data-state="${c.State}"${/\(unhealthy\)/.test(c.Status || '') ? raw(' data-health="unhealthy"') : raw('')} data-search="${searchText(c)}"${needsAttention(c) ? raw(' data-attention="1"') : raw('')}${matchesFilter(c, f) ? raw('') : raw(' hidden')}>
-  <td><a href="/containers/${urlId(c)}">${brk(name)}</a>${project && !f.group ? html`<small>compose project ${brk(project)}</small>` : ''}<small class="phone-only"><span class="sr-only">Image: </span><span class="ref">${brk(refOf(c))}</span>${ctx.busy?.(name) ? '' : updateBadge(updates, refOf(c), c.ImageID, name, c.Id)}</small></td><td><span class="ref">${brk(refOf(c))}</span>${ctx.busy?.(name) ? '' : updateBadge(updates, refOf(c), c.ImageID, name, c.Id)}</td>
+  <td>${box}<a href="/containers/${urlId(c)}">${brk(name)}</a>${project && !f.group ? html`<small>compose project ${brk(project)}</small>` : ''}<small class="phone-only"><span class="sr-only">Image: </span><span class="ref">${brk(refOf(c))}</span>${ctx.busy?.(name) ? '' : updateBadge(updates, refOf(c), c.ImageID, name, c.Id)}</small></td><td><span class="ref">${brk(refOf(c))}</span>${ctx.busy?.(name) ? '' : updateBadge(updates, refOf(c), c.ImageID, name, c.Id)}</td>
   <td><span class="state ${c.State}">${c.State}</span><small>${c.Status}</small></td><td><span class="ref">${brk(formatPorts(c.Ports))}</span></td>
   <td class="actions">${isSelf(c, me) ? selfNote(c, me) : ctx.busy?.(name) ? html`<small class="muted">${ctx.busy(name)}</small>` : containerActions(ctx, urlId(c), name, c.State)}</td></tr>`;
   };
@@ -365,6 +369,11 @@ ${post(ctx, '/updates/check', 'Check for updates')}`
 ${filters}
 <div class="scroll"><table id="containers"><thead><tr><th>Name</th><th>Image</th><th>State</th><th>Published ports</th><th></th></tr></thead>
 <tbody>${rows.length ? rows : empty}</tbody></table></div>
+${list.length ? html`<form method="post" action="/containers/bulk" id="bulk" class="bulk">${csrfField(ctx)}<span class="muted">The ticked containers:</span>
+<button name="op" value="start">Start</button>
+<button name="op" value="restart" data-confirm="Restart the ticked containers?">Restart</button>
+<button name="op" value="stop" data-confirm="Stop the ticked containers?">Stop</button>
+<button name="op" value="remove" class="danger" data-confirm="Remove the ticked containers that are stopped? Running ones are left as they are, and volumes are kept.">Remove the stopped ones</button></form>` : ''}
 <p class="muted" id="nomatch"${list.length && !shown ? raw('') : raw(' hidden')}>No container matches. <a href="/containers">Show all ${list.length}</a>.</p>`);
 }
 
@@ -387,7 +396,21 @@ ${last}${held}${waiting}</form>`;
 }
 
 // made: whether kontainers made it (the server knows: a label the image carries does not count).
-export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, updates: UpdateView | null = null, auto: AutoView | null = null, made?: boolean, canDuplicate = false): string {
+export interface HistoryView { rows: HistoryRow[]; before: number | null; days: number }
+
+// What happened to the container (history.ts), newest first, 50 at a time.
+function historySection(c: any, h: HistoryView): Html {
+  const at = (t: number) => new Date(t).toISOString().slice(0, 19).replace('T', ' ');
+  const cur = String(c.Id || '');
+  const rows = h.rows.map(r => html`<tr><td class="nowrap">${at(r.at)}</td><td>${describeEvent(r)}${r.container_id !== cur ? html` <small class="muted">an earlier container under this name, ${r.container_id.slice(0, 12)}</small>` : ''}</td></tr>`);
+  const older = h.rows.length === 50 ? html`<a href="/containers/${urlId(c)}?before=${h.rows[h.rows.length - 1].at}#history">Older</a>` : '';
+  const newer = h.before ? html`<a href="/containers/${urlId(c)}#history">Newest</a>` : '';
+  return html`<h2 id="history">History</h2>
+${rows.length ? html`<div class="scroll"><table class="history"><thead><tr><th>Time (UTC)</th><th>What happened</th></tr></thead><tbody>${rows}</tbody></table></div>` : html`<p class="muted">Nothing recorded${h.before ? ' before that' : ' yet'}.</p>`}
+<p class="muted">From Docker's events, kept for ${h.days} day${h.days === 1 ? '' : 's'}, under this name across updates. ${newer} ${older}</p>`;
+}
+
+export function containerPage(ctx: PageCtx, c: any, me: SelfInfo | null = null, updates: UpdateView | null = null, auto: AutoView | null = null, made?: boolean, canDuplicate = false, history: HistoryView | null = null): string {
   const raw = updates?.get(c.Config?.Image) ?? null;
   // While it is being replaced, what the last check said is about the container going away.
   const upd = raw && !ctx.busy?.(String(c.Name || '').replace(/^\//, '')) ? { ...containerStatus(raw, c.Image)!, checkedAt: raw.checkedAt } : null;
@@ -432,6 +455,7 @@ ${c.State?.Status === 'running' ? html`<h2>Usage</h2>
 <h2>Environment (values hidden)</h2><ul>${env.length ? env : html`<li>none</li>`}</ul>
 <h2>Mounts</h2><ul>${mounts.length ? mounts : html`<li>none</li>`}</ul>
 <h2>Networks</h2><ul>${nets}</ul>
+${history ? historySection(c, history) : ''}
 <h2>Logs</h2>
 <div class="logbar">
   <label>Filter <input type="search" id="logfilter" placeholder="text to look for" autocomplete="off"></label>
@@ -819,6 +843,7 @@ const ACTIONS: Record<string, string> = {
   'registry-add': 'saved the registry login for', 'registry-remove': 'removed the registry login for',
   'schedule-set': 'set automatic updates to run',
   '2fa-enable': 'turned on two-factor login for', '2fa-disable': 'turned off two-factor login for', '2fa-reset': 'turned off the two-factor login of',
+  'bulk-start': 'started the ticked containers', 'bulk-stop': 'stopped the ticked containers', 'bulk-restart': 'restarted the ticked containers', 'bulk-remove': 'removed the ticked containers', 'bulk-action': 'acted on the ticked containers',
   'project-start': 'started every container of', 'project-stop': 'stopped every container of', 'project-restart': 'restarted every container of',
   'cleanup-images': 'cleaned up images', 'cleanup-networks': 'cleaned up networks', 'cleanup-volumes': 'cleaned up anonymous volumes',
 };

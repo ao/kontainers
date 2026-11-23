@@ -14,6 +14,7 @@ import { Docker, DockerError, summarizeStats, type CreateSpec } from './docker';
 import type { ProxyManager, RuleStore } from './proxy';
 import { snapshot } from './db';
 import { composeFile, projectName, type ComposeNetworks } from './compose';
+import type { History } from './history';
 import { duplicable, editable, networkPlan, ownLabels, recreateSpec, type Endpoint, removeReplacedImage, replaceContainer, updateContainerDetailed, UpdateFailed, type Journal } from './update';
 import type { Notifier } from './notify';
 import { EVENT_KINDS } from './notify';
@@ -56,6 +57,7 @@ export interface Deps {
   twoFactor?: TwoFactor;
   backups?: Backups;
   tags?: TagChecker;
+  history?: History;
 }
 
 export type Handler = (req: Request, socketIp: string) => Promise<Response>;
@@ -807,7 +809,10 @@ export function createHandler(d: Deps): Handler {
         const own = labelledOn(c.Config?.Labels) && !labelledOn(img?.Config?.Labels) ? c.Config?.Labels : null;
         const auto = d.autoUpdates ? { on: d.autoUpdates.isOn(name, c.Id, own), label: labelledOn(own), row, waiting: d.autoUpdates.waitingFor(name) } : null;
         const dupOk = duplicable(c, img) === null && duplicable(c, img, await imageNamed(String(c.Config?.Image || '')).catch(() => null)) === null;
-        return page(views.containerPage(ctx(s), c, await self(), updateView(), auto, editable(c, img) === null || (c.Config?.Labels?.['kontainers.managed'] === 'true' && img?.Config?.Labels?.['kontainers.managed'] !== 'true'), dupOk));
+        // Its history, by name (older pages with ?before=<ms>).
+        const before = v.intInRange(url.searchParams.get('before'), 1, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
+        const hist = d.history ? { rows: d.history.forName(name, 50, before), before: before === Number.MAX_SAFE_INTEGER ? null : before, days: cfg.historyDays } : null;
+        return page(views.containerPage(ctx(s), c, await self(), updateView(), auto, editable(c, img) === null || (c.Config?.Labels?.['kontainers.managed'] === 'true' && img?.Config?.Labels?.['kontainers.managed'] !== 'true'), dupOk, hist));
       }
       // kontainers' own logs (and its socket proxy's) are for administrators: they can hold what
       // only Settings shows.
@@ -1104,6 +1109,42 @@ export function createHandler(d: Deps): Handler {
         if (!finished) { background = true; work.catch(() => {}); return `Updating ${todo.length} container${todo.length === 1 ? '' : 's'} of ${project}, one at a time; this takes a while. Each update shows on the Activity page; reload the Containers page later.`; }
         const msg = summary();
         if (fails.length) throw new v.ValidationError(`${msg}; ${fails.join('; ')}`);
+        return `${msg}.`;
+      });
+    }
+    if (p === '/containers/bulk') {
+      // The containers ticked on the Containers page: one action each, in turn. kontainers and its
+      // Docker API container, and containers being updated, are left out; Remove only takes
+      // stopped ones (never forced) and keeps their volumes.
+      const op = String(f.op || '');
+      return act(s, ip, '/containers', `bulk-${/^(start|stop|restart|remove)$/.test(op) ? op : 'action'}`, null, async () => {
+        if (!/^(start|stop|restart|remove)$/.test(op)) throw new v.ValidationError('choose Start, Restart, Stop or Remove');
+        const ids = Object.keys(f).filter(k => k.startsWith('sel_')).map(k => k.slice(4));
+        if (!ids.length) throw new v.ValidationError('tick the containers to act on first');
+        if (ids.length > 200) throw new v.ValidationError('at most 200 containers at a time');
+        for (const id of ids) v.ref(id);
+        const me = await self();
+        const done: string[] = [], skipped: string[] = [], fails: string[] = [];
+        for (const id of ids) {
+          let c: any;
+          try { c = await docker.inspect(id); } catch (e) { fails.push(`${id.slice(0, 12)}: ${errorMessage(e)}`); continue; }
+          const n = String(c.Name || '').replace(/^\//, '');
+          if (me && views.isProtected(c, me)) { skipped.push(`${n} (kontainers' own)`); continue; }
+          if (locks.has(n) || setAsideOf(n)) { skipped.push(`${n} (an update or edit is running)`); continue; }
+          const st = String(c.State?.Status || '');
+          const fits = op === 'start' ? st !== 'running' && st !== 'restarting' : op === 'remove' ? !['running', 'restarting', 'paused'].includes(st) : st === 'running' || st === 'restarting';
+          if (!fits) { skipped.push(`${n} (${st})`); continue; }
+          try {
+            if (op === 'start') await docker.start(c.Id);
+            else if (op === 'stop') await docker.stop(c.Id);
+            else if (op === 'restart') await docker.restart(c.Id);
+            else { await docker.remove(c.Id, false); d.autoUpdates?.forget(n); }
+            done.push(n);
+          } catch (e) { fails.push(`${n}: ${errorMessage(e)}`); }
+        }
+        const verb = { start: 'Started', stop: 'Stopped', restart: 'Restarted', remove: 'Removed' }[op as 'start'];
+        const msg = `${done.length ? `${verb} ${done.join(', ')}` : `${verb} none`}${skipped.length ? `; left as they are: ${skipped.join(', ')}` : ''}`;
+        if (fails.length) throw new v.ValidationError(`${msg}; failed: ${fails.join('; ')}`);
         return `${msg}.`;
       });
     }

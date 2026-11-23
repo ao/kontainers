@@ -15,6 +15,8 @@ describe('what a read-only account is offered', () => {
     expect(page).not.toContain('/projects/shop/');
     expect(page).not.toContain('href="/containers/new"');
     expect(page).not.toContain('action="/updates/check"');
+    expect(page).not.toContain('class="sel"');
+    expect(page).not.toContain('/containers/bulk');
     expect(page).toContain('action="/logout"');
     expect(page).toContain('read-only');
     const admin = views.containersPage(ctx(false), [container]);
