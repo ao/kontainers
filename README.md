@@ -82,9 +82,11 @@ What works, and is covered by the test suites below:
   Docker itself keeps only its last few hundred events; at start kontainers reads those since
   the last one it recorded, up to a day back, and the history says when some may be missing.
   The Events page has every container's history, with a search and a filter for problems only
-  (crashes, out of memory, unhealthy); the list says how many times a container crashed in the
-  last 24 hours (a crash: an exit code other than 0 with no docker stop or kill in the minute
-  before), and three or more count as needing attention. The detail page shows the command, ports,
+  (crashes, out of memory, unhealthy). The Containers page says how many times each container
+  crashed in the last 24 hours, counted for that container (one that replaced it starts at 0);
+  three or more count as needing attention. A crash is an exit code other than 0 that nobody
+  asked for: no docker stop, restart or kill (other than a reload signal such as HUP) since it
+  last started. Counts come from the history, so a container past 2000 entries shows fewer. The detail page shows the command, ports,
   restarts, health and limits, and CPU, memory, network and process counts refreshed every 5
   seconds. A container created in kontainers can get labels (`KEY=value`; names kontainers and
   Docker set themselves are refused, except `kontainers.autoupdate` in small letters; a label the
@@ -185,8 +187,9 @@ administrator can start a privileged container that mounts the host's filesystem
 administrator account as root.
 
 Accounts are administrators or read-only. A read-only account sees the containers, images,
-networks, volumes and proxy rules, container logs, and on the Activity page what was done to
-them (not by whom or from where); it changes nothing but its own password and two-factor login,
+networks, volumes and proxy rules, container logs, the container history and Events page
+(including removed containers'), and on the Activity page what was done to them (not by whom or
+from where); it changes nothing but its own password and two-factor login,
 and sends at most 30 forms a minute. The server refuses every other change and the database
 downloads, and the pages leave those controls out. It does not see the other accounts, logins,
 notification targets, registry logins, backups, or the logs of kontainers itself and its socket

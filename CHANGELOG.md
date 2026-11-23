@@ -7,11 +7,15 @@ An Events page, and crash counts on the Containers page.
 Upgrading from 0.12.x: nothing to do; there is no database migration.
 
 - Events (a new page in the menu): every container's history, newest first, 100 at a time, with
-  a search by name and a filter for problems only: crashes (an exit code other than 0 with no
-  docker stop or kill in the minute before), running out of memory, turning unhealthy, and the
-  notes about events Docker did not keep.
+  a search by name and a filter for problems only: crashes, running out of memory, turning
+  unhealthy, and the notes about events Docker did not keep. A removed container's name searches
+  the Events (it has no page any more). A crash is an exit code other than 0 that nobody asked
+  for: no docker stop, restart or kill (a reload signal such as HUP does not count) since the
+  container last started, however long the stop took.
 - The Containers page says how many times a container crashed in the last 24 hours, with a link
-  to its history; three or more count as needing attention, also while it is up again.
+  to its history, counted per container (one that replaced a crashing one starts at 0); three or
+  more count as needing attention, also while it is up again.
+- An index for those (made at start, not by a migration, so 0.12 still opens the database).
 
 ## 0.12.0
 

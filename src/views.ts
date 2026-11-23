@@ -287,6 +287,7 @@ const nameOf = listName;
 // keeps working; the ID only when a name is unusable.
 // By name, so a page survives a recreation; by ID when the name is not one kontainers accepts in a
 // URL (Docker allows names longer than 128 characters, which compose makes from long project names).
+export const urlIdOf = (c: any): string => urlId(c);
 const urlId = (c: any): string => { const n = String(c.Names?.[0] || c.Name || '').replace(/^\//, ''); return /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/.test(n) ? n : c.Id; };
 // The image reference a listed container was created with (Ref, from listContainersWithRefs), or the
 // list's own Image field.
@@ -315,10 +316,11 @@ const filterQuery = (f: ListFilter, over: Partial<ListFilter> = {}) => {
   return s ? `/containers?${s}` : '/containers';
 };
 
-// crashes: how many times each name crashed in the last 24 hours (history.ts); three or more is a
-// crash loop, which needs attention even while the container is up again.
+// crashes: how many times each container (by the first ID_CHARS of its ID) crashed in the last 24
+// hours (history.ts); three or more is a crash loop, which needs attention even while it is up again.
 export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = null, updates: UpdateView | null = null, f: ListFilter = DEFAULT_FILTER, crashes: Map<string, number> = new Map()): string {
-  const looping = (c: any) => (crashes.get(nameOf(c)) ?? 0) >= 3;
+  const crashed = (c: any) => crashes.get(String(c.Id || '').slice(0, ID_CHARS)) ?? 0;
+  const looping = (c: any) => crashed(c) >= 3;
   const attentionOf = (c: any) => needsAttention(c) || looping(c);
   const keep = (c: any) => matchesFilter(c, f, attentionOf);
   // Every container is rendered; the ones the filter leaves out carry `hidden`, so the page works
@@ -331,7 +333,7 @@ export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = 
     const box = !ctx.readOnly && !isProtected(c, me) && !ctx.busy?.(name) ? html`<input type="checkbox" class="sel" form="bulk" name="sel_${c.Id}" autocomplete="off" aria-label="Select ${name}">` : '';
     return html`<tr data-name="${name}" data-state="${c.State}"${/\(unhealthy\)/.test(c.Status || '') ? raw(' data-health="unhealthy"') : raw('')} data-search="${searchText(c)}"${attentionOf(c) ? raw(' data-attention="1"') : raw('')}${keep(c) ? raw('') : raw(' hidden')}>
   <td>${box}<a href="/containers/${urlId(c)}">${brk(name)}</a>${project && !f.group ? html`<small>compose project ${brk(project)}</small>` : ''}<small class="phone-only"><span class="sr-only">Image: </span><span class="ref">${brk(refOf(c))}</span>${ctx.busy?.(name) ? '' : updateBadge(updates, refOf(c), c.ImageID, name, c.Id)}</small></td><td><span class="ref">${brk(refOf(c))}</span>${ctx.busy?.(name) ? '' : updateBadge(updates, refOf(c), c.ImageID, name, c.Id)}</td>
-  <td><span class="state ${c.State}">${c.State}</span><small>${c.Status}</small>${crashes.get(name) ? html`<small class="${looping(c) ? 'warn' : 'muted'}"><a href="/containers/${urlId(c)}#history">crashed ${crashes.get(name) === 1 ? 'once' : `${crashes.get(name)} times`} in 24 h</a></small>` : ''}</td><td><span class="ref">${brk(formatPorts(c.Ports))}</span></td>
+  <td><span class="state ${c.State}">${c.State}</span><small>${c.Status}</small>${crashed(c) ? html`<small><a class="${looping(c) ? 'warn' : 'muted'}" href="/containers/${urlId(c)}#history">crashed ${crashed(c) === 1 ? 'once' : `${crashed(c)} times`} in 24 h</a></small>` : ''}</td><td><span class="ref">${brk(formatPorts(c.Ports))}</span></td>
   <td class="actions">${isSelf(c, me) ? selfNote(c, me) : ctx.busy?.(name) ? html`<small class="muted">${ctx.busy(name)}</small>` : containerActions(ctx, urlId(c), name, c.State)}</td></tr>`;
   };
   const sorted = [...list].sort((a, b) => nameOf(a).localeCompare(nameOf(b)));
@@ -409,7 +411,7 @@ function historySection(c: any, h: HistoryView): Html {
   const at = (t: number) => new Date(t).toISOString().slice(0, 19).replace('T', ' ');
   const cur = String(c.Id || '').slice(0, ID_CHARS);
   const rows = h.rows.map(r => html`<tr><td class="nowrap">${at(r.at)}</td><td>${describeEvent(r)}${r.container_id !== cur ? html` <small class="muted">another container under this name, ${r.container_id.slice(0, 12)}</small>` : ''}</td></tr>`);
-  const older = h.more ? html`<a href="/containers/${urlId(c)}?before=${h.rows[h.rows.length - 1].nano}#history">Older</a>` : '';
+  const older = h.more ? html`<a href="/containers/${urlId(c)}?before=${h.rows[h.rows.length - 1].cursor}#history">Older</a>` : '';
   const newer = h.before ? html`<a href="/containers/${urlId(c)}#history">Newest</a>` : '';
   return html`<h2 id="history">History</h2>
 ${rows.length ? html`<div class="scroll"><table class="history"><thead><tr><th>Time (UTC)</th><th>What happened</th></tr></thead><tbody>${rows}</tbody></table></div>` : html`<p class="muted">Nothing recorded${h.before ? ' before that' : ' yet'}.</p>`}
@@ -855,19 +857,22 @@ const ACTIONS: Record<string, string> = {
 };
 
 // Every container's history, newest first, 100 at a time (null: the history is off).
-export function eventsPage(ctx: PageCtx, h: { rows: HistoryRow[]; more: boolean } | null, f: { q: string; problems: boolean; before: string | null }, days: number): string {
+// current: the containers there are now, by name, as their pages are addressed (urlId): a removed
+// one has no page, so its name searches the Events instead.
+export function eventsPage(ctx: PageCtx, h: { rows: HistoryRow[]; more: boolean } | null, f: { q: string; problems: boolean; before: string | null }, days: number, current: Map<string, string> = new Map()): string {
   if (!h) return layout('Events', ctx, html`<p>The container history is off (<code>KONTAINERS_HISTORY_DAYS=0</code>), so there is nothing to show.</p>`);
   const at = (t: number) => new Date(t).toISOString().slice(0, 19).replace('T', ' ');
   const qs = (over: Record<string, string>) => { const p = new URLSearchParams(); if (f.q) p.set('q', f.q); if (f.problems) p.set('problems', '1'); for (const [k, x] of Object.entries(over)) p.set(k, x); const t = p.toString(); return t ? `/events?${t}` : '/events'; };
-  const rows = h.rows.map(r => html`<tr><td class="nowrap">${at(r.at)}</td><td>${r.name === '*' ? html`<span class="muted">all</span>` : html`<a href="/containers/${encodeURIComponent(r.name)}#history">${brk(r.name)}</a>`}</td><td>${describeEvent(r)}</td></tr>`);
+  const link = (n: string) => (current.has(n) ? html`<a href="/containers/${current.get(n)!}#history">${brk(n)}</a>` : html`<a href="/events?q=${encodeURIComponent(n.slice(0, 100))}">${brk(n)}</a> <small class="muted">removed</small>`);
+  const rows = h.rows.map(r => html`<tr><td class="nowrap">${at(r.at)}</td><td>${r.name === '*' ? html`<span class="muted">all</span>` : link(r.name)}</td><td>${describeEvent(r)}</td></tr>`);
   return layout('Events', ctx, html`
-<p class="muted">What happened to the containers on this host, from Docker's events, kept for ${days} day${days === 1 ? '' : 's'}. Each container's page has its own.</p>
+<p class="muted">What happened to the containers on this host, from Docker's events, kept for ${days} day${days === 1 ? '' : 's'} (less for a container with more than 2000 entries). Each container's page has its own.</p>
 <form method="get" action="/events" class="filters" role="search">
 <label>Container <input type="search" name="q" value="${f.q}" placeholder="part of a name" autocomplete="off"></label>
 <label class="check"><input type="checkbox" name="problems" value="1"${f.problems ? raw(' checked') : raw('')}> Only crashes, out of memory and unhealthy</label>
 <button>Apply</button>${f.q || f.problems ? html` <a href="/events">Clear</a>` : ''}</form>
 ${rows.length ? html`<div class="scroll"><table class="history"><thead><tr><th>Time (UTC)</th><th>Container</th><th>What happened</th></tr></thead><tbody>${rows}</tbody></table></div>` : html`<p class="muted">Nothing${f.q || f.problems ? ' matches' : ' recorded yet'}${f.before ? ' before that' : ''}.</p>`}
-<p>${f.before ? html`<a href="${qs({})}">Newest</a> ` : ''}${h.more ? html`<a href="${qs({ before: h.rows[h.rows.length - 1].nano })}">Older</a>` : ''}</p>`);
+<p>${f.before ? html`<a href="${qs({})}">Newest</a> ` : ''}${h.more ? html`<a href="${qs({ before: h.rows[h.rows.length - 1].cursor })}">Older</a>` : ''}</p>`);
 }
 
 export interface AuditRow { id: number; at: number; username: string | null; action: string; target: string | null; ip: string | null; result: string | null }

@@ -14,7 +14,7 @@ import { Docker, DockerError, summarizeStats, type CreateSpec } from './docker';
 import type { ProxyManager, RuleStore } from './proxy';
 import { snapshot } from './db';
 import { composeFile, projectName, type ComposeNetworks } from './compose';
-import type { History } from './history';
+import { CURSOR, type History } from './history';
 import { duplicable, editable, networkPlan, ownLabels, recreateSpec, type Endpoint, removeReplacedImage, replaceContainer, updateContainerDetailed, UpdateFailed, type Journal } from './update';
 import type { Notifier } from './notify';
 import { EVENT_KINDS } from './notify';
@@ -521,6 +521,9 @@ export function createHandler(d: Deps): Handler {
     if (linked) return `it has links on ${linked[0]}, which this file does not carry`;
     return { networks: list.map(([n, ep]) => ({ name: n, aliases: ep.Aliases, ipv4: ep.IPAMConfig?.IPv4Address as string | undefined, ipv6: ep.IPAMConfig?.IPv6Address as string | undefined, linkLocal: ep.IPAMConfig?.LinkLocalIPs as string[] | undefined, gwPriority: ep.GwPriority, driverOpts: ep.DriverOpts })) };
   };
+  // Crashes per container in the last day, for the Containers page; a history that cannot be read
+  // leaves the page without them rather than without the page.
+  const crashCounts = () => { try { return d.history?.crashes(Date.now() - 86_400_000); } catch (e) { console.error(`kontainers: could not count crashes: ${(e as Error).message}`); return undefined; } };
   // An image by reference, as a promise even when the reference is refused (a rejection, not a throw).
   const imageNamed = (ref: string) => Promise.resolve().then(() => docker.inspectImage(ref));
   const setAsideOf = (name: string) => {
@@ -702,14 +705,15 @@ export function createHandler(d: Deps): Handler {
 
     if (m === 'GET') {
       if (p === '/') return redirect('/containers');
-      if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainersWithRefs(), await self(), updateView(), views.parseFilter(url.searchParams), d.history?.crashes(Date.now() - 86_400_000)));
+      if (p === '/containers') return page(views.containersPage(ctx(s), await docker.listContainersWithRefs(), await self(), updateView(), views.parseFilter(url.searchParams), crashCounts()));
       if (p === '/events') {
         // Every container's history (history.ts), newest first; ?problems=1 for crashes and the like.
         const q = (url.searchParams.get('q') || '').trim().slice(0, 100);
         const problems = url.searchParams.get('problems') === '1';
         const b = url.searchParams.get('before');
-        const before = b && /^\d{1,19}$/.test(b) ? b : undefined;
-        return page(views.eventsPage(ctx(s), d.history ? d.history.recent({ q, problems, before }) : null, { q, problems, before: before ?? null }, cfg.historyDays));
+        const before = b && CURSOR.test(b) ? b : undefined;
+        const current = new Map((await docker.listContainers()).map(c => [views.listName(c), views.urlIdOf(c)]));
+        return page(views.eventsPage(ctx(s), d.history ? d.history.recent({ q, problems, before }) : null, { q, problems, before: before ?? null }, cfg.historyDays, current));
       }
       // What only an administrator may open: forms that change things, and copies of the database.
       if (s.user.role === 'viewer' && (p === '/containers/new' || /^\/containers\/[^/]+\/(edit|compose|compose\.yaml)$/.test(p) || /^\/proxy\/\d+\/edit$/.test(p) || p === '/api/backup' || p.startsWith('/settings/backups/'))) {
@@ -819,7 +823,7 @@ export function createHandler(d: Deps): Handler {
         const dupOk = duplicable(c, img) === null && duplicable(c, img, await imageNamed(String(c.Config?.Image || '')).catch(() => null)) === null;
         // Its history, by name (older pages with ?before=<ms>).
         const b = url.searchParams.get('before');
-        const before = b && /^\d{1,19}$/.test(b) ? b : undefined;
+        const before = b && CURSOR.test(b) ? b : undefined;
         const hist = d.history ? { ...d.history.forName(name, String(c.Id), 50, before), before: before ?? null, days: cfg.historyDays } : null;
         return page(views.containerPage(ctx(s), c, await self(), updateView(), auto, editable(c, img) === null || (c.Config?.Labels?.['kontainers.managed'] === 'true' && img?.Config?.Labels?.['kontainers.managed'] !== 'true'), dupOk, hist));
       }

@@ -19,7 +19,17 @@ export const ID_CHARS = 16;
 const FULL_DISK = (e: unknown) => diskFull(e) || /SQLITE_IOERR|disk I\/O error/i.test(`${(e as { code?: string })?.code ?? ''} ${(e as Error)?.message ?? ''}`);
 
 // nano: the event's time in nanoseconds, as text (it does not fit a JavaScript number exactly).
-export interface HistoryRow { at: number; nano: string; container_id: string; name: string; action: string; detail: string | null }
+// cursor: where the next page starts (nano and rowid, since two rows can share a nano).
+export interface HistoryRow { at: number; nano: string; cursor: string; container_id: string; name: string; action: string; detail: string | null }
+
+// A page's start: older than "<nano>" or "<nano>-<rowid>".
+export const CURSOR = /^\d{1,19}(-\d{1,19})?$/;
+const page = (before?: string) => {
+  const [nano, rowid] = (before ?? '9223372036854775807').split('-');
+  return { sql: '(e.nano < CAST(? AS INTEGER) OR (e.nano = CAST(? AS INTEGER) AND e.rowid < CAST(? AS INTEGER)))', args: [nano, nano, rowid ?? '0'] };
+};
+const ROW = "CAST(e.nano AS TEXT) AS nano, CAST(e.nano AS TEXT) || '-' || e.rowid AS cursor, e.container_id, e.name, e.action, e.detail";
+const withAt = (r: Omit<HistoryRow, 'at'>): HistoryRow => ({ ...r, at: Math.floor(Number(r.nano) / 1e6) });
 type Pending = [number, string, string, string, string | null];
 
 export class History {
@@ -33,7 +43,12 @@ export class History {
   // full volume does not log an error per event.
   private fullUntil = 0;
   constructor(private db: Database, private days: number, private now: () => number = Date.now,
-    private later: (fn: () => void) => ReturnType<typeof setTimeout> | null = fn => setTimeout(fn, 1000)) {}
+    private later: (fn: () => void) => ReturnType<typeof setTimeout> | null = fn => setTimeout(fn, 1000)) {
+    // An index of the rows the problems filter and the crash counts look at, so neither scans the
+    // whole table. Made here rather than by a migration: an older kontainers opens the database
+    // as it is (an extra index changes nothing for it). Without room for it, the queries still work.
+    try { db.exec(`CREATE INDEX IF NOT EXISTS container_events_problem ON container_events (nano) WHERE ${PROBLEM_ROWS.replace(/e\./g, '')}`); } catch { /* slower, not wrong */ }
+  }
 
   get enabled(): boolean { return this.days > 0; }
 
@@ -108,12 +123,12 @@ export class History {
   // so the page knows whether there are older ones.
   forName(name: string, id: string, limit = 50, before?: string): { rows: HistoryRow[]; more: boolean } {
     this.flush();
-    const all = this.db.query(`SELECT CAST(nano AS TEXT) AS nano, container_id, name, action, detail FROM container_events
-      WHERE (((name = ? OR name = '*') AND NOT (action = 'rename_to' AND container_id = ?)) OR (container_id = ? AND action != 'rename_to'))
-        AND nano < CAST(? AS INTEGER) ORDER BY nano DESC LIMIT ?`)
-      .all(name, id.slice(0, ID_CHARS), id.slice(0, ID_CHARS), before ?? '9223372036854775807', limit + 1) as Omit<HistoryRow, 'at'>[];
-    const rows = all.slice(0, limit).map(r => ({ ...r, at: Math.floor(Number(r.nano) / 1e6) }));
-    return { rows, more: all.length > limit };
+    const pg = page(before);
+    const all = this.db.query(`SELECT ${ROW} FROM container_events e
+      WHERE (((e.name = ? OR e.name = '*') AND NOT (e.action = 'rename_to' AND e.container_id = ?)) OR (e.container_id = ? AND e.action != 'rename_to'))
+        AND ${pg.sql} ORDER BY e.nano DESC, e.rowid DESC LIMIT ?`)
+      .all(name, id.slice(0, ID_CHARS), id.slice(0, ID_CHARS), ...pg.args, limit + 1) as Omit<HistoryRow, 'at'>[];
+    return { rows: all.slice(0, limit).map(withAt), more: all.length > limit };
   }
 
   // Every container's entries, newest first (the Events page). q: part of a name. problems: only
@@ -121,20 +136,30 @@ export class History {
   recent(opts: { q?: string; problems?: boolean; limit?: number; before?: string } = {}): { rows: HistoryRow[]; more: boolean } {
     this.flush();
     const limit = opts.limit ?? 100;
-    const where = ['e.nano < CAST(? AS INTEGER)'];
-    const args: (string | number)[] = [opts.before ?? '9223372036854775807'];
-    if (opts.q) { where.push(`(e.name LIKE ? ESCAPE '\\' OR e.name = '*')`); args.push(`%${opts.q.replace(/[\\%_]/g, c => `\\${c}`)}%`); }
-    if (opts.problems) where.push(`(${CRASH} OR e.action = 'oom' OR (e.action = 'health_status' AND e.detail = 'unhealthy') OR e.action = 'gap')`);
-    const all = this.db.query(`SELECT CAST(e.nano AS TEXT) AS nano, e.container_id, e.name, e.action, e.detail FROM container_events e
-      WHERE ${where.join(' AND ')} AND e.action != 'rename_to' ORDER BY e.nano DESC LIMIT ?`).all(...args, limit + 1) as Omit<HistoryRow, 'at'>[];
-    return { rows: all.slice(0, limit).map(r => ({ ...r, at: Math.floor(Number(r.nano) / 1e6) })), more: all.length > limit };
+    const pg = page(opts.before);
+    const where = [pg.sql, "e.action != 'rename_to'"];
+    const args: (string | number)[] = [...pg.args];
+    if (opts.q) {
+      // The names that match first (from the name index), then their rows: a LIKE with a leading %
+      // cannot use an index, and the rows of a quiet container are few among many.
+      const like = `%${opts.q.replace(/[\\%_]/g, c => `\\${c}`)}%`;
+      const names = (this.db.query(`SELECT DISTINCT name FROM container_events WHERE name LIKE ? ESCAPE '\\' LIMIT 500`).all(like) as { name: string }[]).map(r => r.name);
+      where.push(`e.name IN (${['*', ...names].map(() => '?').join(', ')})`);
+      args.push('*', ...names);
+    }
+    // The problems: the term the partial index is made for, then what it narrows.
+    if (opts.problems) where.push(PROBLEM_ROWS, `(${CRASH} OR e.action = 'oom' OR (e.action = 'health_status' AND e.detail = 'unhealthy') OR e.action = 'gap')`);
+    const all = this.db.query(`SELECT ${ROW} FROM container_events e WHERE ${where.join(' AND ')} ORDER BY e.nano DESC, e.rowid DESC LIMIT ?`)
+      .all(...args, limit + 1) as Omit<HistoryRow, 'at'>[];
+    return { rows: all.slice(0, limit).map(withAt), more: all.length > limit };
   }
 
-  // How many times each container name crashed since `sinceMs` (the Containers page).
+  // How many times each container (its first ID_CHARS of ID) crashed since `sinceMs` (the
+  // Containers page): per container, not per name, so one that replaced a crashing one starts clean.
   crashes(sinceMs: number): Map<string, number> {
     this.flush();
-    const rows = this.db.query(`SELECT e.name AS name, COUNT(*) AS n FROM container_events e WHERE e.nano > ? AND ${CRASH} GROUP BY e.name`).all(sinceMs * 1e6) as { name: string; n: number }[];
-    return new Map(rows.map(r => [r.name, r.n]));
+    const rows = this.db.query(`SELECT e.container_id AS id, COUNT(*) AS n FROM container_events e WHERE e.nano > ? AND ${PROBLEM_ROWS} AND ${CRASH} GROUP BY e.container_id`).all(sinceMs * 1e6) as { id: string; n: number }[];
+    return new Map(rows.map(r => [r.id, r.n]));
   }
 
   // The time of the newest event recorded, in seconds, to replay the daemon's buffer from at start.
@@ -159,10 +184,16 @@ export class History {
   }
 }
 
-// A crash: the container stopped with an exit code other than 0, and nobody asked it to (no kill
-// or stop of it in the minute before: docker stop ends in 137 or 143 on purpose).
-const CRASH = `(e.action = 'die' AND e.detail IS NOT NULL AND e.detail != '0' AND NOT EXISTS (SELECT 1 FROM container_events k
-  WHERE k.container_id = e.container_id AND k.action IN ('kill', 'stop') AND k.nano <= e.nano AND k.nano > e.nano - 60000000000))`;
+// The rows the problems filter and crash counts read (and the partial index holds).
+const PROBLEM_ROWS = "e.action IN ('die', 'oom', 'health_status', 'gap')";
+// Signals that do not end a process (a reload), as update.ts's endingSignal has them.
+const NOT_ENDING = "('1', '10', '12', '28', 'HUP', 'USR1', 'USR2', 'WINCH', 'SIGHUP', 'SIGUSR1', 'SIGUSR2', 'SIGWINCH')";
+// A crash: the container stopped with an exit code other than 0, and nobody asked it to: of its
+// starts, stops and ending kills, the last one before the die is a start (docker stop and restart
+// send a kill first, however long the stop then takes; a reload signal does not count).
+const CRASH = `(e.action = 'die' AND e.detail IS NOT NULL AND e.detail != '0' AND COALESCE((SELECT k.action FROM container_events k
+  WHERE k.container_id = e.container_id AND k.nano <= e.nano AND (k.action IN ('start', 'stop') OR (k.action = 'kill' AND UPPER(COALESCE(k.detail, '')) NOT IN ${NOT_ENDING}))
+  ORDER BY k.nano DESC LIMIT 1), 'start') = 'start')`;
 
 // Linux signal numbers, as docker kill reports them.
 const SIGNALS: Record<string, string> = { 1: 'SIGHUP', 2: 'SIGINT', 3: 'SIGQUIT', 6: 'SIGABRT', 9: 'SIGKILL', 10: 'SIGUSR1', 12: 'SIGUSR2', 15: 'SIGTERM', 28: 'SIGWINCH' };

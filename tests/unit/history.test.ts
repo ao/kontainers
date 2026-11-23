@@ -96,11 +96,11 @@ describe('container history', () => {
   });
   test('the page shows it, marks entries of another container, and pages back', () => {
     const c = { Id: B, Name: '/web', Config: { Image: 'nginx:2', Labels: {} }, HostConfig: {}, State: { Status: 'exited' } };
-    const rows = Array.from({ length: 50 }, (_, i) => ({ at: 1_700_000_000_000 + i, nano: String(1_700_000_000_000_000_000n + BigInt(i)), container_id: (i % 2 ? A : B).slice(0, 16), name: 'web', action: 'start', detail: null }));
+    const rows = Array.from({ length: 50 }, (_, i) => ({ at: 1_700_000_000_000 + i, nano: String(1_700_000_000_000_000_000n + BigInt(i)), cursor: `${1_700_000_000_000_000_000n + BigInt(i)}-${i + 1}`, container_id: (i % 2 ? A : B).slice(0, 16), name: 'web', action: 'start', detail: null }));
     const page = containerPage({ user: 'u', csrf: 'c' }, c, null, null, null, false, false, { rows, more: true, before: null, days: 30 });
     expect(page).toContain('<h2 id="history">History</h2>');
     expect(page).toContain(`another container under this name, ${A.slice(0, 12)}`);
-    expect(page).toContain(`href="/containers/web?before=${rows[49].nano}#history">Older</a>`);
+    expect(page).toContain(`href="/containers/web?before=${rows[49].cursor}#history">Older</a>`);
     expect(page).toContain('kept for 30 days');
     expect(containerPage({ user: 'u', csrf: 'c' }, c, null, null, null, false, false, { rows, more: false, before: null, days: 30 })).not.toContain('>Older</a>');
   });
@@ -158,31 +158,75 @@ describe('the Events page and crash counts', () => {
     // % and _ are taken as they are, not as wildcards.
     expect(h.recent({ q: '1%' }).rows.map(r => r.name)).toEqual(['web_1%x', 'web_1%x']);
     expect(h.recent({ q: 'd_' }).rows).toEqual([]);
-    expect(h.crashes(0)).toEqual(new Map([['web_1%x', 1], ['big', 1]]));
+    expect(h.crashes(0)).toEqual(new Map([[A.slice(0, 16), 1], [C.slice(0, 16), 1]]));
   });
   test('the Containers page: a crash count, and three or more in a day need attention', () => {
     const list = [
       { Id: A, Names: ['/web'], Image: 'nginx:1', Ref: 'nginx:1', ImageID: 'sha256:1', State: 'running', Status: 'Up 2 minutes', Labels: {}, Ports: [] },
       { Id: B, Names: ['/db'], Image: 'pg:17', Ref: 'pg:17', ImageID: 'sha256:2', State: 'running', Status: 'Up 1 hour', Labels: {}, Ports: [] },
     ];
-    const page = containersPage({ user: 'u', csrf: 'c' }, list, null, null, undefined, new Map([['web', 4], ['db', 1]]));
+    const page = containersPage({ user: 'u', csrf: 'c' }, list, null, null, undefined, new Map([[A.slice(0, 16), 4], [B.slice(0, 16), 1]]));
     expect(page).toContain('crashed 4 times in 24 h');
     expect(page).toContain('crashed once in 24 h');
     expect(page).toMatch(/<tr data-name="web"[^>]*data-attention="1"/);
     expect(page).not.toMatch(/<tr data-name="db"[^>]*data-attention="1"/);
     expect(page).toContain('1 needs attention');
-    const only = containersPage({ user: 'u', csrf: 'c' }, list, null, null, { q: '', state: 'attention', group: false }, new Map([['web', 4]]));
+    const only = containersPage({ user: 'u', csrf: 'c' }, list, null, null, { q: '', state: 'attention', group: false }, new Map([[A.slice(0, 16), 4]]));
     expect(only).toMatch(/<tr data-name="web"[^>]*data-attention="1"(?![^>]*hidden)/);
     expect(only).toMatch(/<tr data-name="db"[^>]* hidden>/);
   });
   test('the page, with its filter and paging; off when the history is', async () => {
     const { eventsPage } = await import('../../src/views');
-    const rows = [{ at: 1_700_000_000_000, nano: '1700000000000000000', container_id: 'a'.repeat(16), name: 'web', action: 'start', detail: null }, { at: 1_700_000_000_000, nano: '1699999999000000000', container_id: '', name: '*', action: 'gap', detail: null }];
-    const page = eventsPage({ user: 'u', csrf: 'c' }, { rows, more: true }, { q: 'we', problems: true, before: null }, 30);
+    const rows = [{ at: 1_700_000_000_000, nano: '1700000000000000000', cursor: '1700000000000000000-2', container_id: 'a'.repeat(16), name: 'web', action: 'start', detail: null },
+      { at: 1_700_000_000_000, nano: '1700000000000000000', cursor: '1700000000000000000-3', container_id: 'b'.repeat(16), name: 'gone', action: 'die', detail: '1' },
+      { at: 1_700_000_000_000, nano: '1699999999000000000', cursor: '1699999999000000000-1', container_id: '', name: '*', action: 'gap', detail: null }];
+    const page = eventsPage({ user: 'u', csrf: 'c' }, { rows, more: true }, { q: 'we', problems: true, before: null }, 30, new Map([['web', 'web']]));
     expect(page).toContain('<a href="/containers/web#history">web</a>');
+    // A removed container has no page: its name searches the Events.
+    expect(page).toContain('<a href="/events?q=gone">gone</a> <small class="muted">removed</small>');
     expect(page).toContain('some of what happened before this may be missing');
-    expect(page).toContain('href="/events?q=we&amp;problems=1&amp;before=1699999999000000000">Older</a>');
+    expect(page).toContain('href="/events?q=we&amp;problems=1&amp;before=1699999999000000000-1">Older</a>');
     expect(page).toContain('aria-current="page">Events</a>');
     expect(eventsPage({ user: 'u', csrf: 'c' }, null, { q: '', problems: false, before: null }, 0)).toContain('The container history is off');
+  });
+});
+
+describe('what counts as a crash', () => {
+  test('after a restart the next crash counts; a long stop does not; a reload signal is not a stop', () => {
+    const h = mk();
+    const at = (ms: number, action: string, id: string, attrs: Record<string, string>) => ({ Type: 'container', Action: action, Actor: { ID: id, Attributes: attrs }, timeNano: (t + ms) * 1e6 });
+    // docker restart, then a crash 5 s later: the restart's own die is asked for, the next is not.
+    h.record(at(0, 'start', A, { name: 'app' }));
+    h.record(at(1000, 'kill', A, { name: 'app', signal: '15' }));
+    h.record(at(1100, 'die', A, { name: 'app', exitCode: '143' }));
+    h.record(at(1200, 'stop', A, { name: 'app' }));
+    h.record(at(1300, 'start', A, { name: 'app' }));
+    h.record(at(6300, 'die', A, { name: 'app', exitCode: '1' }));
+    // A graceful stop that takes 70 s and exits 1: asked for.
+    h.record(at(0, 'start', B, { name: 'es' }));
+    h.record(at(1000, 'kill', B, { name: 'es', signal: 'SIGTERM' }));
+    h.record(at(71000, 'die', B, { name: 'es', exitCode: '1' }));
+    // A reload signal, then the process exits 1: a crash.
+    h.record(at(0, 'start', C, { name: 'nginx' }));
+    h.record(at(1000, 'kill', C, { name: 'nginx', signal: '1' }));
+    h.record(at(2000, 'die', C, { name: 'nginx', exitCode: '1' }));
+    t += 100_000;
+    expect(h.crashes(0)).toEqual(new Map([[A.slice(0, 16), 1], [C.slice(0, 16), 1]]));
+    expect(h.recent({ problems: true }).rows.map(r => r.name).sort()).toEqual(['app', 'nginx']);
+  });
+  test('paging through rows that share a nanosecond, across containers', () => {
+    const h = mk();
+    const nano = (t += 1000) * 1e6;
+    for (let i = 0; i < 150; i++) h.record({ Type: 'container', Action: 'start', Actor: { ID: i.toString(16).padStart(4, '0').padEnd(64, 'f'), Attributes: { name: `c${i}` } }, timeNano: nano });
+    const seen: string[] = [];
+    let before: string | undefined;
+    for (let p = 0; p < 5; p++) {
+      const pg = h.recent({ limit: 40, before });
+      seen.push(...pg.rows.map(r => r.name));
+      if (!pg.more) break;
+      before = pg.rows[pg.rows.length - 1].cursor;
+    }
+    expect(seen.length).toBe(150);
+    expect(new Set(seen).size).toBe(150);
   });
 });
