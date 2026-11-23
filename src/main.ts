@@ -164,12 +164,21 @@ if (history.enabled) {
   events.onEvent = ev => history.record(ev);
   const until = Date.now() / 1000;
   // At most until (a row dated later, after a clock change, would make Docker refuse the range).
-  const since = Math.min(until, Math.max(history.lastSeconds() ?? 0, until - 86400));
+  const last = history.lastSeconds();
+  const since = Math.min(until, Math.max(last ?? 0, until - 86400));
   // Tried again for a few minutes when Docker is not there yet (it is often restarted with kontainers).
   void (async () => {
     for (let i = 0; i < 6; i++) {
       try {
-        for (const ev of await docker.pastEvents({}, since, until)) { try { history.record(ev); } catch { /* one odd event */ } }
+        // Every kind of event, to tell whether Docker's buffer (its last 256 events) ran over.
+        const all = await docker.pastEvents({}, since, until, true);
+        for (const ev of all) { try { history.record(ev); } catch { /* one odd event */ } }
+        const first = all[0]?.timeNano ?? (all[0]?.time ? all[0].time * 1e9 : 0);
+        // Only when there was a history to continue (not on a first start) and it was recent.
+        if (last !== null && last === since && all.length >= 256 && first > since * 1e9) {
+          history.gap(first);
+          console.log('kontainers: Docker kept only its last events from while kontainers was not running; the container history may miss some');
+        }
         return;
       } catch (e) {
         if (i === 5) console.error(`kontainers: could not read Docker's recent events for the container history: ${(e as Error).message}`);

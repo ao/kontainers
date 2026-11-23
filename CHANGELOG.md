@@ -11,7 +11,8 @@ of it is saved in `/data/backups` first, and an older kontainers can be started 
   exit code, killed with the signal, out of memory, health changes, renamed, removed), from
   Docker's events, newest first, 50 at a time. kontainers records them as they happen (written
   once a second), and at start reads what the daemon still holds since the last one, up to a day
-  back (Docker keeps only its last few hundred). Kept under the container's name across updates
+  back (Docker keeps only its last few hundred; when those ran over while kontainers was not
+  running, the history says that some events may be missing). Kept under the container's name across updates
   and under its own ID when it is renamed, with another container's entries marked; for 30 days
   (`KONTAINERS_HISTORY_DAYS`, 0 to turn it off), at most 2000 per name (checked hourly) and
   300 000 in all.

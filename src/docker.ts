@@ -162,8 +162,9 @@ export class Docker {
 
   // Container events that already happened between two times (Unix seconds); the daemon closes the
   // stream at `untilSec`. filters: Docker's event filters, such as { container: [id], event: ['kill'] }.
-  async pastEvents(filters: Record<string, string[]>, sinceSec: number, untilSec: number): Promise<any[]> {
-    const f = encodeURIComponent(JSON.stringify({ ...filters, type: ['container'] }));
+  // allTypes: every kind of event (to tell whether the daemon's buffer was full), not only containers'.
+  async pastEvents(filters: Record<string, string[]>, sinceSec: number, untilSec: number, allTypes = false): Promise<any[]> {
+    const f = encodeURIComponent(JSON.stringify(allTypes ? filters : { ...filters, type: ['container'] }));
     const res = await this.req('GET', `/events?since=${sinceSec.toFixed(3)}&until=${untilSec.toFixed(3)}&filters=${f}`, undefined, 10000);
     const out: any[] = [];
     for (const line of (await res.text()).split('\n')) { if (line.trim()) try { out.push(JSON.parse(line)); } catch { /* not an event */ } }

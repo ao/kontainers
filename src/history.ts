@@ -77,6 +77,14 @@ export class History {
     else if (!this.timer) this.timer = this.later(() => { this.timer = null; this.flush(); });
   }
 
+  // Docker's buffer was full when kontainers read it at start: what happened between the last event
+  // recorded and the first one it still held (at `nano`) may be missing. Shown on every page.
+  gap(nano: number): void {
+    if (!this.enabled) return;
+    this.queue.push([nano - 1, '', '*', 'gap', null]);
+    this.flush();
+  }
+
   // Writes what is waiting (also before every read, and at shutdown).
   flush(): void {
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }
@@ -101,8 +109,9 @@ export class History {
   forName(name: string, id: string, limit = 50, before?: string): { rows: HistoryRow[]; more: boolean } {
     this.flush();
     const all = this.db.query(`SELECT CAST(nano AS TEXT) AS nano, container_id, name, action, detail FROM container_events
-      WHERE (name = ? OR (container_id = ? AND action != 'rename_to')) AND nano < CAST(? AS INTEGER) ORDER BY nano DESC LIMIT ?`)
-      .all(name, id.slice(0, ID_CHARS), before ?? '9223372036854775807', limit + 1) as Omit<HistoryRow, 'at'>[];
+      WHERE (((name = ? OR name = '*') AND NOT (action = 'rename_to' AND container_id = ?)) OR (container_id = ? AND action != 'rename_to'))
+        AND nano < CAST(? AS INTEGER) ORDER BY nano DESC LIMIT ?`)
+      .all(name, id.slice(0, ID_CHARS), id.slice(0, ID_CHARS), before ?? '9223372036854775807', limit + 1) as Omit<HistoryRow, 'at'>[];
     const rows = all.slice(0, limit).map(r => ({ ...r, at: Math.floor(Number(r.nano) / 1e6) }));
     return { rows, more: all.length > limit };
   }
@@ -148,7 +157,8 @@ export function describe(r: Pick<HistoryRow, 'action' | 'detail' | 'name'>): str
     case 'pause': return 'paused';
     case 'unpause': return 'unpaused';
     // The rename an update or edit makes of the old container, filed under its name.
-    case 'rename': return r.detail && r.detail === r.name ? 'set aside by an update or edit' : r.detail ? `renamed from ${r.detail}` : 'renamed';
+    case 'rename': return r.detail && r.detail === r.name ? 'set aside by an update or edit' : r.detail && /^[0-9a-f]{12}_/.test(r.detail) ? 'recreated by docker compose' : r.detail ? `renamed from ${r.detail}` : 'renamed';
+    case 'gap': return "kontainers was not running, and Docker had kept only its last few hundred events: some of what happened before this may be missing";
     case 'rename_to': return `renamed to ${r.detail ?? 'another name'}`;
     case 'destroy': return 'removed';
     case 'health_status': return r.detail === 'unhealthy' ? 'turned unhealthy' : r.detail === 'healthy' ? 'turned healthy' : `health: ${r.detail ?? 'unknown'}`;

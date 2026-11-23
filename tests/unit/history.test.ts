@@ -44,12 +44,21 @@ describe('container history', () => {
     // compose: the replacement is made as <old id>_<name> and renamed.
     h.record(ev('create', B, { name: `${A.slice(0, 12)}_shop-web-1`, image: 'shop:2' }));
     h.record(ev('rename', B, { name: 'shop-web-1', oldName: `/${A.slice(0, 12)}_shop-web-1` }));
-    expect(h.forName('shop-web-1', B).rows.map(say)).toEqual([`renamed from ${A.slice(0, 12)}_shop-web-1`, 'created from shop:2']);
+    expect(h.forName('shop-web-1', B).rows.map(say)).toEqual(['recreated by docker compose', 'created from shop:2']);
     // docker rename: the container's page keeps its entries (by ID); the old name says where it went.
     h.record(ev('die', C, { name: 'h-crash', exitCode: '3' }));
     h.record(ev('rename', C, { name: 'h-crash2', oldName: '/h-crash' }));
     expect(h.forName('h-crash2', C).rows.map(say)).toEqual(['renamed from h-crash', 'stopped with exit code 3', 'started']);
     expect(h.forName('h-crash', A).rows.map(say)).toEqual(['renamed to h-crash2', 'stopped with exit code 3']);
+  });
+  test('a rename back shows once on the page; compose recreation is said as such; a gap shows everywhere', () => {
+    const h = mk();
+    h.record(ev('rename', A, { name: 'rn-b', oldName: '/rn-a' }));
+    h.record(ev('rename', A, { name: 'rn-a', oldName: '/rn-b' }));
+    expect(h.forName('rn-a', A).rows.map(say)).toEqual(['renamed from rn-b', 'renamed from rn-a']);
+    expect(say({ action: 'rename', detail: `${B.slice(0, 12)}_web`, name: 'web' })).toBe('recreated by docker compose');
+    h.gap(t * 1e6 + 5);
+    expect(h.forName('other', C).rows.map(r => r.action)).toEqual(['gap']);
   });
   test('a long name cut in the set-aside name is filed under the whole name', () => {
     const h = mk();
