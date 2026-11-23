@@ -72,12 +72,15 @@ What works, and is covered by the test suites below:
   off, download). Commands are split with shell quoting (`sh -c "echo hi; sleep 60"`, and
   `$'one\ntwo'` for a line break in an argument) but no shell runs and nothing is expanded. The
   list has a search, a state filter including "needs attention", grouping by compose project, and
-  a tick box per container to start, restart, stop or remove several at once (remove takes only
-  the stopped ones; kontainers' own containers and ones being updated have no box). The detail
-  page has the container's history: created, started, stopped (with the exit code), killed,
-  out of memory, health changes, renamed, removed, from Docker's events, kept for 30 days under
-  its name across updates (`KONTAINERS_HISTORY_DAYS`; Docker itself keeps only its last few
-  hundred events). The detail page shows the command, ports,
+  a tick box per container to start, restart, stop or remove up to 200 at once, one at a time,
+  each on the Activity page (remove takes only the stopped ones; kontainers' own containers and
+  ones being updated have no box; after 20 s the page comes back and the rest goes on). The
+  detail page has the container's history: created, started, stopped (with the exit code),
+  killed (with the signal), out of memory, health changes, renamed, removed, from Docker's
+  events, under its name across updates and under its own ID when renamed, kept for 30 days
+  (`KONTAINERS_HISTORY_DAYS`), at most 2000 entries a name (checked hourly) and 300 000 in all.
+  Docker itself keeps only its last few hundred events; at start kontainers reads those since
+  the last one it recorded, up to a day back. The detail page shows the command, ports,
   restarts, health and limits, and CPU, memory, network and process counts refreshed every 5
   seconds. A container created in kontainers can get labels (`KEY=value`; names kontainers and
   Docker set themselves are refused, except `kontainers.autoupdate` in small letters; a label the

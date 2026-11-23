@@ -7,7 +7,7 @@ import { EVENTS, EVENT_KINDS, maskUrl, type Target } from './notify';
 import type { RegistryLogin } from './registries';
 import type { BackupFile } from './backups';
 import { formatMemory } from './validate';
-import { describe as describeEvent, type HistoryRow } from './history';
+import { ID_CHARS, describe as describeEvent, type HistoryRow } from './history';
 import { DAY_NAMES, describeSchedule, formTime, type Schedule } from './schedule';
 
 export function esc(v: unknown): string {
@@ -322,7 +322,7 @@ export function containersPage(ctx: PageCtx, list: any[], me: SelfInfo | null = 
     const project = projectOf(c);
     // A box for the bulk actions, except for kontainers itself and its Docker API container, a
     // container being updated, and read-only accounts.
-    const box = !ctx.readOnly && !isProtected(c, me) && !ctx.busy?.(name) ? html`<input type="checkbox" class="sel" form="bulk" name="sel_${c.Id}" aria-label="Select ${name}">` : '';
+    const box = !ctx.readOnly && !isProtected(c, me) && !ctx.busy?.(name) ? html`<input type="checkbox" class="sel" form="bulk" name="sel_${c.Id}" autocomplete="off" aria-label="Select ${name}">` : '';
     return html`<tr data-name="${name}" data-state="${c.State}"${/\(unhealthy\)/.test(c.Status || '') ? raw(' data-health="unhealthy"') : raw('')} data-search="${searchText(c)}"${needsAttention(c) ? raw(' data-attention="1"') : raw('')}${matchesFilter(c, f) ? raw('') : raw(' hidden')}>
   <td>${box}<a href="/containers/${urlId(c)}">${brk(name)}</a>${project && !f.group ? html`<small>compose project ${brk(project)}</small>` : ''}<small class="phone-only"><span class="sr-only">Image: </span><span class="ref">${brk(refOf(c))}</span>${ctx.busy?.(name) ? '' : updateBadge(updates, refOf(c), c.ImageID, name, c.Id)}</small></td><td><span class="ref">${brk(refOf(c))}</span>${ctx.busy?.(name) ? '' : updateBadge(updates, refOf(c), c.ImageID, name, c.Id)}</td>
   <td><span class="state ${c.State}">${c.State}</span><small>${c.Status}</small></td><td><span class="ref">${brk(formatPorts(c.Ports))}</span></td>
@@ -369,7 +369,7 @@ ${post(ctx, '/updates/check', 'Check for updates')}`
 ${filters}
 <div class="scroll"><table id="containers"><thead><tr><th>Name</th><th>Image</th><th>State</th><th>Published ports</th><th></th></tr></thead>
 <tbody>${rows.length ? rows : empty}</tbody></table></div>
-${list.length ? html`<form method="post" action="/containers/bulk" id="bulk" class="bulk">${csrfField(ctx)}<span class="muted">The ticked containers:</span>
+${!ctx.readOnly && list.some(c => !isProtected(c, me) && !ctx.busy?.(nameOf(c))) ? html`<form method="post" action="/containers/bulk" id="bulk" class="bulk">${csrfField(ctx)}<span class="muted">The ticked containers:</span>
 <button name="op" value="start">Start</button>
 <button name="op" value="restart" data-confirm="Restart the ticked containers?">Restart</button>
 <button name="op" value="stop" data-confirm="Stop the ticked containers?">Stop</button>
@@ -396,14 +396,14 @@ ${last}${held}${waiting}</form>`;
 }
 
 // made: whether kontainers made it (the server knows: a label the image carries does not count).
-export interface HistoryView { rows: HistoryRow[]; before: number | null; days: number }
+export interface HistoryView { rows: HistoryRow[]; more: boolean; before: string | null; days: number }
 
 // What happened to the container (history.ts), newest first, 50 at a time.
 function historySection(c: any, h: HistoryView): Html {
   const at = (t: number) => new Date(t).toISOString().slice(0, 19).replace('T', ' ');
-  const cur = String(c.Id || '');
-  const rows = h.rows.map(r => html`<tr><td class="nowrap">${at(r.at)}</td><td>${describeEvent(r)}${r.container_id !== cur ? html` <small class="muted">an earlier container under this name, ${r.container_id.slice(0, 12)}</small>` : ''}</td></tr>`);
-  const older = h.rows.length === 50 ? html`<a href="/containers/${urlId(c)}?before=${h.rows[h.rows.length - 1].at}#history">Older</a>` : '';
+  const cur = String(c.Id || '').slice(0, ID_CHARS);
+  const rows = h.rows.map(r => html`<tr><td class="nowrap">${at(r.at)}</td><td>${describeEvent(r)}${r.container_id !== cur ? html` <small class="muted">another container under this name, ${r.container_id.slice(0, 12)}</small>` : ''}</td></tr>`);
+  const older = h.more ? html`<a href="/containers/${urlId(c)}?before=${h.rows[h.rows.length - 1].nano}#history">Older</a>` : '';
   const newer = h.before ? html`<a href="/containers/${urlId(c)}#history">Newest</a>` : '';
   return html`<h2 id="history">History</h2>
 ${rows.length ? html`<div class="scroll"><table class="history"><thead><tr><th>Time (UTC)</th><th>What happened</th></tr></thead><tbody>${rows}</tbody></table></div>` : html`<p class="muted">Nothing recorded${h.before ? ' before that' : ' yet'}.</p>`}

@@ -174,9 +174,13 @@ table + form.stack, .scroll + form.stack { margin-top: 1rem; }
 `;
 
 const js = `
+// A form with several buttons (the bulk actions) asks with the one pressed; the click is noted for
+// browsers without SubmitEvent.submitter.
+var lastButton = null;
+document.addEventListener('click', function (e) { var b = e.target.closest && e.target.closest('button'); lastButton = b && b.form ? b : null; }, true);
 document.addEventListener('submit', function (e) {
-  // A form with several buttons (the bulk actions) asks with the one pressed.
-  var msg = (e.submitter && e.submitter.getAttribute('data-confirm')) || e.target.getAttribute('data-confirm');
+  var by = e.submitter || (lastButton && lastButton.form === e.target ? lastButton : null);
+  var msg = (by && by.getAttribute('data-confirm')) || e.target.getAttribute('data-confirm');
   if (msg && !window.confirm(msg)) e.preventDefault();
 });
 (function () {
@@ -308,6 +312,10 @@ document.addEventListener('submit', function (e) {
   }
   q.addEventListener('input', apply);
   form.elements.state.addEventListener('change', apply);
+  // A box the browser ticks again on reload or Back, in a row the filter hides, is unticked too.
+  function untickHidden() { var bs = table.querySelectorAll('tr[hidden] input.sel'); for (var i = 0; i < bs.length; i++) bs[i].checked = false; }
+  window.addEventListener('pageshow', untickHidden);
+  untickHidden();
 })();
 `;
 

@@ -111,7 +111,6 @@ export const MIGRATIONS: string[] = [
   `ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin' CHECK (role IN ('admin', 'viewer'));`,
   // 10 (0.12): what happened to each container, from Docker's events (history.ts), by name.
   `CREATE TABLE container_events (
-     at INTEGER NOT NULL,
      nano INTEGER NOT NULL,
      container_id TEXT NOT NULL,
      name TEXT NOT NULL,
@@ -120,7 +119,7 @@ export const MIGRATIONS: string[] = [
      UNIQUE (nano, container_id, action)
    );
    CREATE INDEX container_events_name ON container_events (name, nano);
-   CREATE INDEX container_events_at ON container_events (at);`,
+   CREATE INDEX container_events_id ON container_events (container_id, nano);`,
 ];
 
 // degraded: opened without the shared-memory file, because the data volume had no room for it.

@@ -163,9 +163,20 @@ const history = new History(db, cfg.historyDays);
 if (history.enabled) {
   events.onEvent = ev => history.record(ev);
   const until = Date.now() / 1000;
-  const since = Math.max(history.lastSeconds() ?? 0, until - 86400);
-  void docker.pastEvents({}, since, until).then(list => { for (const ev of list) history.record(ev); })
-    .catch(e => console.error(`kontainers: could not read Docker's recent events for the container history: ${(e as Error).message}`));
+  // At most until (a row dated later, after a clock change, would make Docker refuse the range).
+  const since = Math.min(until, Math.max(history.lastSeconds() ?? 0, until - 86400));
+  // Tried again for a few minutes when Docker is not there yet (it is often restarted with kontainers).
+  void (async () => {
+    for (let i = 0; i < 6; i++) {
+      try {
+        for (const ev of await docker.pastEvents({}, since, until)) { try { history.record(ev); } catch { /* one odd event */ } }
+        return;
+      } catch (e) {
+        if (i === 5) console.error(`kontainers: could not read Docker's recent events for the container history: ${(e as Error).message}`);
+        else await Bun.sleep(30_000);
+      }
+    }
+  })();
 }
 const pruneHistory = () => { try { history.prune(); } catch (e) { console.error(`kontainers: could not prune the container history: ${(e as Error).message}`); } };
 // With KONTAINERS_HISTORY_DAYS=0 this empties it.
@@ -279,6 +290,7 @@ async function shutdown(sig: string) {
   for (const t of certTimers) clearTimeout(t as any);
   clearInterval(auditTimer);
   clearInterval(historyTimer);
+  try { history.flush(); } catch { /* the volume is full, probably */ }
   for (const t of backupTimers) clearTimeout(t as any);
   await proxy.stop();
   db.close();

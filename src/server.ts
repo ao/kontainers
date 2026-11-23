@@ -810,8 +810,9 @@ export function createHandler(d: Deps): Handler {
         const auto = d.autoUpdates ? { on: d.autoUpdates.isOn(name, c.Id, own), label: labelledOn(own), row, waiting: d.autoUpdates.waitingFor(name) } : null;
         const dupOk = duplicable(c, img) === null && duplicable(c, img, await imageNamed(String(c.Config?.Image || '')).catch(() => null)) === null;
         // Its history, by name (older pages with ?before=<ms>).
-        const before = v.intInRange(url.searchParams.get('before'), 1, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
-        const hist = d.history ? { rows: d.history.forName(name, 50, before), before: before === Number.MAX_SAFE_INTEGER ? null : before, days: cfg.historyDays } : null;
+        const b = url.searchParams.get('before');
+        const before = b && /^\d{1,19}$/.test(b) ? b : undefined;
+        const hist = d.history ? { ...d.history.forName(name, String(c.Id), 50, before), before: before ?? null, days: cfg.historyDays } : null;
         return page(views.containerPage(ctx(s), c, await self(), updateView(), auto, editable(c, img) === null || (c.Config?.Labels?.['kontainers.managed'] === 'true' && img?.Config?.Labels?.['kontainers.managed'] !== 'true'), dupOk, hist));
       }
       // kontainers' own logs (and its socket proxy's) are for administrators: they can hold what
@@ -1113,39 +1114,57 @@ export function createHandler(d: Deps): Handler {
       });
     }
     if (p === '/containers/bulk') {
-      // The containers ticked on the Containers page: one action each, in turn. kontainers and its
-      // Docker API container, and containers being updated, are left out; Remove only takes
-      // stopped ones (never forced) and keeps their volumes.
+      // The containers ticked on the Containers page: one action each, in turn, each written to
+      // Activity as it is done. kontainers and its Docker API container, and containers being
+      // updated, are left out; Remove only takes stopped ones (never forced) and keeps their
+      // volumes. After 20 s the page comes back and the rest goes on, as Update all does.
       const op = String(f.op || '');
       return act(s, ip, '/containers', `bulk-${/^(start|stop|restart|remove)$/.test(op) ? op : 'action'}`, null, async () => {
         if (!/^(start|stop|restart|remove)$/.test(op)) throw new v.ValidationError('choose Start, Restart, Stop or Remove');
-        const ids = Object.keys(f).filter(k => k.startsWith('sel_')).map(k => k.slice(4));
-        if (!ids.length) throw new v.ValidationError('tick the containers to act on first');
-        if (ids.length > 200) throw new v.ValidationError('at most 200 containers at a time');
-        for (const id of ids) v.ref(id);
+        const refs = Object.keys(f).filter(k => k.startsWith('sel_')).map(k => k.slice(4));
+        if (!refs.length) throw new v.ValidationError('tick the containers to act on first');
+        if (refs.length > 200) throw new v.ValidationError('at most 200 containers at a time');
+        for (const ref of refs) v.ref(ref);
         const me = await self();
+        // Without knowing its own container, kontainers could stop itself in the middle.
+        if (op !== 'start' && d.selfContainer && (!me || me.unknown)) throw new v.ValidationError(me?.unknown ? 'kontainers cannot find its own container (KONTAINERS_SELF_CONTAINER or its host name names none), so it does not stop or remove several at once; set KONTAINERS_SELF_CONTAINER to the name of its container' : 'kontainers cannot tell its own container from the others right now (the Docker API did not answer); try again in a minute');
         const done: string[] = [], skipped: string[] = [], fails: string[] = [];
-        for (const id of ids) {
-          let c: any;
-          try { c = await docker.inspect(id); } catch (e) { fails.push(`${id.slice(0, 12)}: ${errorMessage(e)}`); continue; }
-          const n = String(c.Name || '').replace(/^\//, '');
-          if (me && views.isProtected(c, me)) { skipped.push(`${n} (kontainers' own)`); continue; }
-          if (locks.has(n) || setAsideOf(n)) { skipped.push(`${n} (an update or edit is running)`); continue; }
-          const st = String(c.State?.Status || '');
-          const fits = op === 'start' ? st !== 'running' && st !== 'restarting' : op === 'remove' ? !['running', 'restarting', 'paused'].includes(st) : st === 'running' || st === 'restarting';
-          if (!fits) { skipped.push(`${n} (${st})`); continue; }
-          try {
-            if (op === 'start') await docker.start(c.Id);
-            else if (op === 'stop') await docker.stop(c.Id);
-            else if (op === 'restart') await docker.restart(c.Id);
-            else { await docker.remove(c.Id, false); d.autoUpdates?.forget(n); }
-            done.push(n);
-          } catch (e) { fails.push(`${n}: ${errorMessage(e)}`); }
-        }
+        const seen = new Set<string>();
+        let background = false;
         const verb = { start: 'Started', stop: 'Stopped', restart: 'Restarted', remove: 'Removed' }[op as 'start'];
-        const msg = `${done.length ? `${verb} ${done.join(', ')}` : `${verb} none`}${skipped.length ? `; left as they are: ${skipped.join(', ')}` : ''}`;
-        if (fails.length) throw new v.ValidationError(`${msg}; failed: ${fails.join('; ')}`);
-        return `${msg}.`;
+        const summary = () => `${done.length ? `${verb} ${done.join(', ')}` : `${verb} none`}${skipped.length ? `; left as they are: ${skipped.join(', ')}` : ''}`;
+        const work = (async () => {
+          for (const ref of refs) {
+            if (d.stopping?.aborted) { fails.push(`${ref.slice(0, 12)}: kontainers is shutting down`); continue; }
+            let c: any;
+            try { c = await docker.inspect(ref); } catch (e) { fails.push(`${ref.slice(0, 12)}: ${errorMessage(e)}`); continue; }
+            // A container named twice (by ID and by name) is acted on once.
+            if (seen.has(c.Id)) continue;
+            seen.add(c.Id);
+            const n = String(c.Name || '').replace(/^\//, '');
+            if (me && views.isProtected(c, me)) { skipped.push(`${n} (kontainers' own)`); continue; }
+            if (locks.has(n) || setAsideOf(n)) { skipped.push(`${n} (an update or edit is running)`); continue; }
+            const st = String(c.State?.Status || '');
+            const fits = op === 'start' ? !['running', 'restarting', 'paused'].includes(st) : op === 'remove' ? !['running', 'restarting', 'paused'].includes(st) : st === 'running' || st === 'restarting';
+            if (!fits) { skipped.push(`${n} (${st})`); continue; }
+            try {
+              if (op === 'start') await docker.start(c.Id);
+              else if (op === 'stop') await docker.stop(c.Id);
+              else if (op === 'restart') await docker.restart(c.Id);
+              else { await docker.remove(c.Id, false); d.autoUpdates?.forget(n); }
+              done.push(n);
+              safeAudit(s, `container-${op}`, n, ip, 'note: one of the ticked containers');
+            } catch (e) {
+              fails.push(`${n}: ${errorMessage(e)}`);
+              safeAudit(s, `container-${op}`, n, ip, `failed: ${errorMessage(e)}`.slice(0, 500));
+            }
+          }
+          if (background) safeAudit(s, `bulk-${op}`, null, ip, (fails.length ? `failed: ${summary()}; ${fails.join('; ')}` : `note: ${summary()}`).slice(0, 500));
+        })();
+        const finished = await Promise.race([work.then(() => true), Bun.sleep(20000).then(() => false)]);
+        if (!finished) { background = true; work.catch(() => {}); return `Acting on ${refs.length} container${refs.length === 1 ? '' : 's'}, one at a time; this takes a while. Each shows on the Activity page as it is done; reload the Containers page later.`; }
+        if (fails.length) throw new v.ValidationError(`${summary()}; failed: ${fails.join('; ')}`);
+        return `${summary()}.`;
       });
     }
     if ((r = /^\/projects\/([^/]+)\/(start|stop|restart)$/.exec(p))) {
