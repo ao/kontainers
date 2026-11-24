@@ -54,8 +54,9 @@ export function peerCert(host: string): Promise<PeerCert> {
       s.end();
       resolve({
         serial: c.serialNumber,
-        issuerCN: c.issuer.CN,
-        san: c.subjectaltname,
+        // Node's types allow several CNs, or none, and no SAN.
+        issuerCN: [c.issuer.CN ?? ''].flat().join(', '),
+        san: c.subjectaltname ?? '',
         from: Date.parse(c.valid_from),
         to: Date.parse(c.valid_to),
       });

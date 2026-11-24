@@ -16,13 +16,13 @@
 #   scripts/test.sh screenshots  not a test: regenerates docs/screenshots/ and prints measured
 #                              image size, startup time and idle memory (not part of "all")
 #
-# Env: BUN_IMAGE (default oven/bun:1.4.4, the image's Bun), CACHE_VOLUME (default kontainers-test-cache),
+# Env: BUN_IMAGE (default oven/bun:1.4.5, the image's Bun), CACHE_VOLUME (default kontainers-test-cache),
 #      DIND_MIRROR (a registry mirror for the test daemons, e.g. https://mirror.gcr.io, against Docker Hub's pull limit)
 set -eu
 
 cd "$(dirname "$0")/.."
 SUITE=${1:-all}
-BUN_IMAGE=${BUN_IMAGE:-oven/bun:1.4.4}
+BUN_IMAGE=${BUN_IMAGE:-oven/bun:1.4.5}
 CACHE=${CACHE_VOLUME:-kontainers-test-cache}
 # The image under test on the outer daemon. Inside dind it is always kontainers:test. A tag per run lets
 # several runs share one daemon (scripts/ptest.sh runs every suite at once).
@@ -122,7 +122,7 @@ if [ "$SUITE" = all ] || [ "$SUITE" = e2e ]; then
   start_app
   docker run --rm --network "container:$APP" --shm-size=1g -v "$PWD":/app -w /app \
     -e KONTAINERS_TEST_URL=http://127.0.0.1:8080 -e KONTAINERS_TEST_SETUP_TOKEN="$TOKEN" \
-    mcr.microsoft.com/playwright:v1.56.1-noble ./node_modules/.bin/playwright test
+    mcr.microsoft.com/playwright:v1.65.1-noble ./node_modules/.bin/playwright test
 fi
 
 # Pebble (a test ACME server) and the kontainers it issues certificates for, inside dind. Everything
@@ -261,7 +261,7 @@ fi
 # Not part of "all": regenerates docs/screenshots/*.png from a realistic host (a compose stack, a
 # container created in kontainers, proxy rules with Pebble certificates) and measures the image.
 if [ "$SUITE" = screenshots ]; then
-  PWIMG=mcr.microsoft.com/playwright:v1.56.1-noble
+  PWIMG=mcr.microsoft.com/playwright:v1.65.1-noble
   # Under its release name, as a reader would see it on their own host.
   KIMG="ataiva/kontainers:$(sed -n 's/.*"version": "\(.*\)".*/\1/p' package.json)" acme_stack
   docker image inspect "$PWIMG" >/dev/null 2>&1 || docker pull -q "$PWIMG" >/dev/null
@@ -278,7 +278,7 @@ if [ "$SUITE" = screenshots ]; then
   browse() {
     docker run --rm --network "container:$DIND" -v "$PWD/.scratch/shots-run":/run -v "$PWD/docs/screenshots":/out -w /run \
       -e URL="http://$KIP:8080" -e TOKEN="$TOKEN" -e OUT=/out -e PHASE="$1" "$PWIMG" \
-      sh -c '[ -d node_modules/playwright ] || npm i --silent --no-audit --no-fund playwright@1.56.1 >/dev/null; node shots.mjs'
+      sh -c '[ -d node_modules/playwright ] || npm i --silent --no-audit --no-fund playwright@1.65.1 >/dev/null; node shots.mjs'
   }
   browse setup
   # The test ACME server and its DNS stub are only needed to issue the certificates.
