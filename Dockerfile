@@ -1,7 +1,7 @@
 # kontainers: one image, one process (plus Caddy when the proxy is on).
 FROM caddy:2.11.9 AS caddy
 
-FROM oven/bun:1.4.4-slim
+FROM oven/bun:1.4.5-slim
 # Caddy runs as the unprivileged "bun" user and only needs to bind 80 and 443. It is copied in and
 # given that capability in one step: done in two, the image held the 47 MB binary twice (setcap
 # rewrites the file in a layer of its own).
