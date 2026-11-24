@@ -10,7 +10,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
-  - package-ecosystem: npm
+  # The test and type dependencies, in bun.lock: Dependabot's npm ecosystem cannot update a Bun
+  # lockfile, and failed every week with "This project has a bun.lock file".
+  - package-ecosystem: bun
     directory: /
     schedule:
       interval: weekly
