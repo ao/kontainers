@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.13.1
+
+Bun 1.4.5.
+
+Upgrading from 0.13.0: nothing to do; there is no database migration.
+
+- The image is built on oven/bun 1.4.5-slim (was 1.4.4). The tests use Bun 1.4.5 and
+  Playwright 1.65.1.
+- Dependabot keeps the test dependencies up to date again (its `bun` ecosystem: the `npm` one
+  cannot update `bun.lock`, and its weekly job had failed since 2026-11-14).
+
 ## 0.13.0
 
 An Events page, and crash counts on the Containers page.
